@@ -1,0 +1,25 @@
+openapi: 3.0.3
+info:
+  title: ANDRIL Backend Starter API (health only)
+  version: 0.1.0-starter
+  description: >-
+    Scaffold contract. No authentication or domain API endpoints are implemented.
+    Do not use this file as an approved production contract for Flutter or Admin.
+paths:
+  /health:
+    get:
+      summary: Starter API health check
+      operationId: healthCheck
+      responses:
+        '200':
+          description: API process responds
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    example: ok

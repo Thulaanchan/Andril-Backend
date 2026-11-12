@@ -1,0 +1,30 @@
+# .NET and IDE outputs
+**/bin/
+**/obj/
+**/TestResults/
+.vs/
+.idea/
+*.suo
+*.user
+*.rsuser
+
+# Sensitive environment and credentials
+.env
+.env.*
+!.env.example
+**/appsettings.Local.json
+**/appsettings.Production.json
+*.pfx
+*.p12
+*.pem
+*.key
+*.jks
+*.keystore
+**/secrets.json
+
+# Tooling
+.DS_Store
+Thumbs.db
+coverage/
+*.coverage
+*.coveragexml

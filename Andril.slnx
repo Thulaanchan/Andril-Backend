@@ -1,0 +1,21 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Andril.API/Andril.API.csproj" />
+    <Project Path="src/Andril.Shared/Andril.Shared.csproj" />
+    <Project Path="src/Andril.Common/Andril.Common.csproj" />
+    <Project Path="src/Andril.Learning/Andril.Learning.csproj" />
+    <Project Path="src/Andril.Hobbies/Andril.Hobbies.csproj" />
+    <Project Path="src/Andril.Social/Andril.Social.csproj" />
+    <Project Path="src/Andril.Groups/Andril.Groups.csproj" />
+    <Project Path="src/Andril.Communication/Andril.Communication.csproj" />
+    <Project Path="src/Andril.Economy/Andril.Economy.csproj" />
+    <Project Path="src/Andril.AI/Andril.AI.csproj" />
+    <Project Path="src/Andril.Persistence/Andril.Persistence.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Andril.UnitTests/Andril.UnitTests.csproj" />
+    <Project Path="tests/Andril.IntegrationTests/Andril.IntegrationTests.csproj" />
+    <Project Path="tests/Andril.SecurityTests/Andril.SecurityTests.csproj" />
+    <Project Path="tests/Andril.ArchitectureTests/Andril.ArchitectureTests.csproj" />
+  </Folder>
+</Solution>

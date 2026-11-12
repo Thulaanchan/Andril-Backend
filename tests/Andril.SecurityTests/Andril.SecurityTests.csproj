@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Andril.API\Andril.API.csproj" />
+    <ProjectReference Include="..\..\src\Andril.Shared\Andril.Shared.csproj" />
+    <ProjectReference Include="..\..\src\Andril.Communication\Andril.Communication.csproj" />
+    <ProjectReference Include="..\..\src\Andril.Social\Andril.Social.csproj" />
+    <ProjectReference Include="..\..\src\Andril.Groups\Andril.Groups.csproj" />
+    <ProjectReference Include="..\..\src\Andril.Economy\Andril.Economy.csproj" />
+  </ItemGroup>
+</Project>

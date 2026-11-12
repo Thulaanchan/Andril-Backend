@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Andril.Shared\Andril.Shared.csproj" />
+    <ProjectReference Include="..\Andril.Common\Andril.Common.csproj" />
+    <ProjectReference Include="..\Andril.Learning\Andril.Learning.csproj" />
+    <ProjectReference Include="..\Andril.Hobbies\Andril.Hobbies.csproj" />
+    <ProjectReference Include="..\Andril.Social\Andril.Social.csproj" />
+    <ProjectReference Include="..\Andril.Groups\Andril.Groups.csproj" />
+    <ProjectReference Include="..\Andril.Communication\Andril.Communication.csproj" />
+    <ProjectReference Include="..\Andril.Economy\Andril.Economy.csproj" />
+    <ProjectReference Include="..\Andril.AI\Andril.AI.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.13" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+  </ItemGroup>
+</Project>

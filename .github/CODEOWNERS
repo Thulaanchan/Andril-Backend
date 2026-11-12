@@ -1,0 +1,5 @@
+# Assign actual GitHub handles or team slugs after the six-member team confirms access.
+# Do not invent owner accounts. Example (commented):
+# /src/Andril.Groups/ @YOUR-TEAM-OR-M5-HANDLE
+# /src/Andril.Communication/ @YOUR-TEAM-OR-M4-HANDLE
+# /tests/ @YOUR-QA-TEAM

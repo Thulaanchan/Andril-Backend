@@ -1,0 +1,10 @@
+# Optional local container example (not a production hosting decision).
+services:
+  andril-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
