@@ -1,13 +1,31 @@
 openapi: 3.0.3
 info:
-  title: ANDRIL Backend Starter API (health only)
-  version: 0.1.0-starter
+  title: ANDRIL Backend API (authentication foundation)
+  version: 0.2.0
   description: >-
-    Scaffold contract. No authentication or domain API endpoints are implemented.
-    Do not use this file as an approved production contract for Flutter or Admin.
+    Supabase user bearer authentication is required by default. Health is public.
+    No account, onboarding or module endpoints are implemented yet.
+    Missing or invalid credentials receive 401 with a Bearer challenge and no token
+    details; authenticated users denied by an authorization policy receive 403.
+security:
+  - supabaseBearer: []
+components:
+  securitySchemes:
+    supabaseBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: >-
+        Supabase user access token from the configured project, audience authenticated.
+        Signature, exact issuer/audience, expiry and nonempty UUID subject are validated.
+        Requires role authenticated and is_anonymous false. API keys, service-role,
+        anonymous-user and legacy HS256 tokens are not accepted. ES256 or RS256 must
+        be explicitly configured. Authentication does not establish email verification,
+        onboarding completion, account status or module eligibility.
 paths:
   /health:
     get:
+      security: []
       summary: Starter API health check
       operationId: healthCheck
       responses:
