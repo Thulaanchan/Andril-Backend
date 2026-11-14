@@ -1,15 +1,68 @@
 openapi: 3.0.3
 info:
-  title: ANDRIL Backend API (authentication foundation)
-  version: 0.2.0
+  title: ANDRIL Backend API (account foundation)
+  version: 0.3.0
   description: >-
     Supabase user bearer authentication is required by default. Health is public.
-    No account, onboarding or module endpoints are implemented yet.
+    Account initialization and self-read are available. Onboarding eligibility,
+    preferences, consent and module membership are not implemented yet.
     Missing or invalid credentials receive 401 with a Bearer challenge and no token
     details; authenticated users denied by an authorization policy receive 403.
 security:
   - supabaseBearer: []
 components:
+  schemas:
+    Account:
+      type: object
+      additionalProperties: false
+      required: [accountId, createdAtUtc, updatedAtUtc]
+      properties:
+        accountId:
+          type: string
+          format: uuid
+          description: Private account identifier; never a module identity.
+        createdAtUtc:
+          type: string
+          format: date-time
+        updatedAtUtc:
+          type: string
+          format: date-time
+    AccountProblem:
+      type: object
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        traceId:
+          type: string
+  responses:
+    AccountOk:
+      description: The authenticated caller's account. Initialization always returns 200, including retries.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+          description: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Account'
+    Unauthorized:
+      description: Missing or invalid user access token. Empty body; no validation details.
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            example: Bearer
+    AccountUnavailable:
+      description: Account persistence is unconfigured or unavailable. No connection/provider details returned.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/AccountProblem'
   securitySchemes:
     supabaseBearer:
       type: http
@@ -23,6 +76,39 @@ components:
         be explicitly configured. Authentication does not establish email verification,
         onboarding completion, account status or module eligibility.
 paths:
+  /api/v1/account/initialize:
+    post:
+      operationId: initializeAccount
+      summary: Idempotently initialize the authenticated caller's account
+      description: >-
+        No request body or identity parameters. The server derives identity only from
+        the validated token. Client-supplied account IDs or Supabase subjects are never
+        used. Repeated/concurrent calls return the same account with unchanged timestamps.
+        This operation does not complete onboarding or activate any module.
+      responses:
+        '200':
+          $ref: '#/components/responses/AccountOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '503':
+          $ref: '#/components/responses/AccountUnavailable'
+  /api/v1/account/me:
+    get:
+      operationId: getMyAccount
+      summary: Read the authenticated caller's account without creating it
+      responses:
+        '200':
+          $ref: '#/components/responses/AccountOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          description: No account exists for the authenticated caller; initialize it first.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/AccountProblem'
+        '503':
+          $ref: '#/components/responses/AccountUnavailable'
   /health:
     get:
       security: []

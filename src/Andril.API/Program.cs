@@ -4,6 +4,7 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 builder.Services.AddProblemDetails();
 builder.Services.AddSupabaseAuthentication(builder.Configuration);
+builder.Services.AddAccounts(builder.Configuration);
 
 var app = builder.Build();
 app.UseExceptionHandler();
