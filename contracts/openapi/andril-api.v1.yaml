@@ -1,17 +1,41 @@
 openapi: 3.0.3
 info:
-  title: ANDRIL Backend API (account foundation)
-  version: 0.3.0
+  title: ANDRIL Backend API (account preferences)
+  version: 0.4.0
   description: >-
     Supabase user bearer authentication is required by default. Health is public.
-    Account initialization and self-read are available. Onboarding eligibility,
-    preferences, consent and module membership are not implemented yet.
+    Account initialization, self-read and language preferences are available.
+    Onboarding eligibility, consent and module membership are not implemented yet.
     Missing or invalid credentials receive 401 with a Bearer challenge and no token
     details; authenticated users denied by an authorization policy receive 403.
 security:
   - supabaseBearer: []
 components:
   schemas:
+    LanguagePreference:
+      type: object
+      additionalProperties: false
+      required: [language, isStored]
+      properties:
+        language:
+          type: string
+          enum: [en, ta, si]
+        isStored:
+          type: boolean
+          description: False means English display fallback only; no preference was saved.
+    LanguagePreferenceUpdate:
+      type: object
+      additionalProperties: false
+      required: [language, mode]
+      properties:
+        language:
+          type: string
+          enum: [en, ta, si]
+          description: Exact lowercase code; no implicit normalization.
+        mode:
+          type: string
+          enum: [sync, settings]
+          description: sync only inserts if absent; settings explicitly replaces the account value.
     Account:
       type: object
       additionalProperties: false
@@ -39,6 +63,38 @@ components:
         traceId:
           type: string
   responses:
+    LanguagePreferenceOk:
+      description: Authoritative stored account value, or a read-only English fallback with isStored false.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            example: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LanguagePreference'
+    LanguagePreferenceInvalid:
+      description: Missing/malformed body, missing/unsupported language or mode, or unknown JSON property. No preference changed.
+      content:
+        application/problem+json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/AccountProblem'
+              - type: object
+                properties:
+                  errors:
+                    type: object
+                    additionalProperties:
+                      type: array
+                      items:
+                        type: string
+    LanguageAccountMissing:
+      description: Initialize the authenticated account first. No account or preference was created.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/AccountProblem'
     AccountOk:
       description: The authenticated caller's account. Initialization always returns 200, including retries.
       headers:
@@ -76,6 +132,52 @@ components:
         be explicitly configured. Authentication does not establish email verification,
         onboarding completion, account status or module eligibility.
 paths:
+  /api/v1/account/preferences/language:
+    get:
+      operationId: getAccountLanguagePreference
+      summary: Read the caller's account language preference
+      description: >-
+        Uses only the validated identity and server-resolved account. With no stored
+        preference returns language en and isStored false without writing a default.
+        Preserve the pre-login device choice for the first authenticated sync.
+      responses:
+        '200':
+          $ref: '#/components/responses/LanguagePreferenceOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/LanguageAccountMissing'
+        '503':
+          $ref: '#/components/responses/AccountUnavailable'
+    patch:
+      operationId: updateAccountLanguagePreference
+      summary: Sync a device choice once or explicitly change the account language
+      description: >-
+        sync inserts only if absent; existing account values always win over device
+        sync. settings explicitly updates the account choice. Returns the authoritative
+        stored value with isStored true. Repeated identical writes do not change timestamps.
+        Concurrent first syncs have one winner. Concurrent differing settings updates use
+        last database-applied write order. No client account ID is accepted in the body.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LanguagePreferenceUpdate'
+            example:
+              language: ta
+              mode: sync
+      responses:
+        '200':
+          $ref: '#/components/responses/LanguagePreferenceOk'
+        '400':
+          $ref: '#/components/responses/LanguagePreferenceInvalid'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/LanguageAccountMissing'
+        '503':
+          $ref: '#/components/responses/AccountUnavailable'
   /api/v1/account/initialize:
     post:
       operationId: initializeAccount

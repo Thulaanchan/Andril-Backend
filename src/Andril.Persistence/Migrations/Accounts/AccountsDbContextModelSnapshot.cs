@@ -7,6 +7,6 @@ namespace Andril.Persistence.Migrations.Accounts;
 [DbContext(typeof(AccountsDbContext))]
 public sealed class AccountsDbContextModelSnapshot : ModelSnapshot
 {
-    protected override void BuildModel(ModelBuilder modelBuilder) => InitialAccountsModel.Build(modelBuilder);
+    protected override void BuildModel(ModelBuilder modelBuilder) => AccountLanguagePreferencesModel.Build(modelBuilder);
 }
 
