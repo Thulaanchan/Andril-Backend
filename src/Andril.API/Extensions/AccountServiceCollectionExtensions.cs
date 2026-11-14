@@ -1,6 +1,7 @@
 using Andril.API.Middleware;
 using Andril.Common.Accounts;
 using Andril.Common.Accounts.Preferences;
+using Andril.Common.Accounts.Eligibility;
 using Andril.Persistence.DbContexts;
 using Andril.Persistence.Repositories.Common;
 using Microsoft.EntityFrameworkCore;
@@ -19,6 +20,9 @@ public static class AccountServiceCollectionExtensions
         services.AddScoped<ILanguagePreferenceService, LanguagePreferenceService>();
         services.AddScoped<ILanguagePreferenceRepository, LanguagePreferenceRepository>();
         services.AddExceptionHandler<LanguagePreferenceExceptionHandler>();
+        services.AddScoped<IAccountEligibilityService, AccountEligibilityService>();
+        services.AddScoped<IAccountDemographicsRepository, AccountDemographicsRepository>();
+        services.AddExceptionHandler<EligibilityExceptionHandler>();
         services.AddDbContext<AccountsDbContext>(options =>
         {
             var connection = configuration.GetConnectionString("AndrilAccounts");

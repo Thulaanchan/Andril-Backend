@@ -1,17 +1,57 @@
 openapi: 3.0.3
 info:
-  title: ANDRIL Backend API (account preferences)
-  version: 0.4.0
+  title: ANDRIL Backend API (account age eligibility)
+  version: 0.5.0
   description: >-
     Supabase user bearer authentication is required by default. Health is public.
     Account initialization, self-read and language preferences are available.
-    Onboarding eligibility, consent and module membership are not implemented yet.
+    Private DOB/gender submission and age eligibility are available. Consent,
+    Social opt-in and module activation are not implemented yet.
     Missing or invalid credentials receive 401 with a Bearer challenge and no token
     details; authenticated users denied by an authorization policy receive 403.
 security:
   - supabaseBearer: []
 components:
   schemas:
+    AccountEligibilitySubmission:
+      type: object
+      additionalProperties: false
+      required: [dateOfBirth, gender]
+      properties:
+        dateOfBirth:
+          type: string
+          format: date
+          description: Valid ISO calendar date yyyy-MM-dd, no later than today's UTC date. The provider sentinel 0001-01-01 is unsupported.
+        gender:
+          type: string
+          minLength: 1
+          maxLength: 100
+          description: Non-whitespace text without control characters; trimmed. Vocabulary pending review, not an approved enum.
+    AccountEligibility:
+      type: object
+      additionalProperties: false
+      required: [hasSubmission, evaluatedOnUtc, ageEligibility]
+      properties:
+        hasSubmission:
+          type: boolean
+          description: A demographics record exists; this is not onboarding completion.
+        evaluatedOnUtc:
+          type: string
+          format: date
+        ageEligibility:
+          type: object
+          additionalProperties: false
+          required: [learning, hobbies, social]
+          properties:
+            learning:
+              type: boolean
+              description: Age at least 16.
+            hobbies:
+              type: boolean
+              description: Age at least 16.
+            social:
+              type: boolean
+              description: Age at least 18 only; not Social opt-in or activation authorization.
     LanguagePreference:
       type: object
       additionalProperties: false
@@ -63,6 +103,29 @@ components:
         traceId:
           type: string
   responses:
+    AccountEligibilityOk:
+      description: Computed age eligibility only; never includes DOB, gender, raw age or account identifiers.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            example: no-store
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/AccountEligibility'
+    EligibilityInvalid:
+      description: Invalid/missing DOB or gender, future DOB, oversized/control-character gender, or unknown property. No data changed.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/AccountProblem'
+    EligibilityAccountMissing:
+      description: Initialize the authenticated account first; this operation never initializes an account.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/AccountProblem'
     LanguagePreferenceOk:
       description: Authoritative stored account value, or a read-only English fallback with isStored false.
       headers:
@@ -132,6 +195,52 @@ components:
         be explicitly configured. Authentication does not establish email verification,
         onboarding completion, account status or module eligibility.
 paths:
+  /api/v1/account/eligibility:
+    get:
+      operationId: getAccountAgeEligibility
+      summary: Read the caller's computed module age eligibility
+      description: >-
+        Resolves the account from the verified Supabase identity. Missing demographics
+        return hasSubmission false and all age-eligibility values false without writing.
+        Uses current UTC calendar date on every read. A Feb 29 birth reaches its
+        anniversary on Mar 1 in non-leap years. No DOB, gender or exact age is returned.
+        Eligibility does not activate modules, collect consent or opt into Social.
+      responses:
+        '200':
+          $ref: '#/components/responses/AccountEligibilityOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/EligibilityAccountMissing'
+        '503':
+          $ref: '#/components/responses/AccountUnavailable'
+    put:
+      operationId: submitAccountAgeEligibility
+      summary: Submit or correct the caller's private DOB and gender for Screen 09
+      description: >-
+        Full idempotent submission. Both fields are required. Unknown properties,
+        including account IDs, age and eligibility flags, are rejected. Under-16
+        submissions are stored but all module age checks return false. No consent,
+        Social opt-in, module activation or age-verification claim is implied.
+        Identical submissions preserve timestamps; differing concurrent submissions
+        use last database-applied write order. These are self-reported details.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountEligibilitySubmission'
+      responses:
+        '200':
+          $ref: '#/components/responses/AccountEligibilityOk'
+        '400':
+          $ref: '#/components/responses/EligibilityInvalid'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/EligibilityAccountMissing'
+        '503':
+          $ref: '#/components/responses/AccountUnavailable'
   /api/v1/account/preferences/language:
     get:
       operationId: getAccountLanguagePreference
