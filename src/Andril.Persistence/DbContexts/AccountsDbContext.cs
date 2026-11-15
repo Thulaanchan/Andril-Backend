@@ -12,6 +12,7 @@ public sealed class AccountsDbContext(DbContextOptions<AccountsDbContext> option
     public DbSet<AccountLanguagePreference> LanguagePreferences => Set<AccountLanguagePreference>();
     public DbSet<AccountDemographics> Demographics => Set<AccountDemographics>();
     public DbSet<Andril.Common.Accounts.Policies.AccountPolicyRecord> PolicyRecords => Set<Andril.Common.Accounts.Policies.AccountPolicyRecord>();
+    public DbSet<Andril.Common.Accounts.StarterModules.StarterMembership> StarterMemberships => Set<Andril.Common.Accounts.StarterModules.StarterMembership>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -19,5 +20,6 @@ public sealed class AccountsDbContext(DbContextOptions<AccountsDbContext> option
         modelBuilder.ApplyConfiguration(new AccountLanguagePreferenceConfiguration());
         modelBuilder.ApplyConfiguration(new AccountDemographicsConfiguration());
         modelBuilder.ApplyConfiguration(new AccountPolicyRecordConfiguration());
+        modelBuilder.ApplyConfiguration(new StarterMembershipConfiguration());
     }
 }
