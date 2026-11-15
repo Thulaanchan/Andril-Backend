@@ -9,7 +9,7 @@ public sealed class ConfirmedAccountIdentityMiddleware(RequestDelegate next)
     public async Task InvokeAsync(HttpContext context, ISupabaseUserVerifier verifier, IProblemDetailsService problems)
     {
         // Other members' routes retain their existing authorization behavior.
-        if (!context.Request.Path.StartsWithSegments("/api/v1/account", StringComparison.OrdinalIgnoreCase)
+        if (!IdentityProtectedRoutes.Contains(context.Request.Path)
             || VerifiedUserSubject.GetId(context.User) is not Guid subject)
         {
             await next(context);
@@ -25,6 +25,7 @@ public sealed class ConfirmedAccountIdentityMiddleware(RequestDelegate next)
         var result = await verifier.VerifyAsync(subject, header.Parameter, context.RequestAborted);
         if (result == SupabaseUserVerification.Confirmed)
         {
+            context.Features.Set(new ConfirmedIdentityFeature(subject));
             await next(context);
             return;
         }
@@ -36,11 +37,14 @@ public sealed class ConfirmedAccountIdentityMiddleware(RequestDelegate next)
             context.Response.Headers.WWWAuthenticate = "Bearer";
             return;
         }
+        var problem = new ProblemDetails { Status = status,
+            Title = status == 403 ? "Email confirmation required" : "Identity verification unavailable" };
+        if (status == 403 && IdentityProtectedRoutes.IsOnboarding(context.Request.Path))
+            problem.Extensions["nextStep"] = "verify_identity";
         await problems.WriteAsync(new ProblemDetailsContext
         {
             HttpContext = context,
-            ProblemDetails = new ProblemDetails { Status = status,
-                Title = status == 403 ? "Email confirmation required" : "Identity verification unavailable" }
+            ProblemDetails = problem
         });
     }
 }

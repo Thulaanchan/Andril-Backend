@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ANDRIL Backend API (Supabase authentication integration)
-  version: 0.8.0
+  version: 0.9.0
   description: >-
     Supabase user bearer authentication is required by default. Health is public.
     Account initialization, self-read and language preferences are available.
@@ -11,7 +11,7 @@ info:
     deactivation and module-profile creation are not implemented here.
     Missing or invalid credentials receive 401 with a Bearer challenge and no token
     details; authenticated users denied by an authorization policy receive 403.
-    All /api/v1/account operations additionally require a matching confirmed email
+    All /api/v1/account and /api/v1/onboarding operations additionally require a matching confirmed email
     identity from the configured Supabase Auth user endpoint. Unconfirmed users receive
     403; unavailable/misconfigured identity verification receives 503. Per-subject local
     throttling receives 429 with Retry-After. All account responses are no-store.
@@ -21,6 +21,49 @@ security:
   - supabaseBearer: []
 components:
   schemas:
+    OnboardingStatus:
+      type: object
+      additionalProperties: false
+      required: [nextStep, progress, selectedModule, blockingDependency, onboardingComplete, moduleHomeAuthorized]
+      properties:
+        nextStep:
+          type: string
+          enum: [initialize_account, complete_demographics, age_ineligible, review_policies, select_starter, profile_setup]
+          description: Derived on every read from server records. age_ineligible blocks progression; profile_setup cannot advance until authoritative private-profile infrastructure exists.
+        progress:
+          type: object
+          additionalProperties: false
+          required: [identityVerified, accountInitialized, demographicsComplete, currentPoliciesAccepted, starterModuleSelected, privateProfileComplete]
+          properties:
+            identityVerified:
+              type: boolean
+              enum: [true]
+            accountInitialized:
+              type: boolean
+            demographicsComplete:
+              type: boolean
+            currentPoliciesAccepted:
+              type: boolean
+            starterModuleSelected:
+              type: boolean
+            privateProfileComplete:
+              type: boolean
+              enum: [false]
+        selectedModule:
+          type: string
+          nullable: true
+          enum: [learning, hobbies, social, null]
+          description: Own starter only; no module identity or profile identifiers.
+        blockingDependency:
+          type: string
+          nullable: true
+          enum: [private_profile_infrastructure, null]
+        onboardingComplete:
+          type: boolean
+          enum: [false]
+        moduleHomeAuthorized:
+          type: boolean
+          enum: [false]
     StarterModuleSelection:
       type: object
       additionalProperties: false
@@ -406,6 +449,42 @@ components:
         and top-level email_confirmed_at through the configured Auth endpoint. This
         does not establish onboarding completion, module eligibility or instant revocation.
 paths:
+  /api/v1/onboarding/status:
+    get:
+      operationId: getOnboardingStatus
+      summary: Read private onboarding progress and resume step
+      description: >-
+        Requires a validated JWT and live matching confirmed Supabase identity.
+        Read-only; never initializes accounts or accepts client completion flags.
+        Sequence is account, demographics and age, current Terms/Privacy, starter,
+        private profile, then authorized home. No profile evidence source exists yet,
+        so the last successful step is profile_setup and home authorization is always false.
+        Reuse this endpoint after login/restart and after successful progress writes.
+        Progress booleans describe stored prerequisites independently, not cumulative authorization.
+        Missing policy configuration returns 503 for initialized accounts. Uninitialized
+        accounts return initialize_account without requiring the policy catalog.
+        All responses including errors have Cache-Control no-store. Account and onboarding
+        routes share the existing per-subject request limit. No request body or account ID.
+      responses:
+        '200':
+          description: Server-derived status, including blocked age or missing profile infrastructure.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                enum: [no-store]
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OnboardingStatus'
+        '401':
+          description: Missing/invalid JWT or mismatched/revoked Supabase identity. Bearer challenge; no completion information.
+        '403':
+          description: Supabase identity is unconfirmed. ProblemDetails includes nextStep verify_identity, with no account progress.
+        '429':
+          description: Subject rate limit exceeded; Retry-After header provided.
+        '503':
+          description: Identity verification, policy configuration, account database or trusted status dependency unavailable. No completion information.
   /api/v1/account/starter-module:
     get:
       operationId: getStarterModuleStatus

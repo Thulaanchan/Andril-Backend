@@ -23,7 +23,7 @@ public static class SupabaseIdentityServiceCollectionExtensions
             if (limit is < 1 or > 600) throw new InvalidOperationException("Account identity rate limit must be between 1 and 600.");
             options.GlobalLimiter = PartitionedRateLimiter.Create<HttpContext, string>(context =>
             {
-                if (!context.Request.Path.StartsWithSegments("/api/v1/account", StringComparison.OrdinalIgnoreCase)
+                if (!IdentityProtectedRoutes.Contains(context.Request.Path)
                     || VerifiedUserSubject.GetId(context.User) is not Guid subject)
                     return RateLimitPartition.GetNoLimiter("not-account-identity");
                 return RateLimitPartition.GetFixedWindowLimiter(subject.ToString(), _ => new FixedWindowRateLimiterOptions

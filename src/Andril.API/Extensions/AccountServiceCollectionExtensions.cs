@@ -15,6 +15,9 @@ public static class AccountServiceCollectionExtensions
     public static IServiceCollection AddAccounts(this IServiceCollection services, IConfiguration configuration)
     {
         services.TryAddSingleton(TimeProvider.System);
+        services.AddScoped<Andril.Common.Accounts.Onboarding.IOnboardingIdentity, Andril.API.Authentication.OnboardingIdentity>();
+        services.AddScoped<Andril.Common.Accounts.Onboarding.IOnboardingStatusService, Andril.Common.Accounts.Onboarding.OnboardingStatusService>();
+        services.AddExceptionHandler<OnboardingExceptionHandler>();
         services.AddScoped<Andril.Common.Accounts.StarterModules.IStarterModuleService, Andril.Common.Accounts.StarterModules.StarterModuleService>();
         services.AddScoped<Andril.Common.Accounts.StarterModules.IStarterModuleRepository, StarterModuleRepository>();
         services.AddExceptionHandler<StarterModuleExceptionHandler>();

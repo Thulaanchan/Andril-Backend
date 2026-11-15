@@ -12,7 +12,7 @@ app.UseExceptionHandler();
 // Apply even to authentication challenges, redirects and model-binding failures.
 app.Use(async (context, next) =>
 {
-    if (context.Request.Path.StartsWithSegments("/api/v1/account", StringComparison.OrdinalIgnoreCase))
+    if (Andril.API.Authentication.IdentityProtectedRoutes.Contains(context.Request.Path))
         context.Response.OnStarting(() =>
         {
             context.Response.Headers.CacheControl = "no-store";
