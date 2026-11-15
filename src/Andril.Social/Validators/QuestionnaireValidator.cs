@@ -1,10 +1,15 @@
-
+using System;
+using System.Collections.Generic;
+using System.Linq;
 using Andril.Social.Personality;
 
 namespace Andril.Social.Validators;
 
 public static class QuestionnaireValidator
 {
+    private const string InitialQuestionnaireVersion = "v1";
+    private const int InitialQuestionnaireQuestionCount = 12;
+
     public static QuestionnaireValidationResult ValidateDefinition(
         QuestionnaireDefinition? definition)
     {
@@ -16,6 +21,30 @@ public static class QuestionnaireValidator
             definition.Questions.Count == 0)
         {
             return Fail("INVALID_DEFINITION");
+        }
+
+        // Approved SOC-01 v1 rules:
+        // - Exactly 12 questions.
+        // - Every question is required.
+        // - These restrictions apply only to version "v1".
+        if (string.Equals(
+                definition.Version,
+                InitialQuestionnaireVersion,
+                StringComparison.Ordinal))
+        {
+            if (definition.Questions.Count !=
+                InitialQuestionnaireQuestionCount)
+            {
+                errors.Add("V1_INVALID_QUESTION_COUNT");
+            }
+
+            if (definition.Questions.Any(
+                    question =>
+                        question is not null &&
+                        !question.IsRequired))
+            {
+                errors.Add("V1_OPTIONAL_QUESTION_NOT_ALLOWED");
+            }
         }
 
         var questionIds = new HashSet<string>(
@@ -82,22 +111,25 @@ public static class QuestionnaireValidator
         }
 
         if (!string.Equals(
-            definition!.Version,
-            submission.Version,
-            StringComparison.Ordinal))
+                definition!.Version,
+                submission.Version,
+                StringComparison.Ordinal))
         {
             return Fail("VERSION_MISMATCH");
         }
 
+        // Existing domain status retained for compatibility.
+        // This does not introduce an onboarding skip screen.
         if (submission.Skip)
         {
             return submission.Answers.Count == 0
-                ? Success(QuestionnaireParticipationStatus.Skipped)
+                ? Success(
+                    QuestionnaireParticipationStatus.Skipped)
                 : Fail("SKIP_WITH_ANSWERS");
         }
 
         var questions = definition.Questions.ToDictionary(
-            q => q.Id,
+            question => question.Id,
             StringComparer.Ordinal);
 
         var answered = new HashSet<string>(
@@ -122,15 +154,15 @@ public static class QuestionnaireValidator
             }
 
             if (!questions.TryGetValue(
-                answer.QuestionId,
-                out var question))
+                    answer.QuestionId,
+                    out var question))
             {
                 errors.Add("UNKNOWN_QUESTION");
                 continue;
             }
 
             if (!question.Options.Any(
-                option => option.Id == answer.OptionId))
+                    option => option.Id == answer.OptionId))
             {
                 errors.Add("INVALID_OPTION");
             }
@@ -151,12 +183,13 @@ public static class QuestionnaireValidator
         }
 
         bool requiredComplete = definition.Questions
-            .Where(q => q.IsRequired)
-            .All(q => answered.Contains(q.Id));
+            .Where(question => question.IsRequired)
+            .All(question => answered.Contains(question.Id));
 
-        return Success(requiredComplete
-            ? QuestionnaireParticipationStatus.Completed
-            : QuestionnaireParticipationStatus.InProgress);
+        return Success(
+            requiredComplete
+                ? QuestionnaireParticipationStatus.Completed
+                : QuestionnaireParticipationStatus.InProgress);
     }
 
     private static QuestionnaireValidationResult Success(
