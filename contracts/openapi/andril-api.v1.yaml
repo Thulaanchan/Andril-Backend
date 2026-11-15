@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
-  title: ANDRIL Backend API (starter module selection)
-  version: 0.7.0
+  title: ANDRIL Backend API (Supabase authentication integration)
+  version: 0.8.0
   description: >-
     Supabase user bearer authentication is required by default. Health is public.
     Account initialization, self-read and language preferences are available.
@@ -11,6 +11,12 @@ info:
     deactivation and module-profile creation are not implemented here.
     Missing or invalid credentials receive 401 with a Bearer challenge and no token
     details; authenticated users denied by an authorization policy receive 403.
+    All /api/v1/account operations additionally require a matching confirmed email
+    identity from the configured Supabase Auth user endpoint. Unconfirmed users receive
+    403; unavailable/misconfigured identity verification receives 503. Per-subject local
+    throttling receives 429 with Retry-After. All account responses are no-store.
+    Flutter sends passwords, OTPs, Google credentials and recovery requests directly
+    to Supabase through its official SDK; this API exposes no authentication proxies.
 security:
   - supabaseBearer: []
 components:
@@ -240,6 +246,28 @@ components:
         traceId:
           type: string
   responses:
+    EmailConfirmationRequired:
+      description: Supabase user evidence does not establish a confirmed email for this subject. No account operation executes.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            enum: [no-store]
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/AccountProblem'
+    AccountIdentityRateLimited:
+      description: Per-subject API identity-check quota exceeded. Retry after the provided interval; empty response body.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            enum: [no-store]
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds before retrying.
     StarterModuleOk:
       description: Owner-only starter status, without account IDs, module profile IDs, DOB, gender or private identity links.
       headers:
@@ -358,7 +386,7 @@ components:
             type: string
             example: Bearer
     AccountUnavailable:
-      description: Account persistence is unconfigured or unavailable. No connection/provider details returned.
+      description: Account persistence or Supabase identity verification is unconfigured or unavailable. No connection/provider details returned.
       content:
         application/problem+json:
           schema:
@@ -373,8 +401,10 @@ components:
         Signature, exact issuer/audience, expiry and nonempty UUID subject are validated.
         Requires role authenticated and is_anonymous false. API keys, service-role,
         anonymous-user and legacy HS256 tokens are not accepted. ES256 or RS256 must
-        be explicitly configured. Authentication does not establish email verification,
-        onboarding completion, account status or module eligibility.
+        be explicitly configured. JWT authentication alone does not establish email
+        verification. Account routes additionally validate the matching Supabase user
+        and top-level email_confirmed_at through the configured Auth endpoint. This
+        does not establish onboarding completion, module eligibility or instant revocation.
 paths:
   /api/v1/account/starter-module:
     get:
@@ -386,6 +416,10 @@ paths:
         Returns no membership before selection; all canSelect flags are false after
         selection. All responses, including authentication failures, are no-store.
       responses:
+        '403':
+          $ref: '#/components/responses/EmailConfirmationRequired'
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
         '200':
           $ref: '#/components/responses/StarterModuleOk'
         '401':
@@ -422,6 +456,8 @@ paths:
                   module: social
                   socialOptIn: true
       responses:
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
         '200':
           $ref: '#/components/responses/StarterModuleOk'
         '400':
@@ -433,7 +469,7 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
-          description: Account is not age-eligible for the selected module. No private age/DOB details; no writes; no-store.
+          description: Supabase email is unconfirmed or account is not age-eligible for the selected module. No private age/DOB details; no writes; no-store.
           content:
             application/problem+json:
               schema:
@@ -451,7 +487,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AccountProblem'
         '503':
-          description: Required policy metadata or storage is unavailable. Fail closed; no-store.
+          description: Identity verification, required policy metadata or storage is unavailable. Fail closed; no-store.
           content:
             application/problem+json:
               schema:
@@ -466,6 +502,10 @@ paths:
         Metadata must exist for all three documents or this fails closed with 503.
         No client account selector is used. A new required version makes completion false.
       responses:
+        '403':
+          $ref: '#/components/responses/EmailConfirmationRequired'
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
         '200':
           $ref: '#/components/responses/PolicyOk'
         '401':
@@ -496,6 +536,10 @@ paths:
             schema:
               $ref: '#/components/schemas/PolicyAcknowledgment'
       responses:
+        '403':
+          $ref: '#/components/responses/EmailConfirmationRequired'
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
         '200':
           $ref: '#/components/responses/PolicyOk'
         '400':
@@ -531,6 +575,10 @@ paths:
         anniversary on Mar 1 in non-leap years. No DOB, gender or exact age is returned.
         Eligibility does not activate modules, collect consent or opt into Social.
       responses:
+        '403':
+          $ref: '#/components/responses/EmailConfirmationRequired'
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
         '200':
           $ref: '#/components/responses/AccountEligibilityOk'
         '401':
@@ -556,6 +604,10 @@ paths:
             schema:
               $ref: '#/components/schemas/AccountEligibilitySubmission'
       responses:
+        '403':
+          $ref: '#/components/responses/EmailConfirmationRequired'
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
         '200':
           $ref: '#/components/responses/AccountEligibilityOk'
         '400':
@@ -575,6 +627,10 @@ paths:
         preference returns language en and isStored false without writing a default.
         Preserve the pre-login device choice for the first authenticated sync.
       responses:
+        '403':
+          $ref: '#/components/responses/EmailConfirmationRequired'
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
         '200':
           $ref: '#/components/responses/LanguagePreferenceOk'
         '401':
@@ -602,6 +658,10 @@ paths:
               language: ta
               mode: sync
       responses:
+        '403':
+          $ref: '#/components/responses/EmailConfirmationRequired'
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
         '200':
           $ref: '#/components/responses/LanguagePreferenceOk'
         '400':
@@ -622,6 +682,10 @@ paths:
         used. Repeated/concurrent calls return the same account with unchanged timestamps.
         This operation does not complete onboarding or activate any module.
       responses:
+        '403':
+          $ref: '#/components/responses/EmailConfirmationRequired'
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
         '200':
           $ref: '#/components/responses/AccountOk'
         '401':
@@ -633,6 +697,10 @@ paths:
       operationId: getMyAccount
       summary: Read the authenticated caller's account without creating it
       responses:
+        '403':
+          $ref: '#/components/responses/EmailConfirmationRequired'
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
         '200':
           $ref: '#/components/responses/AccountOk'
         '401':
