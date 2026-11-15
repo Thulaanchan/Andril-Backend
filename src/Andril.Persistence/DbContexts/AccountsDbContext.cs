@@ -11,11 +11,13 @@ public sealed class AccountsDbContext(DbContextOptions<AccountsDbContext> option
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<AccountLanguagePreference> LanguagePreferences => Set<AccountLanguagePreference>();
     public DbSet<AccountDemographics> Demographics => Set<AccountDemographics>();
+    public DbSet<Andril.Common.Accounts.Policies.AccountPolicyRecord> PolicyRecords => Set<Andril.Common.Accounts.Policies.AccountPolicyRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfiguration(new AccountConfiguration());
         modelBuilder.ApplyConfiguration(new AccountLanguagePreferenceConfiguration());
         modelBuilder.ApplyConfiguration(new AccountDemographicsConfiguration());
+        modelBuilder.ApplyConfiguration(new AccountPolicyRecordConfiguration());
     }
 }

@@ -15,6 +15,10 @@ public static class AccountServiceCollectionExtensions
     public static IServiceCollection AddAccounts(this IServiceCollection services, IConfiguration configuration)
     {
         services.TryAddSingleton(TimeProvider.System);
+        services.AddScoped<Andril.Common.Accounts.Policies.IPolicyCatalogProvider, Andril.API.Configuration.ConfiguredPolicyCatalog>();
+        services.AddScoped<Andril.Common.Accounts.Policies.IAccountPolicyService, Andril.Common.Accounts.Policies.AccountPolicyService>();
+        services.AddScoped<Andril.Common.Accounts.Policies.IAccountPolicyRepository, AccountPolicyRepository>();
+        services.AddExceptionHandler<PolicyExceptionHandler>();
         services.AddScoped<IAccountService, AccountService>();
         services.AddScoped<IAccountRepository, AccountRepository>();
         services.AddScoped<ILanguagePreferenceService, LanguagePreferenceService>();
