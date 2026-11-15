@@ -1,19 +1,79 @@
 openapi: 3.0.3
 info:
-  title: ANDRIL Backend API (account policy acknowledgment)
-  version: 0.6.0
+  title: ANDRIL Backend API (starter module selection)
+  version: 0.7.0
   description: >-
     Supabase user bearer authentication is required by default. Health is public.
     Account initialization, self-read and language preferences are available.
     Private DOB/gender submission, age eligibility and Screen 09 Terms agreement
-    and Privacy acknowledgment are available. Social opt-in and module activation
-    are not implemented yet.
+    and Privacy acknowledgment are available. Screen 10 supports one starter module
+    with age checks and explicit Social opt-in. Later module activation, switching,
+    deactivation and module-profile creation are not implemented here.
     Missing or invalid credentials receive 401 with a Bearer challenge and no token
     details; authenticated users denied by an authorization policy receive 403.
 security:
   - supabaseBearer: []
 components:
   schemas:
+    StarterModuleSelection:
+      type: object
+      additionalProperties: false
+      required: [module]
+      properties:
+        module:
+          type: string
+          enum: [learning, hobbies, social]
+        socialOptIn:
+          type: boolean
+          nullable: true
+          description: Must be explicitly true for social. Must be false, null or omitted for learning/hobbies. Never inferred from Terms or Privacy receipts.
+    StarterModuleStatus:
+      type: object
+      required: [demographicsComplete, requiredPoliciesComplete, modules, membership, nextStep]
+      properties:
+        demographicsComplete:
+          type: boolean
+          description: Valid stored DOB and gender exist; no private values are returned.
+        requiredPoliciesComplete:
+          type: boolean
+          description: Existing receipts match the currently configured Terms and Privacy versions.
+        modules:
+          type: array
+          minItems: 3
+          maxItems: 3
+          items:
+            type: object
+            required: [module, ageEligible, requiresSocialOptIn, canSelect]
+            properties:
+              module:
+                type: string
+                enum: [learning, hobbies, social]
+              ageEligible:
+                type: boolean
+                description: Recalculated with current UTC date; learning/hobbies 16+, social 18+.
+              requiresSocialOptIn:
+                type: boolean
+              canSelect:
+                type: boolean
+                description: Age and prerequisites permit first selection and no starter already exists. Social still needs explicit POST opt-in.
+        membership:
+          type: object
+          nullable: true
+          required: [module, activatedAtUtc, socialOptIn]
+          properties:
+            module:
+              type: string
+              enum: [learning, hobbies, social]
+            activatedAtUtc:
+              type: string
+              format: date-time
+            socialOptIn:
+              type: boolean
+              description: True only when a Social starter and its opt-in evidence were recorded together.
+        nextStep:
+          type: string
+          enum: [complete_demographics, review_policies, age_ineligible, select_starter, starter_selected]
+          description: Navigation hint only; not a module-access token, profile, identity link or claim of overall onboarding completion.
     PolicyDocument:
       type: object
       required: [version, url, language]
@@ -180,6 +240,28 @@ components:
         traceId:
           type: string
   responses:
+    StarterModuleOk:
+      description: Owner-only starter status, without account IDs, module profile IDs, DOB, gender or private identity links.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            enum: [no-store]
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/StarterModuleStatus'
+    StarterModuleProblem:
+      description: Safe starter-selection error. No private records or database details disclosed.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            enum: [no-store]
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/AccountProblem'
     PolicyOk:
       description: Current configured documents and caller-owned policy status. No account or receipt is created by GET.
       headers:
@@ -294,6 +376,86 @@ components:
         be explicitly configured. Authentication does not establish email verification,
         onboarding completion, account status or module eligibility.
 paths:
+  /api/v1/account/starter-module:
+    get:
+      operationId: getStarterModuleStatus
+      summary: Read Screen 10 eligibility and the authenticated owner's existing starter
+      description: >-
+        Derives the account only from the verified token. Reads stored demographics,
+        current policy receipts and membership, recalculating age in UTC. No writes.
+        Returns no membership before selection; all canSelect flags are false after
+        selection. All responses, including authentication failures, are no-store.
+      responses:
+        '200':
+          $ref: '#/components/responses/StarterModuleOk'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/StarterModuleProblem'
+        '503':
+          $ref: '#/components/responses/StarterModuleProblem'
+    post:
+      operationId: selectStarterModule
+      summary: Atomically choose exactly one starter; never switch or create module profiles
+      description: >-
+        Requires stored valid DOB/gender and receipts for current Terms and Privacy
+        versions. Learning/hobbies require age 16+, social requires 18+ and explicit
+        socialOptIn true. Age is recalculated server-side under database locks.
+        Exactly one immutable starter membership per account. Identical retries
+        preserve membership and opt-in timestamps, but revalidate current prerequisites
+        and age. A different choice after selection receives 409. No additional module
+        profiles or memberships are created. Unknown and duplicate JSON fields are
+        rejected; client account IDs, eligibility, policy flags and timestamps are
+        never trusted. All responses use Cache-Control no-store.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StarterModuleSelection'
+            examples:
+              learning:
+                value:
+                  module: learning
+              social:
+                value:
+                  module: social
+                  socialOptIn: true
+      responses:
+        '200':
+          $ref: '#/components/responses/StarterModuleOk'
+        '400':
+          description: Invalid/multiple module selection, missing Social opt-in, opt-in for a non-Social module, or unknown/duplicate fields. No writes; no-store.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/AccountProblem'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Account is not age-eligible for the selected module. No private age/DOB details; no writes; no-store.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/AccountProblem'
+        '404':
+          description: Account has not been initialized. No writes; no-store.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/AccountProblem'
+        '409':
+          description: Missing demographics/current policy receipts, or a different starter already exists. No writes; no-store.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/AccountProblem'
+        '503':
+          description: Required policy metadata or storage is unavailable. Fail closed; no-store.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/AccountProblem'
   /api/v1/account/policies/status:
     get:
       operationId: getAccountPolicyStatus

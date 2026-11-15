@@ -11,7 +11,8 @@ app.UseExceptionHandler();
 // Apply even to authentication challenges, redirects and model-binding failures.
 app.Use(async (context, next) =>
 {
-    if (context.Request.Path.StartsWithSegments("/api/v1/account/policies", StringComparison.OrdinalIgnoreCase))
+    if (context.Request.Path.StartsWithSegments("/api/v1/account/policies", StringComparison.OrdinalIgnoreCase)
+        || context.Request.Path.StartsWithSegments("/api/v1/account/starter-module", StringComparison.OrdinalIgnoreCase))
         context.Response.OnStarting(() =>
         {
             context.Response.Headers.CacheControl = "no-store";
