@@ -5,14 +5,14 @@ builder.Services.AddControllers();
 builder.Services.AddProblemDetails();
 builder.Services.AddSupabaseAuthentication(builder.Configuration);
 builder.Services.AddAccounts(builder.Configuration);
+builder.Services.AddSupabaseIdentityVerification(builder.Configuration);
 
 var app = builder.Build();
 app.UseExceptionHandler();
 // Apply even to authentication challenges, redirects and model-binding failures.
 app.Use(async (context, next) =>
 {
-    if (context.Request.Path.StartsWithSegments("/api/v1/account/policies", StringComparison.OrdinalIgnoreCase)
-        || context.Request.Path.StartsWithSegments("/api/v1/account/starter-module", StringComparison.OrdinalIgnoreCase))
+    if (context.Request.Path.StartsWithSegments("/api/v1/account", StringComparison.OrdinalIgnoreCase))
         context.Response.OnStarting(() =>
         {
             context.Response.Headers.CacheControl = "no-store";
@@ -22,6 +22,8 @@ app.Use(async (context, next) =>
 });
 app.UseHttpsRedirection();
 app.UseAuthentication();
+app.UseRateLimiter();
+app.UseMiddleware<Andril.API.Middleware.ConfirmedAccountIdentityMiddleware>();
 app.UseAuthorization();
 app.MapControllers();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }))

@@ -163,11 +163,13 @@ internal sealed class AuthenticationFactory : WebApplicationFactory<Program>
     private readonly RSA rsa = RSA.Create(2048);
     private readonly string algorithm;
     private readonly bool unavailableKeys;
+    private readonly HttpMessageHandler? identityHandler;
 
-    internal AuthenticationFactory(string algorithm = "ES256", bool unavailableKeys = false)
+    internal AuthenticationFactory(string algorithm = "ES256", bool unavailableKeys = false, HttpMessageHandler? identityHandler = null)
     {
         this.algorithm = algorithm;
         this.unavailableKeys = unavailableKeys;
+        this.identityHandler = identityHandler;
         ClientOptions.BaseAddress = new Uri("https://localhost");
     }
 
@@ -177,10 +179,14 @@ internal sealed class AuthenticationFactory : WebApplicationFactory<Program>
         {
             ["SupabaseAuth:ProjectUrl"] = "https://andril-test.supabase.co",
             ["SupabaseAuth:SigningAlgorithm"] = algorithm,
-            ["SupabaseAuth:Audience"] = "authenticated"
+            ["SupabaseAuth:Audience"] = "authenticated",
+            ["SupabaseIdentity:PublishableKey"] = "sb_publishable_synthetic_test_fixture"
         }));
         builder.ConfigureTestServices(services =>
         {
+            // Exercise real Feature 07 verification against synthetic HTTP evidence; never contact Supabase.
+            services.AddHttpClient<ISupabaseUserVerifier, SupabaseUserVerifier>()
+                .ConfigurePrimaryHttpMessageHandler(() => identityHandler ?? new ConfirmedUserHandler());
             services.AddControllers().AddApplicationPart(typeof(AuthenticationProbeController).Assembly);
             services.PostConfigure<JwtBearerOptions>(JwtBearerDefaults.AuthenticationScheme, options =>
             {
@@ -199,7 +205,7 @@ internal sealed class AuthenticationFactory : WebApplicationFactory<Program>
         });
     }
 
-    internal string Token(string fault = "")
+    internal string Token(string fault = "", Guid? subject = null, IEnumerable<Claim>? extraClaims = null)
     {
         if (fault == "malformed") return "not-a-jwt";
         SecurityKey key = algorithm == "RS256" || fault == "wrong-algorithm"
@@ -219,9 +225,10 @@ internal sealed class AuthenticationFactory : WebApplicationFactory<Program>
         };
         if (fault != "missing-subject")
             claims.Add(new("sub", fault == "invalid-subject" ? "invalid" :
-                fault == "empty-subject" ? Guid.Empty.ToString() : Subject.ToString()));
+                fault == "empty-subject" ? Guid.Empty.ToString() : (subject ?? Subject).ToString()));
         if (fault != "missing-anonymous")
             claims.Add(new("is_anonymous", fault == "anonymous" ? "true" : "false", ClaimValueTypes.Boolean));
+        if (extraClaims is not null) claims.AddRange(extraClaims);
         var now = DateTime.UtcNow;
         var token = new JwtSecurityToken(
             fault == "issuer" ? "https://another.supabase.co/auth/v1" : Issuer,
@@ -246,5 +253,15 @@ internal sealed class AuthenticationFactory : WebApplicationFactory<Program>
             if (unavailable) throw new HttpRequestException("Test key service unavailable.");
             return Task.FromResult(document);
         }
+    }
+
+    private sealed class ConfirmedUserHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = JsonContent.Create(new { id = Subject, aud = "authenticated", role = "authenticated", is_anonymous = false,
+                    email = "synthetic@example.test", email_confirmed_at = "2020-01-01T00:00:00Z" })
+            });
     }
 }
