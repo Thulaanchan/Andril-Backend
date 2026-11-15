@@ -8,6 +8,17 @@ builder.Services.AddAccounts(builder.Configuration);
 
 var app = builder.Build();
 app.UseExceptionHandler();
+// Apply even to authentication challenges, redirects and model-binding failures.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.StartsWithSegments("/api/v1/account/policies", StringComparison.OrdinalIgnoreCase))
+        context.Response.OnStarting(() =>
+        {
+            context.Response.Headers.CacheControl = "no-store";
+            return Task.CompletedTask;
+        });
+    await next(context);
+});
 app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
