@@ -83,6 +83,7 @@ public sealed class OnboardingEndpointTests
         using var app = factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
             services.AddSingleton<IAccountRepository>(store);
+            services.AddSingleton<Andril.Common.Accounts.Profiles.IPrivateProfileRepository>(new MissingProfiles());
             services.AddSingleton<IStarterModuleRepository>(store);
             services.AddSingleton<IPolicyCatalogProvider>(store);
         }));
@@ -131,6 +132,7 @@ public sealed class OnboardingEndpointTests
         using var app = factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
         {
             services.AddSingleton<IAccountRepository>(store);
+            services.AddSingleton<Andril.Common.Accounts.Profiles.IPrivateProfileRepository>(new MissingProfiles());
             services.AddSingleton<IStarterModuleRepository>(store);
             services.AddSingleton<IPolicyCatalogProvider>(store);
         }));
@@ -168,6 +170,16 @@ public sealed class OnboardingEndpointTests
             return Task.FromResult(new StarterModuleState(demographics, Policies, membership));
         }
         public Task<StarterModuleState> SelectAsync(Guid accountId, Func<StarterModuleState, StarterMembership> select, CancellationToken cancellationToken = default) => throw new InvalidOperationException("Unexpected write");
+    }
+
+    private sealed class MissingProfiles : Andril.Common.Accounts.Profiles.IPrivateProfileRepository
+    {
+        public Task<Andril.Common.Accounts.Profiles.PrivateModuleProfile?> ReadAsync(Guid accountId, string module,
+            Action<StarterModuleState> validate, CancellationToken cancellationToken = default) =>
+            Task.FromResult<Andril.Common.Accounts.Profiles.PrivateModuleProfile?>(null);
+        public Task<Andril.Common.Accounts.Profiles.PrivateModuleProfile> GetOrCreateAsync(Guid accountId, string module,
+            Action<StarterModuleState> validate, TimeProvider clock, CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("Status must not create profiles.");
     }
 
     private sealed class IdentityHandler(string mode = "confirmed") : HttpMessageHandler
