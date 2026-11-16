@@ -20,7 +20,7 @@ public sealed record OnboardingProgress(bool IdentityVerified, bool AccountIniti
 public sealed record OnboardingStatus(string NextStep, OnboardingProgress Progress,
     string? SelectedModule = null, string? BlockingDependency = null)
 {
-    // There is no authoritative private profile implementation in this repository yet.
+    // Private identity roots exist, but approved persisted completion fields are pending.
     public bool OnboardingComplete => false;
     public bool ModuleHomeAuthorized => false;
 }
