@@ -8,6 +8,7 @@ namespace Andril.Persistence.DbContexts;
 
 public sealed class AccountsDbContext(DbContextOptions<AccountsDbContext> options) : DbContext(options)
 {
+    public DbSet<Andril.Common.Accounts.Profiles.PrivateModuleProfile> PrivateProfiles => Set<Andril.Common.Accounts.Profiles.PrivateModuleProfile>();
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<AccountLanguagePreference> LanguagePreferences => Set<AccountLanguagePreference>();
     public DbSet<AccountDemographics> Demographics => Set<AccountDemographics>();
@@ -21,5 +22,6 @@ public sealed class AccountsDbContext(DbContextOptions<AccountsDbContext> option
         modelBuilder.ApplyConfiguration(new AccountDemographicsConfiguration());
         modelBuilder.ApplyConfiguration(new AccountPolicyRecordConfiguration());
         modelBuilder.ApplyConfiguration(new StarterMembershipConfiguration());
+        modelBuilder.ApplyConfiguration(new PrivateModuleProfileConfiguration());
     }
 }

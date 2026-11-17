@@ -15,6 +15,16 @@ public static class AccountServiceCollectionExtensions
     public static IServiceCollection AddAccounts(this IServiceCollection services, IConfiguration configuration)
     {
         services.TryAddSingleton(TimeProvider.System);
+        services.AddScoped<Andril.Common.Accounts.Profiles.IProfilePhotoService, Andril.Common.Accounts.Profiles.ProfilePhotoService>();
+        services.AddSingleton<Andril.Common.Accounts.Profiles.IPhotoUploadPolicy, Andril.Common.Accounts.Profiles.UnavailableProfilePhotos>();
+        services.AddSingleton<Andril.Common.Accounts.Profiles.IProfileImageInspector, Andril.Common.Accounts.Profiles.UnavailableProfilePhotos>();
+        services.AddSingleton<Andril.Common.Accounts.Profiles.IProfileFaceValidator, Andril.Common.Accounts.Profiles.UnavailableProfilePhotos>();
+        services.AddSingleton<Andril.Common.Accounts.Profiles.IPrivateProfilePhotoStore, Andril.Common.Accounts.Profiles.UnavailableProfilePhotos>();
+        services.AddScoped<Andril.Common.Accounts.Profiles.IPrivateProfileRepository, PrivateProfileRepository>();
+        services.AddScoped<Andril.Common.Accounts.Profiles.IPrivateProfileService, Andril.Common.Accounts.Profiles.PrivateProfileService>();
+        services.AddScoped<Andril.Common.Accounts.Profiles.IPrivateProfileCompletionReader, Andril.Common.Accounts.Profiles.PrivateProfileCompletionReader>();
+        services.AddScoped<Andril.Common.Accounts.Profiles.IPrivateModuleAccess, Andril.Common.Accounts.Profiles.PrivateModuleAccess>();
+        services.AddExceptionHandler<PrivateProfileExceptionHandler>();
         services.AddScoped<Andril.Common.Accounts.Onboarding.IOnboardingIdentity, Andril.API.Authentication.OnboardingIdentity>();
         services.AddScoped<Andril.Common.Accounts.Onboarding.IOnboardingStatusService, Andril.Common.Accounts.Onboarding.OnboardingStatusService>();
         services.AddExceptionHandler<OnboardingExceptionHandler>();

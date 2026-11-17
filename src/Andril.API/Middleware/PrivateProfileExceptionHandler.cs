@@ -1,0 +1,30 @@
+using Andril.Common.Accounts.Profiles;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Mvc;
+
+namespace Andril.API.Middleware;
+
+public sealed class PrivateProfileExceptionHandler(IProblemDetailsService problems) : IExceptionHandler
+{
+    public async ValueTask<bool> TryHandleAsync(HttpContext context, Exception exception, CancellationToken cancellationToken)
+    {
+        var (status, title) = exception switch
+        {
+            ProfileValidationException => (400, "Invalid private profile request"),
+            ProfileNameConflictException => (409, "Display name unavailable"),
+            PhotoDependencyException => (503, "Private photo validation unavailable"),
+            PhotoUploadInvalidException => (400, "Invalid private photo upload"),
+            PhotoUploadConflictException => (409, "Photo request conflicts with an existing upload"),
+            ProfileMissingException => (404, "Private profile not found"),
+            ProfileAccessDeniedException => (403, "Private profile access denied"),
+            ProfileContractPendingException => (503, "Approved profile contract unavailable"),
+            _ => (0, "")
+        };
+        if (status == 0) return false;
+        context.Response.StatusCode = status;
+        context.Response.Headers.CacheControl = "no-store";
+        await problems.WriteAsync(new ProblemDetailsContext
+        { HttpContext = context, ProblemDetails = new() { Status = status, Title = title } });
+        return true;
+    }
+}

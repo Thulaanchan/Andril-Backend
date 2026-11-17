@@ -1,11 +1,13 @@
 using Andril.Common.Accounts.StarterModules;
+using Andril.Common.Accounts.Profiles;
 using Andril.Shared.Authentication;
 using ModuleNames = Andril.Common.Accounts.StarterModules.StarterModules;
 
 namespace Andril.Common.Accounts.Onboarding;
 
 public sealed class OnboardingStatusService(ICurrentUser user, IOnboardingIdentity identity,
-    IAccountRepository accounts, IStarterModuleService starter) : IOnboardingStatusService
+    IAccountRepository accounts, IStarterModuleService starter,
+    IPrivateProfileCompletionReader? profiles = null) : IOnboardingStatusService
 {
     public async Task<OnboardingStatus> GetAsync(CancellationToken cancellationToken = default)
     {
@@ -40,8 +42,18 @@ public sealed class OnboardingStatusService(ICurrentUser user, IOnboardingIdenti
         else if (!state.Modules.Single(x => x.Module == membership.Module).AgeEligible) next = "age_ineligible";
         else next = "profile_setup";
 
-        // Membership, gallery ownership and questionnaire answers are not private-profile evidence.
-        return new(next, progress, membership?.Module,
-            next == "profile_setup" ? "private_profile_infrastructure" : null);
+        string? dependency = null;
+        if (next == "profile_setup")
+        {
+            dependency = "private_profile_infrastructure";
+            if (profiles is not null)
+            {
+                try { dependency = (await profiles.ReadAsync(membership!.Module, cancellationToken)).BlockingDependency; }
+                // A prerequisite may change between status and the authoritative profile read.
+                catch (ProfileAccessDeniedException) { throw new OnboardingDependencyException(); }
+                catch (StarterModuleAccountMissingException) { throw new OnboardingDependencyException(); }
+            }
+        }
+        return new(next, progress, membership?.Module, dependency);
     }
 }

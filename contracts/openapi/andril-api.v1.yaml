@@ -8,7 +8,9 @@ info:
     Private DOB/gender submission, age eligibility and Screen 09 Terms agreement
     and Privacy acknowledgment are available. Screen 10 supports one starter module
     with age checks and explicit Social opt-in. Later module activation, switching,
-    deactivation and module-profile creation are not implemented here.
+    and deactivation are not implemented here. Owner-only private profile identity roots
+    can be created and draft name/bio fields updated. Photo infrastructure and completion
+    remain blocked pending approved providers and required-field contracts.
     Missing or invalid credentials receive 401 with a Bearer challenge and no token
     details; authenticated users denied by an authorization policy receive 403.
     All /api/v1/account and /api/v1/onboarding operations additionally require a matching confirmed email
@@ -29,7 +31,7 @@ components:
         nextStep:
           type: string
           enum: [initialize_account, complete_demographics, age_ineligible, review_policies, select_starter, profile_setup]
-          description: Derived on every read from server records. age_ineligible blocks progression; profile_setup cannot advance until authoritative private-profile infrastructure exists.
+          description: Derived on every read from server records. age_ineligible blocks progression; profile_setup cannot advance until approved persisted profile fields and completion rules exist.
         progress:
           type: object
           additionalProperties: false
@@ -57,7 +59,7 @@ components:
         blockingDependency:
           type: string
           nullable: true
-          enum: [private_profile_infrastructure, null]
+          enum: [private_profile_infrastructure, private_profile_missing, approved_profile_contract, null]
         onboardingComplete:
           type: boolean
           enum: [false]
@@ -289,6 +291,59 @@ components:
         traceId:
           type: string
   responses:
+    PrivatePhotoStatus:
+      description: Private validation state; automated decisions are not perfectly accurate.
+      headers:
+        Cache-Control:
+          schema: { type: string, enum: [no-store] }
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [uploadId, state, reason]
+            properties:
+              uploadId: { type: string, format: uuid }
+              state: { type: string, enum: [PendingValidation, PendingReview, Rejected, Approved] }
+              reason: { type: string, enum: [None, InvalidImage, NoFace, MultipleFaces, Blurred, Pixelated, Censored, Obstructed, HeavyFilter, ReviewRequired] }
+    PrivateProfileOk:
+      description: Owner-only private identity root; no completion approved.
+      headers:
+        Cache-Control:
+          schema:
+            type: string
+            enum: [no-store]
+      content:
+        application/json:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [profileId, module, createdAtUtc, isComplete, blockingDependency]
+            properties:
+              profileId:
+                type: string
+                format: uuid
+              module:
+                type: string
+                enum: [learning, hobbies, social]
+              createdAtUtc:
+                type: string
+                format: date-time
+              isComplete:
+                type: boolean
+                enum: [false]
+              displayName:
+                type: string
+                nullable: true
+              bio:
+                type: string
+                nullable: true
+              visibility:
+                type: string
+                enum: [private]
+              blockingDependency:
+                type: string
+                enum: [approved_profile_contract]
     EmailConfirmationRequired:
       description: Supabase user evidence does not establish a confirmed email for this subject. No account operation executes.
       headers:
@@ -449,6 +504,157 @@ components:
         and top-level email_confirmed_at through the configured Auth endpoint. This
         does not establish onboarding completion, module eligibility or instant revocation.
 paths:
+  /api/v1/account/profiles/{module}/photos/{uploadId}:
+    parameters:
+      - name: module
+        in: path
+        required: true
+        schema: { type: string, enum: [learning, hobbies, social] }
+      - name: uploadId
+        in: path
+        required: true
+        description: Caller-generated nonempty UUID idempotency key on POST; persisted upload ID on GET.
+        schema: { type: string, format: uuid }
+    post:
+      operationId: validatePrivateProfilePhoto
+      summary: Private photo validation boundary; production infrastructure unavailable
+      description: >-
+        Currently returns 503 after owner authorization, before reading bytes. Requires
+        approved safe decoder, size policy, face-quality validator and durable private
+        store/review queue. No external provider or thresholds are configured. Future
+        enabled workflow accepts bytes only, never client URLs or approval claims.
+        Reusing a key for different content returns 409. No public media URL is returned.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, format: binary }
+      responses:
+        '200':
+          $ref: '#/components/responses/PrivatePhotoStatus'
+        '400': { description: Invalid bytes or request ID; no-store ProblemDetails. }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403': { description: Owner or module prerequisites denied; no-store. }
+        '404': { description: Owned profile missing; no-store. }
+        '409': { description: Idempotency conflict; no-store. }
+        '415': { description: Use application/octet-stream; no-store. }
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
+        '503': { description: Photo infrastructure unavailable; no-store ProblemDetails. }
+    get:
+      operationId: getPrivatePhotoValidationStatus
+      summary: Owner-only scoped photo status; no media bytes or URLs
+      responses:
+        '200':
+          $ref: '#/components/responses/PrivatePhotoStatus'
+        '400': { description: Invalid UUID; no-store. }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403': { description: Owner or module prerequisites denied; no-store. }
+        '404': { description: Profile or scoped upload missing; no-store. }
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
+        '503': { description: Private photo store unavailable; no-store ProblemDetails. }
+  /api/v1/account/profiles/{module}:
+    put:
+      operationId: updatePrivateProfileDraft
+      summary: Replace owner-only draft fields; never completes a profile
+      description: >-
+        Requires existing profile and current owner prerequisites. Names are trimmed and
+        ASCII-case-folded for module/name and account/name uniqueness. Exact retries
+        are idempotent. Allowed characters, reserved names and completion rules remain
+        pending; saving a draft is not approval. Visibility is restricted to private.
+        Unknown/duplicate fields are rejected. Maximum transport body is 16384 bytes.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [displayName, bio, visibility]
+              properties:
+                displayName: { type: string }
+                bio: { type: string, nullable: true }
+                visibility: { type: string, enum: [private] }
+      responses:
+        '200':
+          $ref: '#/components/responses/PrivateProfileOk'
+        '400': { description: Invalid draft; no-store ProblemDetails. }
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403': { description: Profile prerequisites denied; no-store ProblemDetails. }
+        '404': { description: Account or profile missing; no-store ProblemDetails. }
+        '409': { description: Display name unavailable; no-store ProblemDetails. }
+        '413': { description: Transport size limit exceeded. }
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
+        '503':
+          $ref: '#/components/responses/AccountUnavailable'
+    parameters:
+      - name: module
+        in: path
+        required: true
+        schema:
+          type: string
+          enum: [learning, hobbies, social]
+    get:
+      operationId: getPrivateModuleProfile
+      summary: Read only the caller's selected eligible module identity root
+      description: >-
+        Requires fresh confirmed Supabase identity, owned account, selected membership,
+        current demographics and policies, module age eligibility and Social opt-in.
+        Never returns account IDs, other module identities or public media URLs.
+      responses:
+        '200':
+          $ref: '#/components/responses/PrivateProfileOk'
+        '400':
+          description: Invalid canonical module. No-store ProblemDetails.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Unconfirmed identity or failed profile prerequisites. No-store ProblemDetails.
+        '404':
+          description: Caller account or eligible private profile missing. No-store ProblemDetails.
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
+        '503':
+          $ref: '#/components/responses/AccountUnavailable'
+    post:
+      operationId: createPrivateModuleProfile
+      summary: Idempotently create only the selected module's private identity root
+      description: >-
+        Same prerequisites as GET. Send exactly an empty JSON object. All fields,
+        including accountId, profileId, displayName and isComplete, are rejected.
+        Retries preserve ID and timestamp. This does not complete onboarding.
+        Use PUT for draft display name and bio. Completion rules remain PENDING;
+        no PATCH profile API is available.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              maxProperties: 0
+      responses:
+        '200':
+          $ref: '#/components/responses/PrivateProfileOk'
+        '400':
+          description: Invalid module, nonempty object or malformed JSON. No-store ProblemDetails.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Unconfirmed identity or failed profile prerequisites. No-store ProblemDetails.
+        '404':
+          description: Caller account missing. No-store ProblemDetails.
+        '413':
+          description: Request exceeds 1024 bytes. No-store.
+        '429':
+          $ref: '#/components/responses/AccountIdentityRateLimited'
+        '503':
+          $ref: '#/components/responses/AccountUnavailable'
   /api/v1/onboarding/status:
     get:
       operationId: getOnboardingStatus
