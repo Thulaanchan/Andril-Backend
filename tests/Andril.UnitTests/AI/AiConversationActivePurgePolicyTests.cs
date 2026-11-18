@@ -19,6 +19,8 @@ public sealed class AiConversationActivePurgePolicyTests
     [Fact]
     public void Target_IsTwentyFourHours()
     {
+        Assert.Same(typeof(AiConversationEntity).Assembly,
+            typeof(AiConversationRetentionPolicy).Assembly);
         Assert.Equal(TimeSpan.FromHours(24),
             AiConversationRetentionPolicy.ActiveDataPurgeTarget);
         Assert.Equal(TimeSpan.FromHours(24),

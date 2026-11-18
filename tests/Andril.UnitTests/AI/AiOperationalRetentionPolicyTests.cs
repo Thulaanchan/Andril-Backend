@@ -359,12 +359,10 @@ public sealed class AiOperationalRetentionPolicyTests
     [Fact]
     public void H_ProductionConversationAndConsentPolicies_RemainIndependent()
     {
-        // Existing test source shadows AiConversationRetentionPolicy in the SAME namespace.
-        // Resolve by the actual domain assembly so this test cannot exercise that shadow copy.
         var assembly = typeof(AiConversationEntity).Assembly;
-        var productionRetention = assembly.GetType("Andril.AI.Policies.AiConversationRetentionPolicy", throwOnError: true)!;
+        Assert.Same(assembly, typeof(AiConversationRetentionPolicy).Assembly);
         Assert.Equal(assembly, typeof(AiOperationalRetentionPolicy).Assembly);
-        Assert.Equal(TimeSpan.FromHours(24), (TimeSpan)productionRetention.GetProperty("ActiveDataPurgeTarget")!.GetValue(null)!);
+        Assert.Equal(TimeSpan.FromHours(24), AiConversationRetentionPolicy.ActiveDataPurgeTarget);
         Assert.Equal(Anchor.AddDays(14), AiContextualConsentPolicy.AuditExpiresAt(Anchor));
         Assert.Equal(Anchor.AddDays(14), AiConversationExpiryPolicy.GetExpiresAtUtc(Anchor));
         var actor = Operation().Actor;
@@ -373,8 +371,8 @@ public sealed class AiOperationalRetentionPolicyTests
         Evaluate(Record(AiOperationalCategory.Billing));
         Assert.Equal(expiry, conversation.ExpiresAtUtc);
         conversation.MarkDeleted(Anchor.AddHours(1));
-        Assert.True((bool)productionRetention.GetMethod("MustHideFromHistory")!.Invoke(null, new object[] { conversation, Anchor.AddHours(1) })!);
-        Assert.Equal(Anchor.AddHours(25), (DateTimeOffset?)productionRetention.GetMethod("GetActivePurgeTargetUtc")!.Invoke(null, new object[] { conversation, Anchor.AddHours(1) }));
+        Assert.True(AiConversationRetentionPolicy.MustHideFromHistory(conversation, Anchor.AddHours(1)));
+        Assert.Equal(Anchor.AddHours(25), AiConversationRetentionPolicy.GetActivePurgeTargetUtc(conversation, Anchor.AddHours(1)));
         Assert.False(AiContextualConsentPolicy.CanStart(null, null!, null));
     }
 
