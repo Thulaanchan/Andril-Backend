@@ -1,0 +1,179 @@
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using Andril.AI.ChatBox;
+using Andril.AI.Policies;
+
+namespace Andril.AI.Interfaces;
+
+/// <summary>
+/// Local, read-only full-request measurement before admission; no operation or attempt required.
+/// Implementations must use a trusted server-selected model and pinned framing/tokenizer
+/// configuration, count system/history/current input and all model-visible overhead, and honor
+/// cancellation. Never dispatch generation, send content to a counting service, persist prompts,
+/// load cross-conversation context, log content, or treat measurement as authorization.
+/// Unknown models/configurations and unavailable/unreliable counts return explicit non-success.
+/// No real tokenizer, provider support or conservative estimation strategy is supplied here.
+/// </summary>
+public interface IAiTokenCounter
+{
+    Task<AiTokenCountResult> CountAsync(AiTokenCountRequest request,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
+/// Immutable text-only request snapshot, not a serialized provider request or authorization proof.
+/// The caller supplies freshly authorized recent same-conversation history EXCLUDING the current
+/// input; construction appends the current user message once. Equal historical text is legitimate.
+/// Character validation, history selection and scope authorization remain existing policy duties.
+/// FramingRevision selects an independently trusted local configuration accounting for ALL framing,
+/// settings and other billable input. Unsupported configurations must fail closed in the counter.
+/// JSON below is only a binding format: its byte length is NEVER a provider token count.
+/// Changing model/framing/payload requires a new snapshot and measurement, including after any
+/// future adapter rendering change. Neither nonempty model names nor fingerprints prove trust.
+/// </summary>
+public sealed class AiTokenCountRequest
+{
+    public string Model { get; }
+    public string FramingRevision { get; }
+    public string SystemInstructions { get; }
+    public IReadOnlyList<AiPromptMessage> Messages { get; }
+    public int CurrentUserMessageIndex => Messages.Count - 1;
+    public int MaxBillableOutputTokens => AiPrototypeLimits.MaxOutputTokens;
+    public string? SourcePromptFingerprint { get; }
+    public string Fingerprint { get; }
+
+    public AiTokenCountRequest(string model, string framingRevision, string systemInstructions,
+        IReadOnlyList<AiPromptMessage> history, string currentUserText)
+        : this(model, framingRevision, systemInstructions, history, currentUserText, null) { }
+
+    private AiTokenCountRequest(string model, string framingRevision, string systemInstructions,
+        IReadOnlyList<AiPromptMessage> history, string currentUserText, string? sourcePromptFingerprint)
+    {
+        RequireIdentifier(model, nameof(model));
+        RequireIdentifier(framingRevision, nameof(framingRevision));
+        if (string.IsNullOrWhiteSpace(systemInstructions) || string.IsNullOrWhiteSpace(currentUserText))
+            throw new ArgumentException("Nonempty AI text input is required.");
+        ArgumentNullException.ThrowIfNull(history);
+        var snapshot = history.ToArray();
+        if (snapshot.Any(message => message is null ||
+            !Enum.IsDefined(message.Role) || string.IsNullOrWhiteSpace(message.Text)))
+            throw new ArgumentException("Invalid AI message history.", nameof(history));
+
+        Model = model;
+        FramingRevision = framingRevision;
+        SystemInstructions = systemInstructions;
+        SourcePromptFingerprint = sourcePromptFingerprint;
+        Messages = Array.AsReadOnly(snapshot
+            .Append(new AiPromptMessage(AiStoredMessageRole.User, currentUserText)).ToArray());
+        var binding = JsonSerializer.Serialize(new
+        {
+            Version = "andril-token-request-v1", Model, FramingRevision, SourcePromptFingerprint,
+            SystemInstructions, Messages, MaxBillableOutputTokens
+        });
+        Fingerprint = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(binding)));
+    }
+
+    /// <summary>Reuses existing structured prompt and retains its scoped fingerprint. This
+    /// convenience path does not require admission; the direct constructor also supports an
+    /// unsaved current message. Neither path changes the existing prompt factory or its policies.</summary>
+    public static AiTokenCountRequest FromPrompt(string model, string framingRevision, AiConstructedPrompt prompt)
+    {
+        ArgumentNullException.ThrowIfNull(prompt);
+        if (prompt.Messages.Count == 0 || prompt.Messages[^1].Role != AiStoredMessageRole.User ||
+            string.IsNullOrWhiteSpace(prompt.Fingerprint))
+            throw new ArgumentException("Invalid AI structured prompt.", nameof(prompt));
+        return new(model, framingRevision, prompt.SystemInstructions,
+            prompt.Messages.Take(prompt.Messages.Count - 1).ToArray(), prompt.Messages[^1].Text,
+            prompt.Fingerprint);
+    }
+
+    private static void RequireIdentifier(string value, string parameter)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value != value.Trim() || value.Any(char.IsControl))
+            throw new ArgumentException("An AI counting configuration identifier is required.", parameter);
+    }
+
+    public override string ToString() => "AI token request [private content and binding omitted]";
+}
+
+public enum AiTokenCountState
+{
+    Unknown, Measured, Estimated, UnsupportedModel, UnsupportedConfiguration, Unavailable, Unreliable
+}
+
+/// <summary>Provenance identifiers refer to a trusted local counter/version/configuration.
+/// Their presence is structural evidence only, not authentication of the counting algorithm.</summary>
+public sealed record AiTokenCountProvenance(string CounterId, string CounterRevision, string FramingRevision)
+{
+    public override string ToString() => "AI token provenance [configuration omitted]";
+}
+
+/// <summary>Only Measured may carry existing AiTokenEvidence. Estimated means only an estimate
+/// is available: it intentionally exposes no usable numeric evidence and cannot authorize paid
+/// execution. A future approved conservative strategy needs a separately reviewed contract.
+/// Evidence and provenance must come from a trusted counter, never client/provider claims.</summary>
+public sealed record AiTokenCountResult(AiTokenCountState State, AiTokenEvidence? Evidence = null,
+    AiTokenCountProvenance? Provenance = null)
+{
+    public override string ToString() => "AI token result [measurement details omitted]";
+}
+
+public enum AiTokenCountValidationOutcome
+{
+    Invalid, ValidMeasurement, EstimateNotAccepted, UnsupportedModel, UnsupportedConfiguration,
+    Unavailable, Unreliable
+}
+
+/// <summary>Deterministic contract checks, not proof of tokenizer accuracy or provider support.
+/// Reuses AiBudgetPolicy for components, overflow-safe totals, full-request verification and
+/// approved token ceilings. No character heuristic, estimation margin or new authorization.
+/// Consumers must independently establish counter/model/configuration trust and retain this
+/// exact immutable request through adapter rendering. ValidMeasurement grants no execution.</summary>
+public static class AiTokenCountContract
+{
+    public static AiTokenCountValidationOutcome Validate(AiTokenCountRequest? request, AiTokenCountResult? result)
+    {
+        if (request is null || result is null || !Enum.IsDefined(result.State) || result.State == AiTokenCountState.Unknown)
+            return AiTokenCountValidationOutcome.Invalid;
+        var provenance = result.Provenance;
+        if (provenance is not null && (string.IsNullOrWhiteSpace(provenance.CounterId) ||
+            string.IsNullOrWhiteSpace(provenance.CounterRevision) || provenance.FramingRevision != request.FramingRevision))
+            return AiTokenCountValidationOutcome.Invalid;
+        if (result.State != AiTokenCountState.Measured)
+        {
+            // A failure or unapproved estimate cannot smuggle usable numeric evidence.
+            if (result.Evidence is not null) return AiTokenCountValidationOutcome.Invalid;
+            return result.State switch
+            {
+                AiTokenCountState.Estimated => AiTokenCountValidationOutcome.EstimateNotAccepted,
+                AiTokenCountState.UnsupportedModel => AiTokenCountValidationOutcome.UnsupportedModel,
+                AiTokenCountState.UnsupportedConfiguration => AiTokenCountValidationOutcome.UnsupportedConfiguration,
+                AiTokenCountState.Unavailable => AiTokenCountValidationOutcome.Unavailable,
+                AiTokenCountState.Unreliable => AiTokenCountValidationOutcome.Unreliable,
+                _ => AiTokenCountValidationOutcome.Invalid
+            };
+        }
+        var evidence = result.Evidence;
+        return provenance is not null && AiBudgetPolicy.ValidTokens(evidence, request.Model) &&
+            evidence!.RequestFingerprint == request.Fingerprint &&
+            evidence.MaxBillableOutputTokens == request.MaxBillableOutputTokens
+            ? AiTokenCountValidationOutcome.ValidMeasurement : AiTokenCountValidationOutcome.Invalid;
+    }
+
+    /// <summary>Fail-closed consumer for callers needing verified-shaped numeric evidence.
+    /// Cancellation before/after the counter prevents returning success; no fallback or retry.
+    /// The selected counter must still be independently trusted. No tokenizer is implemented.</summary>
+    public static async Task<AiTokenEvidence> CountVerifiedAsync(IAiTokenCounter counter,
+        AiTokenCountRequest request, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(counter);
+        ArgumentNullException.ThrowIfNull(request);
+        cancellationToken.ThrowIfCancellationRequested();
+        var result = await counter.CountAsync(request, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (Validate(request, result) != AiTokenCountValidationOutcome.ValidMeasurement)
+            throw new InvalidOperationException("Reliable AI token measurement is unavailable.");
+        return result.Evidence!;
+    }
+}
