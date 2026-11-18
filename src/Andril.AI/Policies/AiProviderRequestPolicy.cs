@@ -1,6 +1,7 @@
 using System.Globalization;
 using Andril.AI.ChatBox;
 using Andril.AI.Interfaces;
+using Andril.AI.Providers.OpenAi;
 
 namespace Andril.AI.Policies;
 
@@ -68,7 +69,7 @@ public sealed class AiProviderRequestCandidate
 public enum AiProviderRequestValidationOutcome
 {
     InvalidRequest, ValidatedCandidate, RequestBindingMismatch, TokenEvidenceUnavailable,
-    TokenLimitExceeded, UnsupportedExecutionSettings
+    TokenLimitExceeded, UnsupportedExecutionSettings, PreparedCandidate
 }
 
 /// <summary>
@@ -79,10 +80,12 @@ public enum AiProviderRequestValidationOutcome
 /// context, count tokens, persist, log, reserve money/quota, call a provider or authorize dispatch.
 ///
 /// Only text, explicit non-storing, no hosted conversation, no tools and no automatic redispatch
-/// are supported. Since this is one closed settings tuple, no second fingerprint convention is
-/// introduced. A future adapter must pin these settings to the measured framing configuration,
-/// verify its exact serialized model-visible request and refuse added/changed options or framing.
-/// This policy cannot verify provider wire framing, retention, model support or tokenizer accuracy.
+/// are supported. The existing exact-byte SHA-256 is carried by the immutable OpenAI preparation
+/// and measurement binding; the logical fingerprint algorithm remains unchanged. Generic token
+/// contracts have no OpenAI dependency. This policy deliberately accepts only the current concrete
+/// serializer's sealed preparation, ensuring callers cannot substitute self-described JSON bytes.
+/// It compares pinned framing/configuration but cannot prove provider framing accuracy, retention,
+/// model availability or tokenizer accuracy. Live provider defaults still require separate review.
 /// Any serialization/settings change requires appropriate new binding/measurement before execution.
 /// ValidatedCandidate means structural eligibility for further checks only: fresh authorization,
 /// privacy, operation/attempt, quota, budget, safety, consent and delivery gates remain mandatory.
@@ -90,7 +93,31 @@ public enum AiProviderRequestValidationOutcome
 public static class AiProviderRequestPolicy
 {
     public static AiProviderRequestValidationOutcome Validate(AiTokenCountRequest? intended,
-        AiProviderRequestCandidate? candidate, AiTokenCountResult? measurement)
+        AiProviderRequestCandidate? candidate, AiTokenCountResult? measurement,
+        OpenAiPreparedResponsesRequest? prepared = null)
+    {
+        var preparation = ValidatePreparation(intended, candidate);
+        if (preparation != AiProviderRequestValidationOutcome.PreparedCandidate) return preparation;
+        // A generic byte snapshot cannot certify OpenAI schema correspondence. Require the sealed
+        // serializer-produced representation (internal construction), not caller-asserted hashes.
+        if (prepared is null) return AiProviderRequestValidationOutcome.TokenEvidenceUnavailable;
+        if (!prepared.MatchesRequest(intended!, candidate!))
+            return AiProviderRequestValidationOutcome.RequestBindingMismatch;
+        var outcome = AiTokenCountContract.Validate(intended, measurement, prepared.MeasurementPayload);
+        if (outcome != AiTokenCountValidationOutcome.ValidMeasurement)
+        {
+            return measurement?.State == AiTokenCountState.Measured &&
+                measurement.Evidence?.FullInputTokens > AiPrototypeLimits.MaxInputTokens
+                ? AiProviderRequestValidationOutcome.TokenLimitExceeded
+                : AiProviderRequestValidationOutcome.TokenEvidenceUnavailable;
+        }
+        return AiProviderRequestValidationOutcome.ValidatedCandidate;
+    }
+
+    /// <summary>Read-only premeasurement structural comparison, never ValidatedCandidate or dispatch
+    /// permission. Shared by the serializer and final validation to avoid circular prerequisites.</summary>
+    public static AiProviderRequestValidationOutcome ValidatePreparation(AiTokenCountRequest? intended,
+        AiProviderRequestCandidate? candidate)
     {
         if (intended is null || candidate is null || string.IsNullOrWhiteSpace(candidate.Model) ||
             string.IsNullOrWhiteSpace(candidate.FramingRevision) || string.IsNullOrWhiteSpace(candidate.SystemInstructions) ||
@@ -125,16 +152,6 @@ public static class AiProviderRequestPolicy
             !messages.SequenceEqual(intended.Messages))
             return AiProviderRequestValidationOutcome.RequestBindingMismatch;
 
-        var outcome = AiTokenCountContract.Validate(intended, measurement);
-        if (outcome != AiTokenCountValidationOutcome.ValidMeasurement)
-        {
-            // Classify a limit rejection already made by the token contract; all other missing,
-            // malformed, unsupported, estimated or unreliable evidence remains non-success.
-            return measurement?.State == AiTokenCountState.Measured &&
-                measurement.Evidence?.FullInputTokens > AiPrototypeLimits.MaxInputTokens
-                ? AiProviderRequestValidationOutcome.TokenLimitExceeded
-                : AiProviderRequestValidationOutcome.TokenEvidenceUnavailable;
-        }
-        return AiProviderRequestValidationOutcome.ValidatedCandidate;
+        return AiProviderRequestValidationOutcome.PreparedCandidate;
     }
 }

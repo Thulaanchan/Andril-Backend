@@ -1,3 +1,5 @@
+using System.Text.Json;
+using Andril.AI.Providers.OpenAi;
 using Andril.AI.ChatBox;
 using Andril.AI.Interfaces;
 using Andril.AI.Persistence;
@@ -12,16 +14,27 @@ public sealed class AiProviderRequestPolicyTests
     private static AiProviderExecutionSettings Settings() =>
         new(false, false, AiTextOutputKind.Text, AiProviderCapabilities.None, false);
     private static AiTokenCountRequest Request(string current = "Current private question") =>
-        new("synthetic-model", "synthetic-framing-v1", "Trusted system instructions",
+        new(OpenAiResponsesRequestSerializer.ApprovedModel, OpenAiResponsesRequestSerializer.SerializationRevision, "Trusted system instructions",
             new[] { new AiPromptMessage(AiStoredMessageRole.User, "Earlier private question"),
                 new AiPromptMessage(AiStoredMessageRole.Assistant, "Earlier private answer") }, current);
     private static AiTokenCountResult Measurement(AiTokenCountRequest request, int total = 500) =>
         new(AiTokenCountState.Measured,
             new AiTokenEvidence(request.Model, request.Fingerprint, 100, 100, 100, 100, total - 400,
                 total, request.MaxBillableOutputTokens, true, true),
-            new AiTokenCountProvenance("synthetic-counter", "fixture-v1", request.FramingRevision));
+            new AiTokenCountProvenance("synthetic-counter", "fixture-v1", request.FramingRevision), Payload(request).Binding);
     private static AiProviderRequestCandidate Candidate(AiTokenCountRequest request) =>
         AiProviderRequestCandidate.FromMeasuredRequest(request, Settings());
+
+    private static OpenAiPreparedResponsesRequest? Prepared(AiTokenCountRequest request) =>
+        AiProviderRequestPolicy.ValidatePreparation(request, Candidate(request)) == AiProviderRequestValidationOutcome.PreparedCandidate
+            ? OpenAiResponsesRequestSerializer.Prepare(request, Candidate(request)) : null;
+    private static AiPreparedProviderPayload Payload(AiTokenCountRequest request) =>
+        Prepared(request)?.MeasurementPayload ?? new(request,
+            JsonSerializer.SerializeToUtf8Bytes(new { request.SystemInstructions, request.Messages }),
+            "synthetic-invalid-character-fixture");
+    private static AiProviderRequestValidationOutcome ValidateBound(AiTokenCountRequest? request,
+        AiProviderRequestCandidate? candidate, AiTokenCountResult? result) =>
+        AiProviderRequestPolicy.Validate(request, candidate, result, request is null ? null : Prepared(request));
 
     [Fact]
     public void ValidSyntheticCandidate_PreservesStructuredRequestWithoutAppendingCurrentAgain()
@@ -30,7 +43,7 @@ public sealed class AiProviderRequestPolicyTests
         var candidate = Candidate(request);
         Assert.Same(typeof(AiPromptFactory).Assembly, typeof(AiProviderRequestPolicy).Assembly);
         Assert.Equal(AiProviderRequestValidationOutcome.ValidatedCandidate,
-            AiProviderRequestPolicy.Validate(request, candidate, Measurement(request)));
+            ValidateBound(request, candidate, Measurement(request)));
         Assert.Equal(request.Messages, candidate.Messages);
         Assert.Equal(new[] { AiStoredMessageRole.User, AiStoredMessageRole.Assistant, AiStoredMessageRole.User },
             candidate.Messages!.Select(message => message.Role));
@@ -52,19 +65,19 @@ public sealed class AiProviderRequestPolicyTests
         var conversation = AiConversationEntity.CreateForFirstUserMessage(actor, operation, now);
         var user = AiMessageEntity.CreateUserMessage(conversation, actor, operation, "Hello", now);
         var prompt = AiPromptFactory.Create(actor, conversation, new[] { user }, user.Id, now, 1, _ => 100);
-        var request = AiTokenCountRequest.FromPrompt("synthetic-model", "synthetic-framing-v1", prompt);
+        var request = AiTokenCountRequest.FromPrompt(OpenAiResponsesRequestSerializer.ApprovedModel, OpenAiResponsesRequestSerializer.SerializationRevision, prompt);
         var candidate = Candidate(request);
         Assert.Equal(prompt.Fingerprint, candidate.SourcePromptFingerprint);
         Assert.Equal(request.Fingerprint, candidate.RequestFingerprint);
         Assert.NotEqual(candidate.SourcePromptFingerprint, candidate.RequestFingerprint);
         Assert.Equal(AiProviderRequestValidationOutcome.ValidatedCandidate,
-            AiProviderRequestPolicy.Validate(request, candidate, Measurement(request)));
+            ValidateBound(request, candidate, Measurement(request)));
         // Synthetic actors are not eligibility evidence; this policy grants no module access.
         var wrongLogicalBinding = new AiProviderRequestCandidate(candidate.Model, candidate.FramingRevision,
             candidate.SystemInstructions, candidate.Messages, candidate.MaxBillableOutputTokens,
             candidate.RequestFingerprint, candidate.Settings, "different-logical-prompt");
         Assert.Equal(AiProviderRequestValidationOutcome.RequestBindingMismatch,
-            AiProviderRequestPolicy.Validate(request, wrongLogicalBinding, Measurement(request)));
+            ValidateBound(request, wrongLogicalBinding, Measurement(request)));
     }
 
     [Theory]
@@ -96,7 +109,7 @@ public sealed class AiProviderRequestPolicyTests
             change == "fingerprint" ? "wrong" : change == "missing-fingerprint" ? null : request.Fingerprint,
             Settings(), change == "source-fingerprint" ? "invented" : request.SourcePromptFingerprint);
         Assert.Equal(AiProviderRequestValidationOutcome.RequestBindingMismatch,
-            AiProviderRequestPolicy.Validate(request, candidate, Measurement(request)));
+            ValidateBound(request, candidate, Measurement(request)));
     }
 
     [Theory]
@@ -111,7 +124,7 @@ public sealed class AiProviderRequestPolicyTests
         var request = Request();
         var candidate = new AiProviderRequestCandidate(request.Model, request.FramingRevision,
             request.SystemInstructions, request.Messages, output, request.Fingerprint, Settings());
-        Assert.Equal(expected, AiProviderRequestPolicy.Validate(request, candidate, Measurement(request)));
+        Assert.Equal(expected, ValidateBound(request, candidate, Measurement(request)));
         Assert.Equal(500, AiPrototypeLimits.MaxOutputTokens);
     }
 
@@ -125,9 +138,9 @@ public sealed class AiProviderRequestPolicyTests
     {
         var request = Request();
         var measurement = Measurement(request, total);
-        Assert.Equal(expected, AiProviderRequestPolicy.Validate(request, Candidate(request), measurement));
+        Assert.Equal(expected, ValidateBound(request, Candidate(request), measurement));
         Assert.Equal(expected == AiProviderRequestValidationOutcome.ValidatedCandidate,
-            AiTokenCountContract.Validate(request, measurement) == AiTokenCountValidationOutcome.ValidMeasurement);
+            AiTokenCountContract.Validate(request, measurement, Payload(request)) == AiTokenCountValidationOutcome.ValidMeasurement);
     }
 
     [Theory]
@@ -160,7 +173,7 @@ public sealed class AiProviderRequestPolicyTests
             _ => result with { Evidence = evidence with { MaxBillableOutputTokens = 501 } }
         };
         Assert.Equal(AiProviderRequestValidationOutcome.TokenEvidenceUnavailable,
-            AiProviderRequestPolicy.Validate(request, Candidate(request), result));
+            ValidateBound(request, Candidate(request), result));
     }
 
     [Theory]
@@ -175,7 +188,7 @@ public sealed class AiProviderRequestPolicyTests
     {
         var request = Request();
         Assert.Equal(AiProviderRequestValidationOutcome.TokenEvidenceUnavailable,
-            AiProviderRequestPolicy.Validate(request, Candidate(request), new AiTokenCountResult(state)));
+            ValidateBound(request, Candidate(request), new AiTokenCountResult(state)));
     }
 
     [Theory]
@@ -230,7 +243,7 @@ public sealed class AiProviderRequestPolicyTests
         var request = Request();
         var candidate = AiProviderRequestCandidate.FromMeasuredRequest(request, settings);
         Assert.Equal(AiProviderRequestValidationOutcome.UnsupportedExecutionSettings,
-            AiProviderRequestPolicy.Validate(request, candidate, Measurement(request)));
+            ValidateBound(request, candidate, Measurement(request)));
     }
 
     [Theory]
@@ -260,7 +273,7 @@ public sealed class AiProviderRequestPolicyTests
             defect == "system" ? " " : request.SystemInstructions, messages, request.MaxBillableOutputTokens,
             request.Fingerprint, Settings());
         Assert.Equal(AiProviderRequestValidationOutcome.InvalidRequest,
-            AiProviderRequestPolicy.Validate(defect == "intended" ? null : request,
+            ValidateBound(defect == "intended" ? null : request,
                 defect == "candidate" ? null : candidate, Measurement(request)));
         Assert.Throws<ArgumentNullException>(() => AiProviderRequestCandidate.FromMeasuredRequest(null!, Settings()));
     }
@@ -272,9 +285,9 @@ public sealed class AiProviderRequestPolicyTests
     {
         var request = Request(new string('x', characters));
         Assert.Equal(AiTokenCountValidationOutcome.ValidMeasurement,
-            AiTokenCountContract.Validate(request, Measurement(request)));
+            AiTokenCountContract.Validate(request, Measurement(request), Payload(request)));
         Assert.Equal(valid ? AiProviderRequestValidationOutcome.ValidatedCandidate : AiProviderRequestValidationOutcome.InvalidRequest,
-            AiProviderRequestPolicy.Validate(request, Candidate(request), Measurement(request)));
+            ValidateBound(request, Candidate(request), Measurement(request)));
     }
 
     [Fact]
@@ -289,7 +302,7 @@ public sealed class AiProviderRequestPolicyTests
         Assert.Equal(request.Messages, candidate.Messages);
         Assert.Throws<NotSupportedException>(() => ((IList<AiPromptMessage>)candidate.Messages!).Clear());
         Assert.Equal(AiProviderRequestValidationOutcome.ValidatedCandidate,
-            AiProviderRequestPolicy.Validate(request, candidate, Measurement(request)));
+            ValidateBound(request, candidate, Measurement(request)));
     }
 
     [Fact]
@@ -301,12 +314,102 @@ public sealed class AiProviderRequestPolicyTests
         var originalEvidence = measurement.Evidence;
         for (var i = 0; i < 2; i++)
             Assert.Equal(AiProviderRequestValidationOutcome.ValidatedCandidate,
-                AiProviderRequestPolicy.Validate(request, candidate, measurement));
+                ValidateBound(request, candidate, measurement));
         Assert.Equal("Trusted system instructions", candidate.SystemInstructions);
         Assert.Equal(request.Messages[^1].Text, candidate.Messages![^1].Text);
         Assert.Same(originalEvidence, measurement.Evidence);
         Assert.Equal(Settings(), candidate.Settings);
         // Result is only an enum; no dispatch, financial mutation or persistence API is invoked.
+    }
+
+    [Theory]
+    [InlineData("missing-prepared")]
+    [InlineData("missing-binding")]
+    [InlineData("missing-digest")]
+    [InlineData("malformed-digest")]
+    [InlineData("other-payload")]
+    [InlineData("changed-wire-settings")]
+    [InlineData("changed-configuration")]
+    [InlineData("changed-output")]
+    [InlineData("changed-framing")]
+    [InlineData("changed-model")]
+    public void FinalValidationRequiresTheExactPreparedAndMeasuredPayload(string defect)
+    {
+        var request = Request();
+        var candidate = Candidate(request);
+        var prepared = Prepared(request)!;
+        var measurement = Measurement(request);
+        var binding = measurement.PayloadBinding!;
+        var expected = AiProviderRequestValidationOutcome.TokenEvidenceUnavailable;
+        if (defect == "missing-prepared") prepared = null;
+        if (defect == "missing-binding") measurement = measurement with { PayloadBinding = null };
+        if (defect == "missing-digest") measurement = measurement with { PayloadBinding = binding with { PayloadSha256 = null! } };
+        if (defect == "malformed-digest") measurement = measurement with { PayloadBinding = binding with { PayloadSha256 = "not-sha256" } };
+        if (defect == "other-payload")
+        {
+            prepared = Prepared(Request("different measured payload"));
+            expected = AiProviderRequestValidationOutcome.RequestBindingMismatch;
+        }
+        if (defect == "changed-wire-settings")
+        {
+            // Even a freshly computed digest for altered JSON cannot replace the serializer snapshot.
+            var bytes = prepared!.CopyUtf8Payload();
+            var wire = System.Text.Encoding.UTF8.GetString(bytes).Replace("\"stream\":false", "\"stream\":true", StringComparison.Ordinal);
+            var changed = new AiPreparedProviderPayload(request, System.Text.Encoding.UTF8.GetBytes(wire), binding.ExecutionConfiguration);
+            Assert.False(prepared.MatchesPayload(changed.CopyUtf8Payload()));
+            measurement = measurement with { PayloadBinding = changed.Binding };
+        }
+        if (defect == "changed-configuration") measurement = measurement with { PayloadBinding = binding with { ExecutionConfiguration = "new-reasoning-tier-cache-defaults" } };
+        if (defect == "changed-output") measurement = measurement with { PayloadBinding = binding with { MaxBillableOutputTokens = 250 } };
+        if (defect == "changed-framing") measurement = measurement with { PayloadBinding = binding with { FramingRevision = "new-framing" } };
+        if (defect == "changed-model") measurement = measurement with { PayloadBinding = binding with { Model = "unapproved-model" } };
+        Assert.Equal(expected, AiProviderRequestPolicy.Validate(request, candidate, measurement, prepared));
+    }
+
+    [Theory]
+    [InlineData("system")]
+    [InlineData("current")]
+    [InlineData("history")]
+    [InlineData("role")]
+    [InlineData("order")]
+    public void FreshSerializationOfChangedLogicalRequestCannotReuseOldMeasurement(string change)
+    {
+        var original = Request();
+        var history = original.Messages.Take(2).ToArray();
+        if (change == "history") history[0] = history[0] with { Text = "changed history" };
+        if (change == "role") history[1] = history[1] with { Role = AiStoredMessageRole.User };
+        if (change == "order") (history[0], history[1]) = (history[1], history[0]);
+        var changed = new AiTokenCountRequest(original.Model, original.FramingRevision,
+            change == "system" ? "changed system" : original.SystemInstructions, history,
+            change == "current" ? "changed current" : original.Messages[^1].Text);
+        var prepared = Prepared(changed)!;
+        Assert.NotEqual(Prepared(original)!.PayloadSha256, prepared.PayloadSha256);
+        Assert.Equal(AiProviderRequestValidationOutcome.TokenEvidenceUnavailable,
+            AiProviderRequestPolicy.Validate(changed, Candidate(changed), Measurement(original), prepared));
+    }
+
+    [Fact]
+    public void PremeasurementPreparationCannotBecomeValidatedCandidateViaLegacyCall()
+    {
+        var request = Request();
+        var candidate = Candidate(request);
+        Assert.Equal(AiProviderRequestValidationOutcome.PreparedCandidate,
+            AiProviderRequestPolicy.ValidatePreparation(request, candidate));
+        Assert.Equal(AiProviderRequestValidationOutcome.TokenEvidenceUnavailable,
+            AiProviderRequestPolicy.Validate(request, candidate, Measurement(request)));
+        Assert.Equal(AiProviderRequestValidationOutcome.ValidatedCandidate,
+            AiProviderRequestPolicy.Validate(request, candidate, Measurement(request), Prepared(request)));
+        // Both are pure enum results; neither issues an execution capability or changes accounting.
+    }
+
+    [Fact]
+    public void UnapprovedModelCannotObtainSerializerProducedPayload()
+    {
+        var request = new AiTokenCountRequest("unapproved-model", OpenAiResponsesRequestSerializer.SerializationRevision,
+            "system", Array.Empty<AiPromptMessage>(), "current");
+        Assert.Throws<InvalidOperationException>(() => OpenAiResponsesRequestSerializer.Prepare(request, Candidate(request)));
+        Assert.Equal(AiProviderRequestValidationOutcome.TokenEvidenceUnavailable,
+            AiProviderRequestPolicy.Validate(request, Candidate(request), null));
     }
 
     [Fact]
