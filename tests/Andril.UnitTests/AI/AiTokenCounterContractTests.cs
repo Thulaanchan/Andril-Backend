@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Andril.AI.ChatBox;
 using Andril.AI.DTOs;
 using Andril.AI.Interfaces;
@@ -21,7 +22,7 @@ public sealed class AiTokenCounterContractTests
         new(request.Model, request.Fingerprint, 100, 100, 100, 100, total - 400, total,
             AiPrototypeLimits.MaxOutputTokens, true, true);
     private static AiTokenCountResult Result(AiTokenCountRequest request, int total = 500) =>
-        new(AiTokenCountState.Measured, Evidence(request, total), Provenance());
+        new(AiTokenCountState.Measured, Evidence(request, total), Provenance(), Payload(request).Binding);
 
     [Fact]
     public async Task ValidSyntheticMeasurement_UsesProductionContractAndForwardsExactRequest()
@@ -32,8 +33,8 @@ public sealed class AiTokenCounterContractTests
         using var cancellation = new CancellationTokenSource();
 
         Assert.Same(typeof(AiPromptFactory).Assembly, typeof(AiTokenCountContract).Assembly);
-        Assert.Equal(AiTokenCountValidationOutcome.ValidMeasurement, AiTokenCountContract.Validate(request, expected));
-        Assert.Same(expected.Evidence, await AiTokenCountContract.CountVerifiedAsync(counter, request, cancellation.Token));
+        Assert.Equal(AiTokenCountValidationOutcome.ValidMeasurement, ValidateBound(request, expected));
+        Assert.Same(expected, await CountBoundAsync(counter, request, cancellation.Token));
         Assert.Same(request, counter.Request);
         Assert.Equal(cancellation.Token, counter.Token);
         Assert.Equal(1, counter.Calls);
@@ -46,7 +47,7 @@ public sealed class AiTokenCounterContractTests
     {
         var request = Request();
         var result = Result(request, total);
-        Assert.Equal(expected, AiTokenCountContract.Validate(request, result));
+        Assert.Equal(expected, ValidateBound(request, result));
         Assert.Equal(expected == AiTokenCountValidationOutcome.ValidMeasurement,
             AiBudgetPolicy.ValidTokens(result.Evidence, request.Model));
         Assert.Equal(2000, AiPrototypeLimits.MaxInputTokens);
@@ -139,7 +140,7 @@ public sealed class AiTokenCounterContractTests
             _ => result
         };
         if (defect == "request") request = null;
-        Assert.Equal(AiTokenCountValidationOutcome.Invalid, AiTokenCountContract.Validate(request, result));
+        Assert.Equal(AiTokenCountValidationOutcome.Invalid, ValidateBound(request, result));
     }
 
     [Theory]
@@ -166,7 +167,7 @@ public sealed class AiTokenCounterContractTests
         };
         Assert.False(AiBudgetPolicy.ValidTokens(evidence, request.Model));
         Assert.Equal(AiTokenCountValidationOutcome.Invalid,
-            AiTokenCountContract.Validate(request, new(AiTokenCountState.Measured, evidence, Provenance())));
+            ValidateBound(request, new(AiTokenCountState.Measured, evidence, Provenance(), Payload(request).Binding)));
     }
 
     [Theory]
@@ -174,7 +175,7 @@ public sealed class AiTokenCounterContractTests
     [InlineData(99)]
     public void UnknownState_IsNeverSuccess(int state) =>
         Assert.Equal(AiTokenCountValidationOutcome.Invalid,
-            AiTokenCountContract.Validate(Request(), new((AiTokenCountState)state)));
+            ValidateBound(Request(), new((AiTokenCountState)state)));
 
     [Theory]
     [InlineData(AiTokenCountState.UnsupportedModel, AiTokenCountValidationOutcome.UnsupportedModel)]
@@ -188,11 +189,11 @@ public sealed class AiTokenCounterContractTests
         var request = Request();
         var result = new AiTokenCountResult(state);
         Assert.Null(result.Evidence);
-        Assert.Equal(expected, AiTokenCountContract.Validate(request, result));
+        Assert.Equal(expected, ValidateBound(request, result));
         Assert.Equal(AiTokenCountValidationOutcome.Invalid,
-            AiTokenCountContract.Validate(request, result with { Evidence = Evidence(request) }));
+            ValidateBound(request, result with { Evidence = Evidence(request) }));
         var counter = new SyntheticCounter((_, _) => Task.FromResult(result));
-        await Assert.ThrowsAsync<InvalidOperationException>(() => AiTokenCountContract.CountVerifiedAsync(counter, request));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => CountBoundAsync(counter, request));
         Assert.Equal(1, counter.Calls);
     }
 
@@ -232,7 +233,7 @@ public sealed class AiTokenCounterContractTests
             change == "current" ? "Current question " : original.Messages[^1].Text);
         Assert.Equal(original.Fingerprint, Request().Fingerprint);
         Assert.NotEqual(original.Fingerprint, changed.Fingerprint);
-        Assert.Equal(AiTokenCountValidationOutcome.Invalid, AiTokenCountContract.Validate(changed, Result(original)));
+        Assert.Equal(AiTokenCountValidationOutcome.Invalid, ValidateBound(changed, Result(original)));
     }
 
     [Fact]
@@ -258,7 +259,7 @@ public sealed class AiTokenCounterContractTests
     public void CharacterValidation_IsSeparateFromTokenEvidence()
     {
         var request = Request(new string('x', 501));
-        Assert.Equal(AiTokenCountValidationOutcome.ValidMeasurement, AiTokenCountContract.Validate(request, Result(request)));
+        Assert.Equal(AiTokenCountValidationOutcome.ValidMeasurement, ValidateBound(request, Result(request)));
         Assert.Throws<ArgumentException>(() => AiOperationPolicy.ValidateRequest(
             new AiOperationAdmissionRequest(AiModule.Learning, Guid.NewGuid(), Guid.NewGuid(), request.Messages[^1].Text)));
     }
@@ -271,7 +272,7 @@ public sealed class AiTokenCounterContractTests
         var result = Result(request);
         var changed = result with { Evidence = result.Evidence! with { UserTokens = -1 } };
         Assert.Equal(100, result.Evidence!.UserTokens);
-        Assert.Equal(AiTokenCountValidationOutcome.Invalid, AiTokenCountContract.Validate(request, changed));
+        Assert.Equal(AiTokenCountValidationOutcome.Invalid, ValidateBound(request, changed));
         foreach (var value in new object[] { request, result, result.Provenance! })
         {
             Assert.DoesNotContain(privateText, value.ToString());
@@ -293,7 +294,7 @@ public sealed class AiTokenCounterContractTests
         });
         if (!during) cancellation.Cancel();
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-            AiTokenCountContract.CountVerifiedAsync(counter, request, cancellation.Token));
+            CountBoundAsync(counter, request, cancellation.Token));
         Assert.Equal(during ? 1 : 0, counter.Calls);
     }
 
@@ -308,7 +309,7 @@ public sealed class AiTokenCounterContractTests
             await Task.Delay(Timeout.Infinite, token);
             throw new InvalidOperationException("Unreachable");
         });
-        var pending = AiTokenCountContract.CountVerifiedAsync(counter, Request(), cancellation.Token);
+        var pending = CountBoundAsync(counter, Request(), cancellation.Token);
         await entered.Task;
         cancellation.Cancel();
         var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
@@ -322,18 +323,157 @@ public sealed class AiTokenCounterContractTests
         var expected = new InvalidOperationException("Synthetic local counter unavailable");
         var counter = new SyntheticCounter((_, _) => throw expected);
         Assert.Same(expected, await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            AiTokenCountContract.CountVerifiedAsync(counter, Request())));
+            CountBoundAsync(counter, Request())));
         Assert.Equal(1, counter.Calls);
     }
 
     [Fact]
     public async Task MissingConsumerDependencies_AreRejected()
     {
-        await Assert.ThrowsAsync<ArgumentNullException>(() => AiTokenCountContract.CountVerifiedAsync(null!, Request()));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => CountBoundAsync(null!, Request()));
         var counter = new SyntheticCounter((_, _) => throw new InvalidOperationException("Must not be called"));
-        await Assert.ThrowsAsync<ArgumentNullException>(() => AiTokenCountContract.CountVerifiedAsync(counter, null!));
+        await Assert.ThrowsAsync<ArgumentNullException>(() => CountBoundAsync(counter, null!));
         Assert.Equal(0, counter.Calls);
     }
+
+    [Theory]
+    [InlineData("missing-payload")]
+    [InlineData("missing-binding")]
+    [InlineData("missing-digest")]
+    [InlineData("short-digest")]
+    [InlineData("nonhex-digest")]
+    [InlineData("lowercase-digest")]
+    [InlineData("other-bytes")]
+    [InlineData("logical-request")]
+    [InlineData("scoped-prompt")]
+    [InlineData("model")]
+    [InlineData("framing")]
+    [InlineData("configuration")]
+    [InlineData("output")]
+    [InlineData("counter-control")]
+    [InlineData("counter-trim")]
+    public void ExactPayloadBinding_MissingOrAlteredEvidenceFailsClosed(string defect)
+    {
+        var request = Request();
+        AiPreparedProviderPayload? payload = Payload(request);
+        var result = Result(request);
+        var binding = result.PayloadBinding!;
+        binding = defect switch
+        {
+            "missing-digest" => binding with { PayloadSha256 = null! },
+            "short-digest" => binding with { PayloadSha256 = new string('A', 63) },
+            "nonhex-digest" => binding with { PayloadSha256 = new string('Z', 64) },
+            "lowercase-digest" => binding with { PayloadSha256 = binding.PayloadSha256.ToLowerInvariant() },
+            "logical-request" => binding with { RequestFingerprint = Request("other").Fingerprint },
+            "scoped-prompt" => binding with { LogicalPromptFingerprint = "invented-scope" },
+            "model" => binding with { Model = "other-model" },
+            "framing" => binding with { FramingRevision = "other-framing" },
+            "configuration" => binding with { ExecutionConfiguration = "changed-defaults" },
+            "output" => binding with { MaxBillableOutputTokens = 250 },
+            _ => binding
+        };
+        result = result with { PayloadBinding = defect == "missing-binding" ? null : binding };
+        if (defect == "missing-payload") payload = null;
+        if (defect == "other-bytes") payload = new(request, new byte[] { 1, 2, 3 }, binding.ExecutionConfiguration);
+        if (defect == "counter-control") result = result with { Provenance = Provenance() with { CounterId = "counter\nprivate" } };
+        if (defect == "counter-trim") result = result with { Provenance = Provenance() with { CounterRevision = " revision " } };
+        Assert.Equal(AiTokenCountValidationOutcome.Invalid, AiTokenCountContract.Validate(request, result, payload));
+    }
+
+    [Fact]
+    public async Task CounterReceivesAndReturnsTheSameRetainedPayloadBinding()
+    {
+        var request = Request();
+        var payload = Payload(request);
+        var expected = Result(request, 2000);
+        var counter = new SyntheticCounter((_, _) => Task.FromResult(expected));
+        var actual = await AiTokenCountContract.CountVerifiedAsync(counter, request, payload);
+        Assert.Same(payload, counter.Payload);
+        Assert.Same(expected, actual);
+        Assert.Equal(payload.Binding, actual.PayloadBinding);
+        Assert.Equal(2000, actual.Evidence!.FullInputTokens);
+        Assert.Equal(500, actual.Evidence.MaxBillableOutputTokens);
+    }
+
+    [Fact]
+    public async Task WrongRequestOrMissingPayload_IsRejectedBeforeCounterInvocation()
+    {
+        var request = Request();
+        var counter = new SyntheticCounter((_, _) => throw new InvalidOperationException("Must not count"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            AiTokenCountContract.CountVerifiedAsync(counter, Request("changed"), Payload(request)));
+        await Assert.ThrowsAsync<ArgumentNullException>(() =>
+            AiTokenCountContract.CountVerifiedAsync(counter, request, null!));
+        Assert.Equal(0, counter.Calls);
+    }
+
+    [Fact]
+    public void ByteSnapshot_CopiesOriginalAndExportedArraysWithoutCountingTheirLength()
+    {
+        var request = Request("Private தமிழ் සිංහල 👩🏽‍💻");
+        var bytes = JsonSerializer.SerializeToUtf8Bytes(new { request.SystemInstructions, request.Messages });
+        var original = bytes.ToArray();
+        var payload = new AiPreparedProviderPayload(request, bytes, "synthetic-closed-settings-v1");
+        var binding = payload.Binding;
+        bytes[0] ^= 1;
+        var exported = payload.CopyUtf8Payload();
+        exported[1] ^= 1;
+        Assert.False(payload.MatchesPayload(bytes));
+        Assert.False(payload.MatchesPayload(exported));
+        Assert.True(payload.MatchesPayload(original));
+        Assert.Equal(original, payload.CopyUtf8Payload());
+        Assert.Equal(binding, payload.Binding);
+        var result = Result(request, 2000);
+        Assert.Equal(AiTokenCountValidationOutcome.ValidMeasurement, AiTokenCountContract.Validate(request, result, payload));
+        Assert.NotEqual(original.Length, result.Evidence!.FullInputTokens);
+        foreach (var value in new object[] { payload, binding, result })
+        {
+            Assert.DoesNotContain(request.Messages[^1].Text, value.ToString());
+            Assert.DoesNotContain(binding.PayloadSha256, value.ToString());
+        }
+    }
+
+    [Fact]
+    public void MatchingDigestCannotRepairUnverifiedEvidenceOrAuthenticateCounterIdentity()
+    {
+        var request = Request();
+        var result = Result(request);
+        var payload = Payload(request);
+        Assert.Equal(AiTokenCountValidationOutcome.Invalid,
+            AiTokenCountContract.Validate(request, result with
+            { Evidence = result.Evidence! with { FullRequestVerified = false } }, payload));
+        // A caller can imitate metadata: deterministic shape validation is not counter authentication.
+        Assert.Equal(AiTokenCountValidationOutcome.ValidMeasurement,
+            AiTokenCountContract.Validate(request, result with
+            { Provenance = Provenance() with { CounterId = "untrusted-imitator" } }, payload));
+        Assert.Equal(AiTokenCountValidationOutcome.Invalid, AiTokenCountContract.Validate(request, result));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData(" defaults ")]
+    [InlineData("defaults\nprivate")]
+    public void MalformedExecutionConfiguration_IsRejectedWithSafeDiagnostics(string configuration)
+    {
+        var error = Assert.Throws<ArgumentException>(() =>
+            new AiPreparedProviderPayload(Request(), new byte[] { 1 }, configuration));
+        Assert.DoesNotContain("private", error.Message);
+    }
+
+    [Fact]
+    public void EmptyPayload_IsNotPreparedEvidence() =>
+        Assert.Throws<ArgumentException>(() => new AiPreparedProviderPayload(Request(), Array.Empty<byte>(), "fixture"));
+
+    // Synthetic provider-neutral bytes, not an OpenAI request or real token measurement.
+    private static AiPreparedProviderPayload Payload(AiTokenCountRequest request) =>
+        new(request, JsonSerializer.SerializeToUtf8Bytes(new { request.SystemInstructions, request.Messages }),
+            "synthetic-closed-settings-v1");
+    private static AiTokenCountValidationOutcome ValidateBound(AiTokenCountRequest? request, AiTokenCountResult? result) =>
+        AiTokenCountContract.Validate(request, result, request is null ? null : Payload(request));
+    private static Task<AiTokenCountResult> CountBoundAsync(IAiTokenCounter counter, AiTokenCountRequest request,
+        CancellationToken token = default) =>
+        AiTokenCountContract.CountVerifiedAsync(counter, request, request is null ? null! : Payload(request), token);
 
     // Scripted evidence source exercises the PRODUCTION consumer; it does not tokenize text.
     private sealed class SyntheticCounter(Func<AiTokenCountRequest, CancellationToken, Task<AiTokenCountResult>> count)
@@ -342,10 +482,12 @@ public sealed class AiTokenCounterContractTests
         public int Calls { get; private set; }
         public AiTokenCountRequest? Request { get; private set; }
         public CancellationToken Token { get; private set; }
-        public Task<AiTokenCountResult> CountAsync(AiTokenCountRequest request, CancellationToken cancellationToken = default)
+        public AiPreparedProviderPayload? Payload { get; private set; }
+        public Task<AiTokenCountResult> CountAsync(AiTokenCountRequest request, AiPreparedProviderPayload payload, CancellationToken cancellationToken = default)
         {
             Calls++;
             Request = request;
+            Payload = payload;
             Token = cancellationToken;
             return count(request, cancellationToken);
         }

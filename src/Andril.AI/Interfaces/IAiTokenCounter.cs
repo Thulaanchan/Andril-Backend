@@ -9,7 +9,8 @@ namespace Andril.AI.Interfaces;
 /// <summary>
 /// Local, read-only full-request measurement before admission; no operation or attempt required.
 /// Implementations must use a trusted server-selected model and pinned framing/tokenizer
-/// configuration, count system/history/current input and all model-visible overhead, and honor
+/// configuration, measure the supplied exact payload and system/history/current input including
+/// all model-visible overhead, and honor
 /// cancellation. Never dispatch generation, send content to a counting service, persist prompts,
 /// load cross-conversation context, log content, or treat measurement as authorization.
 /// Unknown models/configurations and unavailable/unreliable counts return explicit non-success.
@@ -17,8 +18,53 @@ namespace Andril.AI.Interfaces;
 /// </summary>
 public interface IAiTokenCounter
 {
-    Task<AiTokenCountResult> CountAsync(AiTokenCountRequest request,
+    Task<AiTokenCountResult> CountAsync(AiTokenCountRequest request, AiPreparedProviderPayload payload,
         CancellationToken cancellationToken = default);
+}
+
+/// <summary>Provider-neutral exact-byte binding. Configuration identifies all execution defaults
+/// and controls, including settings absent from JSON. Metadata is not a credential or tokenizer proof.</summary>
+public sealed record AiProviderPayloadBinding(string RequestFingerprint, string? LogicalPromptFingerprint,
+    string PayloadSha256, string Model, string FramingRevision, string ExecutionConfiguration,
+    int MaxBillableOutputTokens)
+{
+    public override string ToString() => "AI payload binding [private bindings omitted]";
+}
+
+/// <summary>Read-only preparation, independent of counting/admission. Copies bytes once and never
+/// reserializes. A generic snapshot does not attest provider schema or correspondence to messages;
+/// the trusted serializer must establish that correspondence. No transport or storage is performed.
+/// UTF-8 length is NOT a token count. A future counter must measure all model-visible framing.</summary>
+public sealed class AiPreparedProviderPayload
+{
+    private readonly byte[] _payload;
+    public AiProviderPayloadBinding Binding { get; }
+
+    public AiPreparedProviderPayload(AiTokenCountRequest request, ReadOnlySpan<byte> payload,
+        string executionConfiguration)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        if (payload.IsEmpty || !ValidIdentifier(executionConfiguration))
+            throw new ArgumentException("Invalid AI payload preparation.");
+        _payload = payload.ToArray();
+        Binding = new(request.Fingerprint, request.SourcePromptFingerprint,
+            Convert.ToHexString(SHA256.HashData(_payload)), request.Model, request.FramingRevision,
+            executionConfiguration, request.MaxBillableOutputTokens);
+    }
+
+    public byte[] CopyUtf8Payload() => _payload.ToArray();
+    public bool MatchesPayload(ReadOnlySpan<byte> payload) => payload.SequenceEqual(_payload);
+    public bool MatchesRequest(AiTokenCountRequest request) =>
+        Binding.RequestFingerprint == request.Fingerprint &&
+        Binding.LogicalPromptFingerprint == request.SourcePromptFingerprint && Binding.Model == request.Model &&
+        Binding.FramingRevision == request.FramingRevision &&
+        Binding.MaxBillableOutputTokens == request.MaxBillableOutputTokens;
+
+    internal static bool ValidIdentifier(string? value) => !string.IsNullOrWhiteSpace(value) &&
+        value == value.Trim() && !value.Any(char.IsControl);
+    internal static bool ValidDigest(string? digest) => digest is { Length: 64 } &&
+        digest.All(c => c is >= '0' and <= '9' or >= 'A' and <= 'F');
+    public override string ToString() => "Prepared AI payload [private content and bindings omitted]";
 }
 
 /// <summary>
@@ -114,7 +160,7 @@ public sealed record AiTokenCountProvenance(string CounterId, string CounterRevi
 /// execution. A future approved conservative strategy needs a separately reviewed contract.
 /// Evidence and provenance must come from a trusted counter, never client/provider claims.</summary>
 public sealed record AiTokenCountResult(AiTokenCountState State, AiTokenEvidence? Evidence = null,
-    AiTokenCountProvenance? Provenance = null)
+    AiTokenCountProvenance? Provenance = null, AiProviderPayloadBinding? PayloadBinding = null)
 {
     public override string ToString() => "AI token result [measurement details omitted]";
 }
@@ -129,21 +175,23 @@ public enum AiTokenCountValidationOutcome
 /// Reuses AiBudgetPolicy for components, overflow-safe totals, full-request verification and
 /// approved token ceilings. No character heuristic, estimation margin or new authorization.
 /// Consumers must independently establish counter/model/configuration trust and retain this
-/// exact immutable request through adapter rendering. ValidMeasurement grants no execution.</summary>
+/// exact immutable payload through transport. Missing payload binding never falls back to the
+/// legacy logical fingerprint. ValidMeasurement grants no execution.</summary>
 public static class AiTokenCountContract
 {
-    public static AiTokenCountValidationOutcome Validate(AiTokenCountRequest? request, AiTokenCountResult? result)
+    public static AiTokenCountValidationOutcome Validate(AiTokenCountRequest? request, AiTokenCountResult? result,
+        AiPreparedProviderPayload? payload = null)
     {
         if (request is null || result is null || !Enum.IsDefined(result.State) || result.State == AiTokenCountState.Unknown)
             return AiTokenCountValidationOutcome.Invalid;
         var provenance = result.Provenance;
-        if (provenance is not null && (string.IsNullOrWhiteSpace(provenance.CounterId) ||
-            string.IsNullOrWhiteSpace(provenance.CounterRevision) || provenance.FramingRevision != request.FramingRevision))
+        if (provenance is not null && (!AiPreparedProviderPayload.ValidIdentifier(provenance.CounterId) ||
+            !AiPreparedProviderPayload.ValidIdentifier(provenance.CounterRevision) || provenance.FramingRevision != request.FramingRevision))
             return AiTokenCountValidationOutcome.Invalid;
         if (result.State != AiTokenCountState.Measured)
         {
             // A failure or unapproved estimate cannot smuggle usable numeric evidence.
-            if (result.Evidence is not null) return AiTokenCountValidationOutcome.Invalid;
+            if (result.Evidence is not null || result.PayloadBinding is not null) return AiTokenCountValidationOutcome.Invalid;
             return result.State switch
             {
                 AiTokenCountState.Estimated => AiTokenCountValidationOutcome.EstimateNotAccepted,
@@ -155,7 +203,10 @@ public static class AiTokenCountContract
             };
         }
         var evidence = result.Evidence;
-        return provenance is not null && AiBudgetPolicy.ValidTokens(evidence, request.Model) &&
+        return payload is not null && payload.MatchesRequest(request) &&
+            AiPreparedProviderPayload.ValidDigest(result.PayloadBinding?.PayloadSha256) &&
+            result.PayloadBinding == payload.Binding &&
+            provenance is not null && AiBudgetPolicy.ValidTokens(evidence, request.Model) &&
             evidence!.RequestFingerprint == request.Fingerprint &&
             evidence.MaxBillableOutputTokens == request.MaxBillableOutputTokens
             ? AiTokenCountValidationOutcome.ValidMeasurement : AiTokenCountValidationOutcome.Invalid;
@@ -164,16 +215,19 @@ public static class AiTokenCountContract
     /// <summary>Fail-closed consumer for callers needing verified-shaped numeric evidence.
     /// Cancellation before/after the counter prevents returning success; no fallback or retry.
     /// The selected counter must still be independently trusted. No tokenizer is implemented.</summary>
-    public static async Task<AiTokenEvidence> CountVerifiedAsync(IAiTokenCounter counter,
-        AiTokenCountRequest request, CancellationToken cancellationToken = default)
+    public static async Task<AiTokenCountResult> CountVerifiedAsync(IAiTokenCounter counter,
+        AiTokenCountRequest request, AiPreparedProviderPayload payload, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(counter);
         ArgumentNullException.ThrowIfNull(request);
+        ArgumentNullException.ThrowIfNull(payload);
         cancellationToken.ThrowIfCancellationRequested();
-        var result = await counter.CountAsync(request, cancellationToken);
+        if (!payload.MatchesRequest(request))
+            throw new InvalidOperationException("AI payload binding is inconsistent.");
+        var result = await counter.CountAsync(request, payload, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        if (Validate(request, result) != AiTokenCountValidationOutcome.ValidMeasurement)
+        if (Validate(request, result, payload) != AiTokenCountValidationOutcome.ValidMeasurement)
             throw new InvalidOperationException("Reliable AI token measurement is unavailable.");
-        return result.Evidence!;
+        return result; // Keep the payload binding attached; never return detached legacy evidence.
     }
 }
