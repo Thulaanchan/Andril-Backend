@@ -1,6 +1,3 @@
-﻿
-using System;
-using System.Reflection;
 using Andril.AI.ChatBox;
 using Andril.AI.Interfaces;
 using Andril.AI.Persistence;
@@ -9,532 +6,197 @@ using Xunit;
 
 namespace Andril.UnitTests.AI;
 
-/// <summary>
-/// AI-BE-03 Step 15: fixed-time, synthetic-data retention-policy tests.
-/// These tests exercise pure classification and deadline calculations only.
-/// They do not execute a purge, establish authorization, or verify backups.
-/// </summary>
+/// <summary>Production-policy tests with synthetic entities; no physical cleanup is executed.</summary>
 public sealed class AiConversationRetentionPolicyTests
 {
-    private static readonly DateTimeOffset CreatedAtUtc =
-        new(2026, 11, 16, 10, 0, 0, TimeSpan.Zero);
-
-    private static readonly DateTimeOffset ExpiresAtUtc =
-        CreatedAtUtc.AddDays(14);
+    private static readonly DateTimeOffset CreatedAt =
+        new(2026, 11, 17, 10, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public void ManualDeletionPurgeTarget_IsExactlyTwentyFourHours()
+    public void RetentionTypes_OriginateInProductionAssembly()
     {
-        Assert.Equal(TimeSpan.FromHours(24),
-            AiConversationRetentionPolicy.ManualDeletionActivePurgeTarget);
+        var assembly = typeof(AiConversationEntity).Assembly;
+        Assert.Equal("Andril.AI", assembly.GetName().Name);
+        Assert.Same(assembly, typeof(AiConversationRetentionPolicy).Assembly);
+        Assert.Same(assembly, typeof(AiConversationRetentionState).Assembly);
+        Assert.NotSame(typeof(AiConversationRetentionPolicyTests).Assembly, assembly);
     }
 
     [Theory]
     [InlineData(AiModule.Learning)]
     [InlineData(AiModule.Hobbies)]
     [InlineData(AiModule.Social)]
-    public void Classify_NewConversationIsActiveInEachModule(AiModule module)
+    public void Expiry_ImmediatelyHidesConversationAtFourteenDayBoundary(AiModule module)
     {
-        var conversation = Create(module);
+        var actor = new AiAuthorizedActor(Guid.NewGuid(), Guid.NewGuid(), module);
+        var row = AiConversationEntity.CreateForFirstUserMessage(actor, Guid.NewGuid(), CreatedAt);
+        var expiry = CreatedAt.AddDays(14);
 
+        Assert.Equal(expiry, row.ExpiresAtUtc);
         Assert.Equal(AiConversationRetentionState.Active,
-            AiConversationRetentionPolicy.Classify(
-                conversation, CreatedAtUtc));
-    }
-
-    [Fact]
-    public void Classify_OneTickBeforeExpiry_IsActive()
-    {
-        Assert.Equal(AiConversationRetentionState.Active,
-            AiConversationRetentionPolicy.Classify(
-                Create(), ExpiresAtUtc.AddTicks(-1)));
-    }
-
-    [Fact]
-    public void Classify_AtExactExpiry_IsExpired()
-    {
+            AiConversationRetentionPolicy.Classify(row, expiry.AddTicks(-1)));
+        Assert.False(AiConversationRetentionPolicy.MustHideFromHistory(row, expiry.AddTicks(-1)));
+        Assert.False(AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(row, expiry.AddTicks(-1)));
+        Assert.True(row.IsAccessibleBy(actor, expiry.AddTicks(-1)));
         Assert.Equal(AiConversationRetentionState.Expired,
-            AiConversationRetentionPolicy.Classify(
-                Create(), ExpiresAtUtc));
+            AiConversationRetentionPolicy.Classify(row, expiry));
+        Assert.True(AiConversationRetentionPolicy.MustHideFromHistory(row, expiry));
+        Assert.True(AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(row, expiry));
+        Assert.False(row.IsAccessibleBy(actor, expiry));
+        Assert.Equal(expiry.AddHours(24), AiConversationRetentionPolicy.GetActivePurgeTargetUtc(row, expiry));
     }
 
     [Fact]
-    public void Classify_AfterExpiry_IsExpired()
+    public void ManualDeletion_ImmediatelyDeniesAccessAndStartsPurgeClock()
     {
-        Assert.Equal(AiConversationRetentionState.Expired,
-            AiConversationRetentionPolicy.Classify(
-                Create(), ExpiresAtUtc.AddTicks(1)));
-    }
-
-    [Fact]
-    public void Classify_NormalizesSriLankaClockOffset()
-    {
-        var conversation = Create();
-        var localExpiry = ExpiresAtUtc.ToOffset(
-            TimeSpan.FromMinutes(330));
-
-        Assert.Equal(AiConversationRetentionState.Active,
-            AiConversationRetentionPolicy.Classify(
-                conversation, localExpiry.AddTicks(-1)));
-        Assert.Equal(AiConversationRetentionState.Expired,
-            AiConversationRetentionPolicy.Classify(
-                conversation, localExpiry));
-    }
-
-    [Fact]
-    public void Classify_NewSavedUserMessage_RenewsExpiry()
-    {
-        var conversation = Create();
-        var savedAgain = CreatedAtUtc.AddDays(5);
-        conversation.ApplySavedUserMessage(savedAgain);
-
-        Assert.Equal(savedAgain.AddDays(14), conversation.ExpiresAtUtc);
-        Assert.Equal(AiConversationRetentionState.Active,
-            AiConversationRetentionPolicy.Classify(
-                conversation, ExpiresAtUtc));
-        Assert.Equal(AiConversationRetentionState.Expired,
-            AiConversationRetentionPolicy.Classify(
-                conversation, savedAgain.AddDays(14)));
-    }
-
-    [Fact]
-    public void Classify_DeletedBeforeExpiry_IsDeleted()
-    {
-        var conversation = Create();
-        conversation.MarkDeleted(CreatedAtUtc.AddHours(1));
-
+        var row = Create();
+        var actor = new AiAuthorizedActor(row.AccountId, row.ModuleProfileId, row.Module);
+        var deleted = CreatedAt.AddHours(1);
+        row.MarkDeleted(deleted);
         Assert.Equal(AiConversationRetentionState.Deleted,
-            AiConversationRetentionPolicy.Classify(
-                conversation, CreatedAtUtc.AddHours(2)));
-    }
-
-    [Fact]
-    public void Classify_DeletedAfterExpiry_TakesPriorityOverExpired()
-    {
-        var conversation = Create();
-        conversation.MarkDeleted(ExpiresAtUtc.AddDays(1));
-
-        Assert.Equal(AiConversationRetentionState.Deleted,
-            AiConversationRetentionPolicy.Classify(
-                conversation, ExpiresAtUtc.AddDays(2)));
+            AiConversationRetentionPolicy.Classify(row, deleted));
+        Assert.True(AiConversationRetentionPolicy.MustHideFromHistory(row, deleted));
+        Assert.True(AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(row, deleted));
+        Assert.False(row.IsAccessibleBy(actor, deleted));
+        Assert.Equal(deleted.AddHours(24), AiConversationRetentionPolicy.GetActivePurgeTargetUtc(row, deleted));
     }
 
     [Theory]
-    [InlineData(AiModule.Learning)]
-    [InlineData(AiModule.Hobbies)]
-    [InlineData(AiModule.Social)]
-    public void Classify_DeletionPriorityIsIndependentOfModule(AiModule module)
-    {
-        var conversation = Create(module);
-        conversation.MarkDeleted(CreatedAtUtc.AddMinutes(1));
-
-        Assert.Equal(AiConversationRetentionState.Deleted,
-            AiConversationRetentionPolicy.Classify(
-                conversation, ExpiresAtUtc.AddDays(1)));
-    }
-
-    [Fact]
-    public void ActiveConversation_IsNeitherHiddenNorMarkedForPurgeEvaluation()
-    {
-        var conversation = Create();
-
-        Assert.False(AiConversationRetentionPolicy.MustHideFromHistory(
-            conversation, CreatedAtUtc.AddDays(1)));
-        Assert.False(AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(
-            conversation, CreatedAtUtc.AddDays(1)));
-    }
-
-    [Fact]
-    public void ExpiredConversation_IsHiddenAndMarkedForPurgeEvaluation()
-    {
-        var conversation = Create();
-
-        Assert.True(AiConversationRetentionPolicy.MustHideFromHistory(
-            conversation, ExpiresAtUtc));
-        Assert.True(AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(
-            conversation, ExpiresAtUtc));
-    }
-
-    [Fact]
-    public void DeletedConversation_IsHiddenAndMarkedForPurgeEvaluation()
-    {
-        var conversation = Create();
-        conversation.MarkDeleted(CreatedAtUtc.AddHours(1));
-
-        Assert.True(AiConversationRetentionPolicy.MustHideFromHistory(
-            conversation, CreatedAtUtc.AddHours(1)));
-        Assert.True(AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(
-            conversation, CreatedAtUtc.AddHours(1)));
-    }
-
-    [Fact]
-    public void RetentionQueries_DoNotChangeConversationTimestamps()
-    {
-        var conversation = Create();
-        var id = conversation.Id;
-        var created = conversation.CreatedAtUtc;
-        var lastSaved = conversation.LastSavedUserMessageAtUtc;
-        var expiry = conversation.ExpiresAtUtc;
-
-        AiConversationRetentionPolicy.Classify(conversation, CreatedAtUtc);
-        AiConversationRetentionPolicy.MustHideFromHistory(conversation, ExpiresAtUtc);
-        AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(
-            conversation, ExpiresAtUtc);
-        AiConversationRetentionPolicy.GetManualDeletionPurgeTargetUtc(
-            conversation);
-        AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(
-            conversation, ExpiresAtUtc);
-
-        Assert.Equal(id, conversation.Id);
-        Assert.Equal(created, conversation.CreatedAtUtc);
-        Assert.Equal(lastSaved, conversation.LastSavedUserMessageAtUtc);
-        Assert.Equal(expiry, conversation.ExpiresAtUtc);
-        Assert.Null(conversation.DeletedAtUtc);
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(15)]
-    public void GetPurgeTarget_NoManualDeletion_ReturnsNullEvenIfExpired(
-        int daysAfterCreation)
-    {
-        var conversation = Create();
-
-        Assert.Null(
-            AiConversationRetentionPolicy.GetManualDeletionPurgeTargetUtc(
-                conversation));
-        Assert.False(
-            AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(
-                conversation, CreatedAtUtc.AddDays(daysAfterCreation)));
-    }
-
-    [Fact]
-    public void GetPurgeTarget_ManualDeletion_AddsTwentyFourHours()
-    {
-        var conversation = Create();
-        var deletedAt = CreatedAtUtc.AddHours(2);
-        conversation.MarkDeleted(deletedAt);
-
-        Assert.Equal(deletedAt.AddHours(24),
-            AiConversationRetentionPolicy.GetManualDeletionPurgeTargetUtc(
-                conversation));
-    }
-
-    [Fact]
-    public void GetPurgeTarget_DeletionOffsetIsStoredAndReturnedInUtc()
-    {
-        var conversation = Create();
-        var localDeletedAt = CreatedAtUtc.AddHours(2).ToOffset(
-            TimeSpan.FromMinutes(330));
-        conversation.MarkDeleted(localDeletedAt);
-
-        var target = AiConversationRetentionPolicy
-            .GetManualDeletionPurgeTargetUtc(conversation);
-
-        Assert.Equal(CreatedAtUtc.AddHours(26), target);
-        Assert.Equal(TimeSpan.Zero, target!.Value.Offset);
-    }
-
-    [Fact]
-    public void GetPurgeTarget_RepeatedDeletionKeepsOriginalDeadline()
-    {
-        var conversation = Create();
-        var first = CreatedAtUtc.AddHours(1);
-        conversation.MarkDeleted(first);
-        var originalTarget = AiConversationRetentionPolicy
-            .GetManualDeletionPurgeTargetUtc(conversation);
-
-        conversation.MarkDeleted(first.AddHours(10));
-
-        Assert.Equal(first, conversation.DeletedAtUtc);
-        Assert.Equal(originalTarget,
-            AiConversationRetentionPolicy.GetManualDeletionPurgeTargetUtc(
-                conversation));
-    }
-
-    [Fact]
-    public void IsPurgeTargetReached_OneTickBeforeDeadline_IsFalse()
-    {
-        var conversation = DeletedAt(CreatedAtUtc.AddHours(1));
-        var due = CreatedAtUtc.AddHours(25);
-
-        Assert.False(
-            AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(
-                conversation, due.AddTicks(-1)));
-    }
-
-    [Fact]
-    public void IsPurgeTargetReached_ExactlyAtDeadline_IsTrue()
-    {
-        var conversation = DeletedAt(CreatedAtUtc.AddHours(1));
-
-        Assert.True(
-            AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(
-                conversation, CreatedAtUtc.AddHours(25)));
-    }
-
-    [Fact]
-    public void IsPurgeTargetReached_AfterDeadline_IsTrue()
-    {
-        var conversation = DeletedAt(CreatedAtUtc.AddHours(1));
-
-        Assert.True(
-            AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(
-                conversation, CreatedAtUtc.AddHours(26)));
-    }
-
-    [Fact]
-    public void IsPurgeTargetReached_NormalizesNonUtcClock()
-    {
-        var conversation = DeletedAt(CreatedAtUtc.AddHours(1));
-        var dueInSriLanka = CreatedAtUtc.AddHours(25).ToOffset(
-            TimeSpan.FromMinutes(330));
-
-        Assert.False(
-            AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(
-                conversation, dueInSriLanka.AddTicks(-1)));
-        Assert.True(
-            AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(
-                conversation, dueInSriLanka));
-    }
-
-    [Theory]
+    [InlineData(-1)]
     [InlineData(0)]
     [InlineData(1)]
-    [InlineData(2)]
-    [InlineData(3)]
-    [InlineData(4)]
-    public void NullConversation_ThrowsArgumentNullException(int operation)
+    public void DeletedClassification_PreservesEarliestRevocationDeadline(int hoursFromExpiry)
     {
-        var error = Assert.Throws<ArgumentNullException>(() =>
-        {
-            switch (operation)
-            {
-                case 0:
-                    AiConversationRetentionPolicy.Classify(null!, CreatedAtUtc);
-                    break;
-                case 1:
-                    AiConversationRetentionPolicy.MustHideFromHistory(
-                        null!, CreatedAtUtc);
-                    break;
-                case 2:
-                    AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(
-                        null!, CreatedAtUtc);
-                    break;
-                case 3:
-                    AiConversationRetentionPolicy.GetManualDeletionPurgeTargetUtc(
-                        null!);
-                    break;
-                default:
-                    AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(
-                        null!, CreatedAtUtc);
-                    break;
-            }
-        });
-
-        Assert.Equal("conversation", error.ParamName);
+        var row = Create();
+        var expiry = row.ExpiresAtUtc;
+        var deleted = expiry.AddHours(hoursFromExpiry);
+        row.MarkDeleted(deleted);
+        var now = deleted > expiry ? deleted : expiry;
+        var due = hoursFromExpiry < 0 ? deleted.AddHours(24) : expiry.AddHours(24);
+        Assert.Equal(AiConversationRetentionState.Deleted, AiConversationRetentionPolicy.Classify(row, now));
+        Assert.Equal(due, AiConversationRetentionPolicy.GetActivePurgeTargetUtc(row, now));
     }
 
     [Theory]
-    [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(2)]
-    [InlineData(3)]
-    public void DefaultServerNow_IsRejected(int operation)
+    [InlineData(-1, false)]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    public void ManualPurgeDeadline_IsInclusive(int ticks, bool reached)
     {
-        var conversation = Create();
-        var error = Assert.Throws<ArgumentException>(() =>
-        {
-            switch (operation)
-            {
-                case 0:
-                    AiConversationRetentionPolicy.Classify(conversation, default);
-                    break;
-                case 1:
-                    AiConversationRetentionPolicy.MustHideFromHistory(
-                        conversation, default);
-                    break;
-                case 2:
-                    AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(
-                        conversation, default);
-                    break;
-                default:
-                    AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(
-                        conversation, default);
-                    break;
-            }
-        });
-
-        Assert.Equal("serverNowUtc", error.ParamName);
+        var row = Create();
+        var deleted = CreatedAt.AddHours(1);
+        row.MarkDeleted(deleted);
+        var due = deleted.AddHours(24);
+        Assert.Equal(due, AiConversationRetentionPolicy.GetManualDeletionPurgeTargetUtc(row));
+        Assert.Equal(reached, AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(row, due.AddTicks(ticks)));
+        Assert.Equal(reached, AiConversationRetentionPolicy.IsActivePurgeTargetReached(row, due.AddTicks(ticks)));
     }
 
     [Fact]
-    public void DefaultServerNow_IsRejectedEvenWhenDeleted()
+    public void ActiveConversation_HasNoPurgeTarget()
     {
-        var conversation = DeletedAt(CreatedAtUtc.AddHours(1));
-
-        var error = Assert.Throws<ArgumentException>(() =>
-            AiConversationRetentionPolicy.Classify(conversation, default));
-        Assert.Equal("serverNowUtc", error.ParamName);
+        var row = Create();
+        Assert.Null(AiConversationRetentionPolicy.GetManualDeletionPurgeTargetUtc(row));
+        Assert.Null(AiConversationRetentionPolicy.GetActivePurgeTargetUtc(row, CreatedAt));
+        Assert.False(AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(row, CreatedAt));
+        Assert.False(AiConversationRetentionPolicy.IsActivePurgeTargetReached(row, CreatedAt));
     }
 
-    // These values cannot be created through the public entity factory.
-    // Reflection deliberately simulates malformed ORM/materialized rows.
-    [Theory]
-    [InlineData("EmptyId")]
-    [InlineData("EmptyAccountId")]
-    [InlineData("EmptyProfileId")]
-    [InlineData("EmptyCreateOperationId")]
-    [InlineData("InvalidModuleZero")]
-    [InlineData("InvalidModuleUnknown")]
-    [InlineData("DefaultCreatedAt")]
-    [InlineData("NonUtcCreatedAt")]
-    [InlineData("LastSavedBeforeCreation")]
-    [InlineData("NonUtcLastSavedAt")]
-    [InlineData("IncorrectExpiry")]
-    [InlineData("NonUtcExpiry")]
-    [InlineData("DeletedBeforeCreation")]
-    [InlineData("NonUtcDeletedAt")]
-    public void MalformedPersistedConversation_FailsClosed(string defect)
+    [Fact]
+    public void RepeatedEvaluation_DoesNotExtendSavedUserAnchorOrPurgeDeadline()
     {
-        var conversation = Create();
-        CorruptConversation(conversation, defect);
-
-        AssertInvalidState(() =>
-            AiConversationRetentionPolicy.Classify(
-                conversation, CreatedAtUtc.AddDays(1)));
-    }
-
-    [Theory]
-    [InlineData(0)]
-    [InlineData(1)]
-    [InlineData(2)]
-    [InlineData(3)]
-    [InlineData(4)]
-    public void EveryEntryPoint_RejectsMalformedConversation(int operation)
-    {
-        var conversation = Create();
-        SetPrivateProperty(conversation, "AccountId", Guid.Empty);
-
-        AssertInvalidState(() =>
+        var row = Create();
+        var saved = CreatedAt.AddDays(2);
+        row.ApplySavedUserMessage(saved);
+        var expiry = saved.AddDays(14);
+        foreach (var now in new[] { expiry, expiry.AddHours(24), expiry.AddDays(7) })
         {
-            switch (operation)
-            {
-                case 0:
-                    AiConversationRetentionPolicy.Classify(
-                        conversation, CreatedAtUtc);
-                    break;
-                case 1:
-                    AiConversationRetentionPolicy.MustHideFromHistory(
-                        conversation, CreatedAtUtc);
-                    break;
-                case 2:
-                    AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(
-                        conversation, CreatedAtUtc);
-                    break;
-                case 3:
-                    AiConversationRetentionPolicy.GetManualDeletionPurgeTargetUtc(
-                        conversation);
-                    break;
-                default:
-                    AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(
-                        conversation, CreatedAtUtc);
-                    break;
-            }
-        });
-    }
-
-    private static AiConversationEntity Create(
-        AiModule module = AiModule.Learning)
-    {
-        var actor = new AiAuthorizedActor(
-            Guid.NewGuid(), Guid.NewGuid(), module);
-
-        return AiConversationEntity.CreateForFirstUserMessage(
-            actor, Guid.NewGuid(), CreatedAtUtc);
-    }
-
-    private static AiConversationEntity DeletedAt(DateTimeOffset deletedAt)
-    {
-        var conversation = Create();
-        conversation.MarkDeleted(deletedAt);
-        return conversation;
-    }
-
-    private static void AssertInvalidState(Action action)
-    {
-        var error = Assert.Throws<InvalidOperationException>(action);
-        Assert.Equal("Invalid AI conversation retention state.", error.Message);
-    }
-
-    private static void SetPrivateProperty(
-        AiConversationEntity conversation, string propertyName, object? value)
-    {
-        var property = typeof(AiConversationEntity).GetProperty(
-            propertyName, BindingFlags.Instance | BindingFlags.Public);
-        Assert.NotNull(property);
-        var setter = property!.GetSetMethod(nonPublic: true);
-        Assert.NotNull(setter);
-        setter!.Invoke(conversation, new object?[] { value });
-    }
-
-    private static void CorruptConversation(
-        AiConversationEntity conversation, string defect)
-    {
-        switch (defect)
-        {
-            case "EmptyId":
-                SetPrivateProperty(conversation, "Id", Guid.Empty);
-                break;
-            case "EmptyAccountId":
-                SetPrivateProperty(conversation, "AccountId", Guid.Empty);
-                break;
-            case "EmptyProfileId":
-                SetPrivateProperty(conversation, "ModuleProfileId", Guid.Empty);
-                break;
-            case "EmptyCreateOperationId":
-                SetPrivateProperty(conversation, "CreateOperationId", Guid.Empty);
-                break;
-            case "InvalidModuleZero":
-                SetPrivateProperty(conversation, "Module", (AiModule)0);
-                break;
-            case "InvalidModuleUnknown":
-                SetPrivateProperty(conversation, "Module", (AiModule)99);
-                break;
-            case "DefaultCreatedAt":
-                SetPrivateProperty(conversation, "CreatedAtUtc", default(DateTimeOffset));
-                break;
-            case "NonUtcCreatedAt":
-                SetPrivateProperty(conversation, "CreatedAtUtc",
-                    CreatedAtUtc.ToOffset(TimeSpan.FromMinutes(330)));
-                break;
-            case "LastSavedBeforeCreation":
-                SetPrivateProperty(conversation, "LastSavedUserMessageAtUtc",
-                    CreatedAtUtc.AddTicks(-1));
-                break;
-            case "NonUtcLastSavedAt":
-                SetPrivateProperty(conversation, "LastSavedUserMessageAtUtc",
-                    CreatedAtUtc.ToOffset(TimeSpan.FromMinutes(330)));
-                break;
-            case "IncorrectExpiry":
-                SetPrivateProperty(conversation, "ExpiresAtUtc",
-                    ExpiresAtUtc.AddTicks(1));
-                break;
-            case "NonUtcExpiry":
-                SetPrivateProperty(conversation, "ExpiresAtUtc",
-                    ExpiresAtUtc.ToOffset(TimeSpan.FromMinutes(330)));
-                break;
-            case "DeletedBeforeCreation":
-                SetPrivateProperty(conversation, "DeletedAtUtc",
-                    CreatedAtUtc.AddTicks(-1));
-                break;
-            case "NonUtcDeletedAt":
-                SetPrivateProperty(conversation, "DeletedAtUtc",
-                    CreatedAtUtc.AddHours(1).ToOffset(
-                        TimeSpan.FromMinutes(330)));
-                break;
-            default:
-                throw new ArgumentOutOfRangeException(nameof(defect));
+            Assert.Equal(AiConversationRetentionState.Expired, AiConversationRetentionPolicy.Classify(row, now));
+            Assert.Equal(expiry.AddHours(24), AiConversationRetentionPolicy.GetActivePurgeTargetUtc(row, now));
+            Assert.Equal(saved, row.LastSavedUserMessageAtUtc);
+            Assert.Equal(expiry, row.ExpiresAtUtc);
+            Assert.Null(row.DeletedAtUtc);
         }
     }
+
+    [Fact]
+    public void OffsetClock_UsesSameInstantAndReturnsUtcDeadline()
+    {
+        var row = Create();
+        var localExpiry = row.ExpiresAtUtc.ToOffset(TimeSpan.FromMinutes(330));
+        Assert.Equal(AiConversationRetentionState.Expired, AiConversationRetentionPolicy.Classify(row, localExpiry));
+        var due = AiConversationRetentionPolicy.GetActivePurgeTargetUtc(row, localExpiry);
+        Assert.Equal(row.ExpiresAtUtc.AddHours(24), due);
+        Assert.Equal(TimeSpan.Zero, due!.Value.Offset);
+    }
+
+    [Fact]
+    public void NullConversation_IsRejectedByEveryEntryPoint()
+    {
+        Assert.Throws<ArgumentNullException>(() => AiConversationRetentionPolicy.Classify(null!, CreatedAt));
+        Assert.Throws<ArgumentNullException>(() => AiConversationRetentionPolicy.MustHideFromHistory(null!, CreatedAt));
+        Assert.Throws<ArgumentNullException>(() => AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(null!, CreatedAt));
+        Assert.Throws<ArgumentNullException>(() => AiConversationRetentionPolicy.GetManualDeletionPurgeTargetUtc(null!));
+        Assert.Throws<ArgumentNullException>(() => AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(null!, CreatedAt));
+        Assert.Throws<ArgumentNullException>(() => AiConversationRetentionPolicy.GetActivePurgeTargetUtc(null!, CreatedAt));
+        Assert.Throws<ArgumentNullException>(() => AiConversationRetentionPolicy.IsActivePurgeTargetReached(null!, CreatedAt));
+    }
+
+    [Fact]
+    public void DefaultClock_IsRejectedByTimedEntryPoints()
+    {
+        var row = Create();
+        Assert.Throws<ArgumentException>(() => AiConversationRetentionPolicy.Classify(row, default));
+        Assert.Throws<ArgumentException>(() => AiConversationRetentionPolicy.MustHideFromHistory(row, default));
+        Assert.Throws<ArgumentException>(() => AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(row, default));
+        Assert.Throws<ArgumentException>(() => AiConversationRetentionPolicy.IsManualDeletionPurgeTargetReached(row, default));
+        Assert.Throws<ArgumentException>(() => AiConversationRetentionPolicy.GetActivePurgeTargetUtc(row, default));
+        Assert.Throws<ArgumentException>(() => AiConversationRetentionPolicy.IsActivePurgeTargetReached(row, default));
+    }
+
+    [Theory]
+    [InlineData("Id")]
+    [InlineData("AccountId")]
+    [InlineData("ModuleProfileId")]
+    [InlineData("CreateOperationId")]
+    [InlineData("Module")]
+    [InlineData("CreatedAtUtc")]
+    [InlineData("CreatedOffset")]
+    [InlineData("LastSavedUserMessageAtUtc")]
+    [InlineData("SavedOffset")]
+    [InlineData("ExpiresAtUtc")]
+    [InlineData("ExpiryOffset")]
+    [InlineData("DeletedAtUtc")]
+    [InlineData("DeletedOffset")]
+    public void MalformedMaterializedState_IsRejected(string defect)
+    {
+        var row = Create();
+        var property = defect;
+        object value = Guid.Empty;
+        switch (defect)
+        {
+            case "Module": value = (AiModule)99; break;
+            case "CreatedAtUtc": value = default(DateTimeOffset); break;
+            case "CreatedOffset": property = "CreatedAtUtc"; value = CreatedAt.ToOffset(TimeSpan.FromHours(1)); break;
+            case "LastSavedUserMessageAtUtc": value = CreatedAt.AddTicks(-1); break;
+            case "SavedOffset": property = "LastSavedUserMessageAtUtc"; value = CreatedAt.ToOffset(TimeSpan.FromHours(1)); break;
+            case "ExpiresAtUtc": value = row.ExpiresAtUtc.AddTicks(1); break;
+            case "ExpiryOffset": property = "ExpiresAtUtc"; value = row.ExpiresAtUtc.ToOffset(TimeSpan.FromHours(1)); break;
+            case "DeletedAtUtc": value = CreatedAt.AddTicks(-1); break;
+            case "DeletedOffset": property = "DeletedAtUtc"; value = CreatedAt.ToOffset(TimeSpan.FromHours(1)); break;
+        }
+        // Reflection only simulates corrupted ORM state, not production-policy resolution.
+        typeof(AiConversationEntity).GetProperty(property)!
+            .GetSetMethod(nonPublic: true)!.Invoke(row, new[] { value });
+        Assert.Throws<InvalidOperationException>(() => AiConversationRetentionPolicy.Classify(row, CreatedAt));
+        Assert.Throws<InvalidOperationException>(() => AiConversationRetentionPolicy.MustHideFromHistory(row, CreatedAt));
+        Assert.Throws<InvalidOperationException>(() => AiConversationRetentionPolicy.RequiresActivePurgeEvaluation(row, CreatedAt));
+        Assert.Throws<InvalidOperationException>(() => AiConversationRetentionPolicy.GetManualDeletionPurgeTargetUtc(row));
+        Assert.Throws<InvalidOperationException>(() => AiConversationRetentionPolicy.GetActivePurgeTargetUtc(row, CreatedAt));
+    }
+
+    private static AiConversationEntity Create() =>
+        AiConversationEntity.CreateForFirstUserMessage(
+            new AiAuthorizedActor(Guid.NewGuid(), Guid.NewGuid(), AiModule.Learning),
+            Guid.NewGuid(), CreatedAt);
 }

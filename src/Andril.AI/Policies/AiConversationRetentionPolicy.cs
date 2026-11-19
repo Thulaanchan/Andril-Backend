@@ -1,4 +1,4 @@
-﻿
+
 using System;
 using Andril.AI.Persistence;
 
@@ -6,7 +6,7 @@ namespace Andril.AI.Policies;
 
 /// <summary>
 /// A conversation's retention state, independent of its module.
-/// Deleted takes precedence over expired if both conditions apply.
+/// Deleted takes precedence over expired.
 /// </summary>
 public enum AiConversationRetentionState
 {
@@ -16,37 +16,35 @@ public enum AiConversationRetentionState
 }
 
 /// <summary>
-/// Pure, M1-owned retention decisions for private AI conversations.
+/// Pure M1-owned retention decisions for private AI conversations.
 ///
-/// A conversation expires 14 days after its last successfully saved user
-/// message. Explicit deletion revokes access immediately and sets a target
-/// to purge active storage within 24 hours.
+/// Manual deletion or automatic 14-day inactivity expiry revokes
+/// access immediately and sets a 24-hour active-data purge target.
 ///
-/// This policy does not authorize an actor, query a database, perform purges,
-/// delete backups, grant legal exceptions, or register an HTTP endpoint.
-/// Repositories must deny access independently and run authorized, audited,
-/// idempotent purge operations under the approved retention/legal rules.
+/// This policy does not authenticate actors, query databases,
+/// execute deletion jobs, delete backups or expose HTTP endpoints.
 /// </summary>
 public static class AiConversationRetentionPolicy
 {
     /// <summary>
-    /// Target for removal from active storage after explicit deletion.
-    /// Not a guarantee that a job ran, nor a provider-backup retention rule.
+    /// Approved active-database content purge target.
+    /// Not a guarantee of physical deletion or backup erasure.
     /// </summary>
-    public static TimeSpan ManualDeletionActivePurgeTarget { get; } =
+    public static TimeSpan ActiveDataPurgeTarget { get; } =
         TimeSpan.FromHours(24);
 
-    /// <summary>
-    /// Classifies a persisted conversation at the server's supplied time.
-    /// A malformed persistence record fails closed by throwing.
-    /// Reads and classifications never extend conversation expiry.
-    /// </summary>
+    // Retained for compatibility with existing callers and tests.
+    public static TimeSpan ManualDeletionActivePurgeTarget =>
+        ActiveDataPurgeTarget;
+
     public static AiConversationRetentionState Classify(
         AiConversationEntity conversation,
         DateTimeOffset serverNowUtc)
     {
         ValidateConversation(conversation);
-        var nowUtc = NormalizeUtc(serverNowUtc, nameof(serverNowUtc));
+
+        var nowUtc = NormalizeUtc(
+            serverNowUtc, nameof(serverNowUtc));
 
         if (conversation.DeletedAtUtc is not null)
         {
@@ -58,21 +56,12 @@ public static class AiConversationRetentionPolicy
             : AiConversationRetentionState.Active;
     }
 
-    /// <summary>
-    /// A deleted or expired conversation must not appear in accessible history.
-    /// A returned false still does NOT prove current actor authorization.
-    /// </summary>
     public static bool MustHideFromHistory(
         AiConversationEntity conversation,
         DateTimeOffset serverNowUtc) =>
         Classify(conversation, serverNowUtc) !=
         AiConversationRetentionState.Active;
 
-    /// <summary>
-    /// Identifies rows eligible for evaluation by a future cleanup worker.
-    /// This is NOT permission to bypass legal holds or retention exceptions.
-    /// No data is deleted here.
-    /// </summary>
     public static bool RequiresActivePurgeEvaluation(
         AiConversationEntity conversation,
         DateTimeOffset serverNowUtc) =>
@@ -80,9 +69,8 @@ public static class AiConversationRetentionPolicy
         AiConversationRetentionState.Active;
 
     /// <summary>
-    /// Gets the target time for active-storage purge after explicit deletion.
-    /// Returns null when the conversation has not been marked deleted.
-    /// Automatic inactivity expiry is NOT assigned an invented purge SLA.
+    /// Legacy manual-deletion-only deadline.
+    /// New cleanup logic must use GetActivePurgeTargetUtc.
     /// </summary>
     public static DateTimeOffset? GetManualDeletionPurgeTargetUtc(
         AiConversationEntity conversation)
@@ -94,18 +82,68 @@ public static class AiConversationRetentionPolicy
             : null;
     }
 
-    /// <summary>
-    /// True when the manual-deletion target time has been reached.
-    /// This does not establish whether the actual data purge was completed.
-    /// </summary>
     public static bool IsManualDeletionPurgeTargetReached(
         AiConversationEntity conversation,
         DateTimeOffset serverNowUtc)
     {
-        var target = GetManualDeletionPurgeTargetUtc(conversation);
-        var nowUtc = NormalizeUtc(serverNowUtc, nameof(serverNowUtc));
+        var target = GetManualDeletionPurgeTargetUtc(
+            conversation);
 
-        return target is { } dueAtUtc && nowUtc >= dueAtUtc;
+        var nowUtc = NormalizeUtc(
+            serverNowUtc, nameof(serverNowUtc));
+
+        return target is { } dueAtUtc &&
+            nowUtc >= dueAtUtc;
+    }
+
+    /// <summary>
+    /// Returns the combined purge target for manual deletion
+    /// or automatic inactivity expiry.
+    ///
+    /// Active conversations have no actionable purge target.
+    /// The earliest revocation event starts the 24-hour clock.
+    /// A later deletion cannot postpone an existing expiry target.
+    ///
+    /// This does not authorize physical purge or bypass legal holds.
+    /// </summary>
+    public static DateTimeOffset? GetActivePurgeTargetUtc(
+        AiConversationEntity conversation,
+        DateTimeOffset serverNowUtc)
+    {
+        if (Classify(conversation, serverNowUtc) ==
+            AiConversationRetentionState.Active)
+        {
+            return null;
+        }
+
+        var revokedAtUtc = conversation.ExpiresAtUtc;
+
+        if (conversation.DeletedAtUtc is { } deletedAtUtc &&
+            deletedAtUtc < revokedAtUtc)
+        {
+            revokedAtUtc = deletedAtUtc;
+        }
+
+        return revokedAtUtc.Add(ActiveDataPurgeTarget);
+    }
+
+    /// <summary>
+    /// Determines whether the combined active-data purge target
+    /// has been reached.
+    /// Does not establish whether data was physically deleted.
+    /// </summary>
+    public static bool IsActivePurgeTargetReached(
+        AiConversationEntity conversation,
+        DateTimeOffset serverNowUtc)
+    {
+        var target = GetActivePurgeTargetUtc(
+            conversation, serverNowUtc);
+
+        var nowUtc = NormalizeUtc(
+            serverNowUtc, nameof(serverNowUtc));
+
+        return target is { } dueAtUtc &&
+            nowUtc >= dueAtUtc;
     }
 
     private static void ValidateConversation(
@@ -122,7 +160,8 @@ public static class AiConversationRetentionPolicy
             conversation.CreatedAtUtc.Offset != TimeSpan.Zero ||
             conversation.LastSavedUserMessageAtUtc <
                 conversation.CreatedAtUtc ||
-            conversation.LastSavedUserMessageAtUtc.Offset != TimeSpan.Zero ||
+            conversation.LastSavedUserMessageAtUtc.Offset !=
+                TimeSpan.Zero ||
             conversation.ExpiresAtUtc.Offset != TimeSpan.Zero ||
             conversation.ExpiresAtUtc !=
                 AiConversationExpiryPolicy.GetExpiresAtUtc(
