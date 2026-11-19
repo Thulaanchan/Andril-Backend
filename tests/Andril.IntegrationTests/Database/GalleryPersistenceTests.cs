@@ -1,5 +1,6 @@
 using System;
 using System.Data;
+using System.Data.Common;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -95,6 +96,157 @@ public sealed class GalleryPersistenceTests
         Assert.False(await repository.SetCoverAsync(Older, Guid.Empty));
         Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
     }
+
+    [MapCapturePostgresFact]
+    public Task SetCover_RejectsUnrelatedWritesAndCanProceedOnceContextIsClean() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await SeedAsync(connection);
+            await using var writer = CreateContext(connection);
+            var repository = Repository(writer);
+            var other = await writer.GalleryMedia.SingleAsync(media => media.Id == ForeignOwner);
+            writer.ChangeTracker.AutoDetectChangesEnabled = false;
+            other.Title = "Caller-owned change";
+
+            var failure = await Assert.ThrowsAsync<InvalidOperationException>(() => repository.SetCoverAsync(Older, Owner));
+            Assert.Contains("pending changes", failure.Message);
+            Assert.Equal(EntityState.Modified, writer.Entry(other).State);
+            Assert.Equal("Caller-owned change", other.Title);
+            await using var reader = CreateContext(connection);
+            Assert.Empty(await reader.GalleryPreferences.ToListAsync());
+            Assert.Equal("Original title", (await reader.GalleryMedia.AsNoTracking().SingleAsync(media => media.Id == ForeignOwner)).Title);
+
+            writer.Entry(other).Property(media => media.Title).CurrentValue = "Original title";
+            writer.Entry(other).State = EntityState.Unchanged;
+            Assert.True(await repository.SetCoverAsync(Older, Owner));
+            Assert.True(await repository.SetCoverAsync(Newer, Owner));
+            Assert.Same(other, Assert.Single(writer.ChangeTracker.Entries()).Entity);
+            Assert.Equal(EntityState.Unchanged, writer.Entry(other).State);
+            Assert.Equal(Newer, await Repository(reader).GetCoverIdAsync(Owner));
+        });
+
+    [Theory]
+    [InlineData(EntityState.Added)]
+    [InlineData(EntityState.Modified)]
+    [InlineData(EntityState.Deleted)]
+    public async Task SetCover_RejectsPendingChangesEvenWithAutoDetectDisabled(EntityState pendingState)
+    {
+        await using var context = CreateContext(interceptor: new RejectConnectionOpen());
+        var unrelated = context.GalleryMedia.Attach(Media(ForeignOwner, OtherOwner, CreatedAt));
+        var untouched = context.GalleryPreferences.Attach(new GalleryPreferences { OwnerModuleProfileId = OtherOwner });
+        context.ChangeTracker.AutoDetectChangesEnabled = false;
+        if (pendingState == EntityState.Modified)
+            unrelated.Entity.Title = "Pending title";
+        else
+            unrelated.State = pendingState;
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Repository(context).SetCoverAsync(Older, Owner));
+        Assert.Contains("pending changes", error.Message);
+        Assert.Equal(pendingState, unrelated.State);
+        Assert.Equal(pendingState == EntityState.Modified ? "Pending title" : "Original title", unrelated.Entity.Title);
+        Assert.Equal(EntityState.Unchanged, untouched.State);
+        Assert.Equal(2, context.ChangeTracker.Entries().Count());
+        Assert.Null(context.Database.CurrentTransaction);
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
+
+    [Fact]
+    public async Task SetCover_RejectsAnAlreadyTrackedOwnerPreferenceWithoutChangingIt()
+    {
+        await using var context = CreateContext(interceptor: new RejectConnectionOpen());
+        var existing = context.GalleryPreferences.Attach(new GalleryPreferences
+        {
+            OwnerModuleProfileId = Owner,
+            CoverMediaId = Newer
+        });
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Repository(context).SetCoverAsync(Older, Owner));
+        Assert.Contains("already tracked", error.Message);
+        Assert.Equal(EntityState.Unchanged, existing.State);
+        Assert.Equal(Newer, existing.Entity.CoverMediaId);
+        Assert.Same(existing.Entity, Assert.Single(context.ChangeTracker.Entries()).Entity);
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
+
+    [Fact]
+    public async Task SetCover_PropagatesPreCancellationWithoutTouchingPendingState()
+    {
+        await using var context = CreateContext(interceptor: new RejectConnectionOpen());
+        var unrelated = context.GalleryMedia.Add(Media(ForeignOwner, OtherOwner, CreatedAt));
+        var token = new CancellationToken(canceled: true);
+
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => Repository(context).SetCoverAsync(Older, Owner, token));
+        Assert.Equal(token, error.CancellationToken);
+        Assert.Equal(EntityState.Added, unrelated.State);
+        Assert.Same(unrelated.Entity, Assert.Single(context.ChangeTracker.Entries()).Entity);
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
+
+    [MapCapturePostgresFact]
+    public Task SetCover_FailedInsertLeavesNoPendingPreferenceForLaterWrites() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await SeedAsync(connection);
+            await using var writer = CreateContext(connection);
+            await writer.Database.ExecuteSqlRawAsync(
+                """ALTER TABLE "GalleryPreferences" ADD CONSTRAINT ck_test_reject_cover CHECK ("CoverMediaId" IS NULL)""");
+            var unrelated = await writer.GalleryMedia.SingleAsync(media => media.Id == ForeignOwner);
+            var error = await Assert.ThrowsAsync<DbUpdateException>(() => Repository(writer).SetCoverAsync(Older, Owner));
+            var postgres = Assert.IsType<PostgresException>(error.InnerException);
+            Assert.Equal(PostgresErrorCodes.CheckViolation, postgres.SqlState);
+            Assert.Equal("ck_test_reject_cover", postgres.ConstraintName);
+            Assert.Same(unrelated, Assert.Single(writer.ChangeTracker.Entries()).Entity);
+            Assert.Equal(EntityState.Unchanged, writer.Entry(unrelated).State);
+            Assert.Null(writer.Database.CurrentTransaction);
+
+            unrelated.Title = "Later title";
+            Assert.Equal(1, await writer.SaveChangesAsync());
+            await using var reader = CreateContext(connection);
+            Assert.Empty(await reader.GalleryPreferences.ToListAsync());
+            Assert.Equal("Later title", (await reader.GalleryMedia.SingleAsync(media => media.Id == ForeignOwner)).Title);
+        });
+
+    [MapCapturePostgresFact]
+    public Task SetCover_CancellationBeforeCommitRollsBackUpdateAndDetachesItsPreference() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await SeedAsync(connection);
+            await using (var seed = CreateContext(connection))
+            {
+                Assert.True(await Repository(seed).SetCoverAsync(Older, Owner));
+            }
+
+            using var cancellation = new CancellationTokenSource();
+            var interceptor = new CancelCoverCommit(cancellation);
+            await using var writer = CreateContext(connection, interceptor);
+            var unrelated = await writer.GalleryMedia.SingleAsync(media => media.Id == ForeignOwner);
+            var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => Repository(writer).SetCoverAsync(Newer, Owner, cancellation.Token));
+            Assert.Equal(cancellation.Token, error.CancellationToken);
+            Assert.True(interceptor.ReachedCommit);
+            Assert.Same(unrelated, Assert.Single(writer.ChangeTracker.Entries()).Entity);
+            Assert.Equal(EntityState.Unchanged, writer.Entry(unrelated).State);
+            Assert.Null(writer.Database.CurrentTransaction);
+
+            unrelated.Title = "Later title";
+            Assert.Equal(1, await writer.SaveChangesAsync());
+            await using var reader = CreateContext(connection);
+            Assert.Equal(Older, await Repository(reader).GetCoverIdAsync(Owner));
+        });
+
+    [MapCapturePostgresFact]
+    public Task SetCover_RejectsCallerOwnedTransactionWithoutEndingIt() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await SeedAsync(connection);
+            await using var writer = CreateContext(connection);
+            await using var transaction = await writer.Database.BeginTransactionAsync();
+            var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Repository(writer).SetCoverAsync(Older, Owner));
+            Assert.Contains("own transaction", error.Message);
+            Assert.Same(transaction, writer.Database.CurrentTransaction);
+            Assert.Empty(await writer.GalleryPreferences.ToListAsync());
+            await transaction.RollbackAsync();
+        });
 
     [MapCapturePostgresFact]
     public Task Repository_ListsAndRetrievesOnlyTheOwnersActiveHobbiesMedia() =>
@@ -268,6 +420,33 @@ public sealed class GalleryPersistenceTests
                 _ready.TrySetResult();
             await _ready.Task.WaitAsync(TimeSpan.FromSeconds(20), cancellationToken);
             return result;
+        }
+    }
+
+    private sealed class RejectConnectionOpen : DbConnectionInterceptor
+    {
+        public override ValueTask<InterceptionResult> ConnectionOpeningAsync(
+            DbConnection connection, ConnectionEventData eventData, InterceptionResult result,
+            CancellationToken cancellationToken = default) =>
+            throw new InvalidOperationException("The offline test attempted to open a database connection.");
+    }
+
+    private sealed class CancelCoverCommit(CancellationTokenSource cancellation) : DbTransactionInterceptor
+    {
+        public bool ReachedCommit { get; private set; }
+
+        public override ValueTask<InterceptionResult> TransactionCommittingAsync(
+            DbTransaction transaction, TransactionEventData eventData, InterceptionResult result,
+            CancellationToken cancellationToken = default)
+        {
+            // Simulate cancellation after SaveChangesAsync completes, before the provider commits.
+            var preference = Assert.Single(eventData.Context!.ChangeTracker.Entries<GalleryPreferences>());
+            Assert.Equal(EntityState.Unchanged, preference.State);
+            Assert.Equal(Newer, preference.Entity.CoverMediaId);
+            ReachedCommit = true;
+            cancellation.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(result);
         }
     }
 

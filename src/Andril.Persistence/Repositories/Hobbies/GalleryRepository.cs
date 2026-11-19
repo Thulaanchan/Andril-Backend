@@ -1,5 +1,5 @@
 
-using System.Data;
+using System.Transactions;
 using Andril.Hobbies.Entities;
 using Andril.Hobbies.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -132,9 +132,30 @@ public sealed class GalleryRepository<TDbContext>
             return false;
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var tracker = _context.ChangeTracker;
+        tracker.DetectChanges();
+        if (tracker.HasChanges())
+            throw new InvalidOperationException("The Gallery context contains pending changes.");
+
+        // Leave caller-owned instances untouched and avoid EF identity conflicts or stale reads.
+        if (tracker.Entries<GalleryPreferences>().Any(entry =>
+            entry.Entity.OwnerModuleProfileId == ownerModuleProfileId))
+        {
+            throw new InvalidOperationException("The owner's Gallery preferences are already tracked.");
+        }
+
+        var database = _context.Database;
+        if (database.CurrentTransaction is not null || Transaction.Current is not null
+            || database.GetEnlistedTransaction() is not null)
+        {
+            throw new InvalidOperationException("Cover selection requires its own transaction.");
+        }
+
         await using var transaction =
-            await _context.Database.BeginTransactionAsync(
-                IsolationLevel.Serializable,
+            await database.BeginTransactionAsync(
+                System.Data.IsolationLevel.Serializable,
                 cancellationToken);
 
         var mediaExists = await _context.Set<GalleryMedia>()
@@ -151,31 +172,41 @@ public sealed class GalleryRepository<TDbContext>
 
         var preferences = await _context
             .Set<GalleryPreferences>()
+            .AsNoTracking()
             .SingleOrDefaultAsync(
                 x =>
                     x.OwnerModuleProfileId == ownerModuleProfileId,
                 cancellationToken);
 
-        if (preferences is null)
+        var isNew = preferences is null;
+        preferences ??= new GalleryPreferences
         {
-            preferences = new GalleryPreferences
+            OwnerModuleProfileId = ownerModuleProfileId,
+            CoverMediaId = mediaId
+        };
+
+        var entry = _context.Entry(preferences);
+        try
+        {
+            if (isNew)
             {
-                OwnerModuleProfileId = ownerModuleProfileId,
-                CoverMediaId = mediaId
-            };
+                entry.State = EntityState.Added;
+            }
+            else if (preferences.CoverMediaId != mediaId)
+            {
+                entry.State = EntityState.Unchanged;
+                var cover = entry.Property(preference => preference.CoverMediaId);
+                cover.CurrentValue = mediaId;
+                cover.IsModified = true;
+            }
 
-            _context.Set<GalleryPreferences>()
-                .Add(preferences);
+            await _context.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return true;
         }
-        else
+        finally
         {
-            preferences.CoverMediaId = mediaId;
+            entry.State = EntityState.Detached;
         }
-
-        await _context.SaveChangesAsync(cancellationToken);
-
-        await transaction.CommitAsync(cancellationToken);
-
-        return true;
     }
 }
