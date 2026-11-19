@@ -4,6 +4,7 @@ using System.Data.Common;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Transactions;
 using Andril.Hobbies.Entities;
 using Andril.Hobbies.Interfaces;
 using Andril.Persistence.DbContexts;
@@ -11,6 +12,7 @@ using Andril.Persistence.Repositories.Hobbies;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 using Xunit;
 
@@ -27,6 +29,7 @@ public sealed class GalleryPersistenceTests
     private static readonly Guid ForeignModule = new("20000000-0000-4000-8000-000000000004");
     private static readonly Guid Deleted = new("20000000-0000-4000-8000-000000000005");
     private static readonly Guid Missing = new("20000000-0000-4000-8000-000000000006");
+    private static readonly Guid AlternateCover = new("20000000-0000-4000-8000-000000000007");
     private static readonly DateTimeOffset CreatedAt = new(2026, 11, 19, 9, 0, 0, TimeSpan.Zero);
 
     [Fact]
@@ -95,6 +98,93 @@ public sealed class GalleryPersistenceTests
         Assert.False(await repository.SetCoverAsync(Guid.Empty, Owner));
         Assert.False(await repository.SetCoverAsync(Older, Guid.Empty));
         Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
+
+    [MapCapturePostgresFact]
+    public Task SetCover_ConcurrentReplacementPropagatesSerializationFailureWithoutRetrying() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await SeedAsync(connection);
+            await using (var seed = CreateContext(connection))
+            {
+                seed.GalleryMedia.Add(Media(AlternateCover, Owner, CreatedAt));
+                await seed.SaveChangesAsync();
+                Assert.True(await Repository(seed).SetCoverAsync(Older, Owner));
+            }
+
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+            var gate = new CoverSaveGate();
+            await using var first = CreateContext(connection, gate);
+            await using var second = CreateContext(connection, gate);
+            var errors = await Task.WhenAll(
+                Record.ExceptionAsync(async () => Assert.True(await Repository(first).SetCoverAsync(Newer, Owner, deadline.Token))),
+                Record.ExceptionAsync(async () => Assert.True(await Repository(second).SetCoverAsync(AlternateCover, Owner, deadline.Token))));
+
+            Assert.Contains(errors, error => error is null);
+            var failure = Assert.Single(errors, error => error is not null);
+            var postgres = Assert.IsType<PostgresException>(failure is DbUpdateException update ? update.InnerException : failure);
+            Assert.Equal(PostgresErrorCodes.SerializationFailure, postgres.SqlState);
+            Assert.Equal(2, gate.Arrivals);
+            Assert.Empty(first.ChangeTracker.Entries());
+            Assert.Empty(second.ChangeTracker.Entries());
+            Assert.Null(first.Database.CurrentTransaction);
+            Assert.Null(second.Database.CurrentTransaction);
+
+            await using var reader = CreateContext(connection);
+            var winner = errors[0] is null ? Newer : AlternateCover;
+            var preference = Assert.Single(await reader.GalleryPreferences.AsNoTracking().ToListAsync());
+            Assert.Equal(Owner, preference.OwnerModuleProfileId);
+            Assert.Equal(winner, preference.CoverMediaId);
+            Assert.Equal(winner, await Repository(reader).GetCoverIdAsync(Owner));
+        });
+
+    [Fact]
+    public async Task SetCover_RejectsRetryingExecutionStrategyBeforeOpeningConnection()
+    {
+        await using var context = CreateContext(interceptor: new RejectConnectionOpen(), retrying: true);
+        var unrelated = context.GalleryMedia.Attach(Media(ForeignOwner, OtherOwner, CreatedAt));
+        Assert.True(context.Database.CreateExecutionStrategy().RetriesOnFailure);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Repository(context).SetCoverAsync(Older, Owner));
+        Assert.Contains("non-retrying execution strategy", error.Message);
+        Assert.Equal(EntityState.Unchanged, unrelated.State);
+        Assert.Same(unrelated.Entity, Assert.Single(context.ChangeTracker.Entries()).Entity);
+        Assert.Null(context.Database.CurrentTransaction);
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
+
+    [Fact]
+    public async Task SetCover_RejectsAnOuterRetryingExecutionStrategyBeforeOpeningConnection()
+    {
+        await using var context = CreateContext(interceptor: new RejectConnectionOpen());
+        await using var retrying = CreateContext(interceptor: new RejectConnectionOpen(), retrying: true);
+        var strategy = retrying.Database.CreateExecutionStrategy();
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            strategy.ExecuteAsync(() => Repository(context).SetCoverAsync(Older, Owner)));
+
+        Assert.Contains("non-retrying execution strategy", error.Message);
+        Assert.Empty(context.ChangeTracker.Entries());
+        Assert.Null(context.Database.CurrentTransaction);
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
+
+    [Fact]
+    public async Task SetCover_RejectsAmbientTransactionWithoutEndingItOrOpeningConnection()
+    {
+        await using var context = CreateContext(interceptor: new RejectConnectionOpen());
+        using var scope = new TransactionScope(TransactionScopeOption.RequiresNew, TransactionScopeAsyncFlowOption.Enabled);
+        var ambient = Transaction.Current;
+        Assert.NotNull(ambient);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => Repository(context).SetCoverAsync(Older, Owner));
+        Assert.Contains("own transaction", error.Message);
+        Assert.Same(ambient, Transaction.Current);
+        Assert.Equal(TransactionStatus.Active, ambient.TransactionInformation.Status);
+        Assert.Empty(context.ChangeTracker.Entries());
+        Assert.Null(context.Database.CurrentTransaction);
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+        scope.Complete();
     }
 
     [MapCapturePostgresFact]
@@ -399,9 +489,14 @@ public sealed class GalleryPersistenceTests
         CreatedAtUtc = createdAt
     };
 
-    private static HobbiesGalleryDbContext CreateContext(string connection = OfflineConnection, IInterceptor? interceptor = null)
+    private static HobbiesGalleryDbContext CreateContext(
+        string connection = OfflineConnection, IInterceptor? interceptor = null, bool retrying = false)
     {
-        var options = new DbContextOptionsBuilder<HobbiesGalleryDbContext>().UseNpgsql(connection);
+        var options = new DbContextOptionsBuilder<HobbiesGalleryDbContext>().UseNpgsql(connection, postgres =>
+        {
+            if (retrying)
+                postgres.EnableRetryOnFailure();
+        });
         if (interceptor is not null)
             options.AddInterceptors(interceptor);
         return new HobbiesGalleryDbContext(options.Options);
@@ -411,11 +506,12 @@ public sealed class GalleryPersistenceTests
     {
         private readonly TaskCompletionSource _ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _arrivals;
+        public int Arrivals => Volatile.Read(ref _arrivals);
 
         public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
             DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
         {
-            // Both transactions must see the absence of preferences before either attempts its insert.
+            // Both transactions read the same preference state before either writes it.
             if (Interlocked.Increment(ref _arrivals) == 2)
                 _ready.TrySetResult();
             await _ready.Task.WaitAsync(TimeSpan.FromSeconds(20), cancellationToken);
