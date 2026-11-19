@@ -3,6 +3,8 @@ using System.Text;
 using Andril.AI.Interfaces;
 using Andril.AI.Policies;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Andril.UnitTests")]
+
 namespace Andril.AI.Providers.OpenAi;
 
 /// <summary>Future trusted server-side credential handoff ONLY. No configuration/env/key loading.
