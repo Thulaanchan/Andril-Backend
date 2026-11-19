@@ -1,4 +1,5 @@
 
+using System.Text.Json;
 using Andril.Hobbies.Entities;
 using Andril.Hobbies.Interfaces;
 using Andril.Hobbies.Services;
@@ -10,6 +11,8 @@ public sealed class GalleryServiceTests
 {
     private static readonly Guid OwnerId = Guid.NewGuid();
     private static readonly Guid OtherOwnerId = Guid.NewGuid();
+    private static readonly Guid SerializationOwnerId = new("11111111-1111-4111-8111-111111111111");
+    private const string PrivateStoragePath = "private/synthetic-gallery/";
 
     private static GalleryMedia CreateMedia(
         Guid ownerId,
@@ -225,6 +228,76 @@ public sealed class GalleryServiceTests
         Assert.True(selected);
         Assert.NotNull(photo);
         Assert.True(photo.IsCover);
+    }
+
+    [Fact]
+    public async Task GetMine_SerializedArrayContainsOnlyOrdinaryGalleryMetadata()
+    {
+        var repository = new FakeGalleryRepository();
+        var first = CreateSerializationMedia(new Guid("22222222-2222-4222-8222-222222222222"), "Trail");
+        var second = CreateSerializationMedia(new Guid("33333333-3333-4333-8333-333333333333"), "Summit");
+        repository.Media.AddRange([first, second]);
+        Assert.True(await repository.SetCoverAsync(second.Id, SerializationOwnerId));
+        var service = CreateService(repository, profileId: SerializationOwnerId);
+
+        var photos = await service.GetMineAsync();
+        var json = JsonSerializer.Serialize(photos, JsonSerializerOptions.Web);
+        using var document = JsonDocument.Parse(json);
+
+        Assert.Equal(JsonValueKind.Array, document.RootElement.ValueKind);
+        Assert.Collection(document.RootElement.EnumerateArray(),
+            photo => AssertOrdinaryPhotoJson(photo, first, isCover: false),
+            photo => AssertOrdinaryPhotoJson(photo, second, isCover: true));
+        Assert.DoesNotContain(PrivateStoragePath, json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetMineById_SerializedObjectContainsOnlyOrdinaryGalleryMetadata()
+    {
+        var repository = new FakeGalleryRepository();
+        var media = CreateSerializationMedia(new Guid("44444444-4444-4444-8444-444444444444"), "River");
+        repository.Media.Add(media);
+        var service = CreateService(repository, profileId: SerializationOwnerId);
+
+        var photo = await service.GetMineByIdAsync(media.Id);
+        Assert.NotNull(photo);
+        var json = JsonSerializer.Serialize(photo, JsonSerializerOptions.Web);
+        using var document = JsonDocument.Parse(json);
+
+        AssertOrdinaryPhotoJson(document.RootElement, media, isCover: false);
+    }
+
+    private static GalleryMedia CreateSerializationMedia(Guid id, string title) => new()
+    {
+        Id = id,
+        OwnerModuleProfileId = SerializationOwnerId,
+        Title = title,
+        Description = "Synthetic Gallery description",
+        Category = "Nature",
+        MediaType = "Photo",
+        StorageObjectKey = $"{PrivateStoragePath}{id:N}.jpg",
+        IsPrivate = true,
+        CreatedAtUtc = new DateTimeOffset(2026, 11, 19, 10, 0, 0, TimeSpan.Zero)
+    };
+
+    private static void AssertOrdinaryPhotoJson(JsonElement photo, GalleryMedia media, bool isCover)
+    {
+        Assert.Equal(JsonValueKind.Object, photo.ValueKind);
+        Assert.Equal(new[] { "category", "createdAtUtc", "description", "id", "isCover", "isPrivate", "mediaType", "title" },
+            photo.EnumerateObject().Select(property => property.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(media.Id, photo.GetProperty("id").GetGuid());
+        Assert.Equal(media.Title, photo.GetProperty("title").GetString());
+        Assert.Equal(media.Description, photo.GetProperty("description").GetString());
+        Assert.Equal(media.Category, photo.GetProperty("category").GetString());
+        Assert.Equal(media.MediaType, photo.GetProperty("mediaType").GetString());
+        Assert.Equal(media.CreatedAtUtc, photo.GetProperty("createdAtUtc").GetDateTimeOffset());
+        Assert.Equal(media.IsPrivate, photo.GetProperty("isPrivate").GetBoolean());
+        Assert.Equal(isCover, photo.GetProperty("isCover").GetBoolean());
+
+        var json = photo.GetRawText();
+        Assert.DoesNotContain(media.StorageObjectKey, json, StringComparison.Ordinal);
+        Assert.DoesNotContain(PrivateStoragePath, json, StringComparison.Ordinal);
+        Assert.DoesNotContain(media.OwnerModuleProfileId.ToString(), json, StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class FakeGalleryActorContext
