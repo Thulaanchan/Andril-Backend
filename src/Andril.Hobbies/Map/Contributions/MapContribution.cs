@@ -26,7 +26,7 @@ public sealed class MapContribution
         string privatePhotoStorageObjectKey,
         string description,
         MapContributionLocationEvidence locationEvidence,
-        DateTimeOffset submittedAt)
+        DateTimeOffset submittedAtUtc)
     {
         ContributionId = contributionId;
         OwnerHobbiesModuleProfileId = ownerHobbiesModuleProfileId;
@@ -35,7 +35,7 @@ public sealed class MapContribution
         PrivatePhotoStorageObjectKey = privatePhotoStorageObjectKey;
         Description = description;
         LocationEvidence = locationEvidence;
-        SubmittedAtUtc = submittedAt.ToUniversalTime();
+        SubmittedAtUtc = submittedAtUtc.ToUniversalTime();
     }
 
     public Guid ContributionId { get; }
