@@ -3,6 +3,7 @@ using System.Transactions;
 using Andril.Hobbies.Entities;
 using Andril.Hobbies.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Andril.Persistence.Repositories.Hobbies;
 
@@ -152,6 +153,10 @@ public sealed class GalleryRepository<TDbContext>
         {
             throw new InvalidOperationException("Cover selection requires its own transaction.");
         }
+        // An outer EF strategy can also retry the entire operation.
+        if (ExecutionStrategy.Current?.RetriesOnFailure == true
+            || database.CreateExecutionStrategy().RetriesOnFailure)
+            throw new InvalidOperationException("Cover selection requires a non-retrying execution strategy.");
 
         await using var transaction =
             await database.BeginTransactionAsync(
