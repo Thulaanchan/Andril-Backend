@@ -30,6 +30,11 @@ public sealed class HobbiesMapDbContext : DbContext
     /// </summary>
     public DbSet<MapAttraction> MapAttractions => Set<MapAttraction>();
 
+    /// <summary>
+    /// Private Map contribution records.
+    /// </summary>
+    public DbSet<MapContribution> MapContributions => Set<MapContribution>();
+
     protected override void OnModelCreating(
         ModelBuilder modelBuilder)
     {
@@ -40,5 +45,8 @@ public sealed class HobbiesMapDbContext : DbContext
 
         modelBuilder.ApplyConfiguration(
             new MapAttractionConfiguration());
+
+        modelBuilder.ApplyConfiguration(
+            new MapContributionConfiguration());
     }
 }
