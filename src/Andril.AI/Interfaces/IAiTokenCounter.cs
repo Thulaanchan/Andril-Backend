@@ -212,6 +212,23 @@ public static class AiTokenCountContract
             ? AiTokenCountValidationOutcome.ValidMeasurement : AiTokenCountValidationOutcome.Invalid;
     }
 
+    /// <summary>Structural comparison against the independently retained expected payload binding.
+    /// Does not authenticate the counter or authorize a reservation/dispatch.</summary>
+    public static bool MatchesBinding(AiTokenCountResult? result, AiProviderPayloadBinding? expected) =>
+        result is { State: AiTokenCountState.Measured, Provenance: { } provenance, Evidence: { } evidence } &&
+        expected is not null && result.PayloadBinding == expected &&
+        AiPreparedProviderPayload.ValidDigest(expected.PayloadSha256) &&
+        AiPreparedProviderPayload.ValidDigest(expected.RequestFingerprint) &&
+        AiPreparedProviderPayload.ValidIdentifier(expected.Model) &&
+        AiPreparedProviderPayload.ValidIdentifier(expected.FramingRevision) &&
+        AiPreparedProviderPayload.ValidIdentifier(expected.ExecutionConfiguration) &&
+        AiPreparedProviderPayload.ValidIdentifier(provenance.CounterId) &&
+        AiPreparedProviderPayload.ValidIdentifier(provenance.CounterRevision) &&
+        provenance.FramingRevision == expected.FramingRevision &&
+        AiBudgetPolicy.ValidTokens(evidence, expected.Model) &&
+        evidence.RequestFingerprint == expected.RequestFingerprint &&
+        evidence.MaxBillableOutputTokens == expected.MaxBillableOutputTokens;
+
     /// <summary>Fail-closed consumer for callers needing verified-shaped numeric evidence.
     /// Cancellation before/after the counter prevents returning success; no fallback or retry.
     /// The selected counter must still be independently trusted. No tokenizer is implemented.</summary>

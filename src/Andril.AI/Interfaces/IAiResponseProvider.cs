@@ -19,11 +19,17 @@ public interface IAiResponseProvider
 /// </summary>
 public sealed record AiProviderPrompt(
     AiModule Module,
-    string Text);
+    string Text)
+{
+    public override string ToString() => "AiProviderPrompt [private content and bindings omitted]";
+}
 
 /// <summary>
 /// Response returned by the AI provider.
 /// </summary>
 public sealed record AiProviderResponse(
     string Text,
-    bool IsMock);
+    bool IsMock)
+{
+    public override string ToString() => "AiProviderResponse [private content and bindings omitted]";
+}

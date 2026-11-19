@@ -1,3 +1,4 @@
+using Andril.AI.Interfaces;
 using Andril.AI.DTOs;
 using System.Numerics;
 
@@ -5,33 +6,77 @@ namespace Andril.AI.Policies;
 
 // Proposed internal evidence contracts. Values are meaningful only from independently trusted
 // readers/storage. Records/IDs/flags are not authorization or proof of authenticity themselves.
+// Complete coverage must be resolved from approved trusted pricing/billing records by M2.
+// This marker is not approval or authentication. Unknown/default never authorizes paid spending.
+public enum AiBillingCoverage { Unknown, Incomplete, ApprovedComplete }
+/// <summary>Actual observations; optional categories remain missing, not verified zero.
+/// Output already includes reasoning. No category prices or new formula are supplied.</summary>
+public sealed record AiBillingUsage(long InputTokens, long OutputTokens, long TotalTokens,
+    long? CachedInputTokens, long? ReasoningTokens, long? CacheWriteTokens,
+    long? CacheWrite30MinuteTokens, long? CacheWrite12HourTokens)
+{
+    public override string ToString() => "AiBillingUsage [private evidence omitted]";
+}
 public enum AiExecutionMode { Unknown, PaidText, Mock }
 public enum AiBillingState { Unknown, Reserved, Pending, Settled }
 public enum AiBudgetOutcome { Unknown, Reserved, Existing, Status, Settled, Pending, Denied, Insufficient, Conflict, MockNoSpend }
-public sealed record AiBudgetWindow(Guid Id, DateTimeOffset StartUtc, DateTimeOffset EndUtc);
+public sealed record AiBudgetWindow(Guid Id, DateTimeOffset StartUtc, DateTimeOffset EndUtc)
+{
+    public override string ToString() => "AiBudgetWindow [private evidence omitted]";
+}
 public sealed record AiPricingEvidence(string Model, string Revision, decimal InputUsdPerMillion,
-    decimal OutputUsdPerMillion, bool SupportedTextOnly);
+    decimal OutputUsdPerMillion, bool SupportedTextOnly,
+    AiBillingCoverage Coverage = AiBillingCoverage.Unknown)
+{
+    public override string ToString() => "AiPricingEvidence [private evidence omitted]";
+}
 public sealed record AiTokenEvidence(string Model, string RequestFingerprint, int SystemTokens, int UserTokens,
     int HistoryTokens, int FramingTokens, int OtherInputTokens, int FullInputTokens, int MaxBillableOutputTokens,
-    bool FullRequestVerified, bool OutputIncludesReasoning);
+    bool FullRequestVerified, bool OutputIncludesReasoning)
+{
+    public override string ToString() => "AiTokenEvidence [private evidence omitted]";
+}
 public sealed record AiBudgetPreparation(AiGenerationAttemptReference Attempt, AiOperationSnapshot Operation,
-    AiBudgetWindow Window, DateTimeOffset NowUtc, AiExecutionMode Mode, AiTokenEvidence? Tokens, AiPricingEvidence? Pricing);
-public sealed record AiBudgetBalance(decimal CommittedUsd, decimal OutstandingUsd);
+    AiBudgetWindow Window, DateTimeOffset NowUtc, AiExecutionMode Mode, AiTokenEvidence? Tokens, AiPricingEvidence? Pricing,
+    AiTokenCountResult? Measurement = null, AiProviderPayloadBinding? ExpectedPayloadBinding = null)
+{
+    public override string ToString() => "AiBudgetPreparation [private evidence omitted]";
+}
+public sealed record AiBudgetBalance(decimal CommittedUsd, decimal OutstandingUsd)
+{
+    public override string ToString() => "AiBudgetBalance [private evidence omitted]";
+}
 public sealed record AiBudgetReservation(AiGenerationAttemptReference Attempt, AiBudgetWindow Window,
     string Model, string PricingRevision, string RequestFingerprint, decimal ReservedUsd,
     AiBillingState State, decimal? ActualUsd = null, Guid? BillingEventId = null,
-    AiProviderBillingEvidence? FinalEvidence = null);
-public sealed record AiBudgetResult(AiBudgetOutcome Outcome, AiBudgetReservation? Reservation = null);
+    AiProviderBillingEvidence? FinalEvidence = null, AiTokenCountResult? Measurement = null)
+{
+    public override string ToString() => "AiBudgetReservation [private evidence omitted]";
+}
+public sealed record AiBudgetResult(AiBudgetOutcome Outcome, AiBudgetReservation? Reservation = null)
+{
+    public override string ToString() => "AiBudgetResult [private evidence omitted]";
+}
 public enum AiBillingEvidenceKind { Unknown, Uncertain, Final }
 /// <summary>Final means full cumulative liability for this execution is authoritative, including
 /// billable reasoning. Input/output usage are ACTUAL usage, not requested token limits.
 /// Verified invoice adjustments require a future versioned contract; conflicting events block.</summary>
 public sealed record AiProviderBillingEvidence(Guid EventId, AiGenerationAttemptReference Attempt,
     Guid WindowId, string Model, string PricingRevision, AiBillingEvidenceKind Kind,
-    long InputTokens, long BillableOutputTokens, decimal? ActualUsd, bool UsageVerified);
+    long InputTokens, long BillableOutputTokens, decimal? ActualUsd, bool UsageVerified,
+    AiBillingUsage? Usage = null, AiBillingCoverage Coverage = AiBillingCoverage.Unknown)
+{
+    public override string ToString() => "AiProviderBillingEvidence [private evidence omitted]";
+}
 public sealed record AiBudgetSettlement(AiBudgetOutcome Outcome, AiBudgetReservation Reservation,
-    decimal AdditionalCommittedUsd, decimal ReleasedExposureUsd);
-public sealed record AiBudgetWarnings(bool First, bool Second, bool CapReached);
+    decimal AdditionalCommittedUsd, decimal ReleasedExposureUsd)
+{
+    public override string ToString() => "AiBudgetSettlement [private evidence omitted]";
+}
+public sealed record AiBudgetWarnings(bool First, bool Second, bool CapReached)
+{
+    public override string ToString() => "AiBudgetWarnings [private evidence omitted]";
+}
 
 /// <summary>Pure policy, never a durable balance or dispatch gate. Pricing rates are supplied
 /// by trusted configuration, never assumed current. Monetary precision proposal: USD 0.000001;
@@ -50,7 +95,8 @@ public static class AiBudgetPolicy
         attempt.AttemptId != Guid.Empty && AiOperationPolicy.ValidReference(attempt.Operation);
     public static bool ValidPricing(AiPricingEvidence? pricing) => pricing is not null &&
         !string.IsNullOrWhiteSpace(pricing.Model) && !string.IsNullOrWhiteSpace(pricing.Revision) &&
-        pricing.InputUsdPerMillion > 0 && pricing.OutputUsdPerMillion > 0 && pricing.SupportedTextOnly;
+        pricing.InputUsdPerMillion > 0 && pricing.OutputUsdPerMillion > 0 && pricing.SupportedTextOnly &&
+        pricing.Coverage == AiBillingCoverage.ApprovedComplete;
 
     public static bool ValidTokens(AiTokenEvidence? tokens, string model) => tokens is not null &&
         tokens.Model == model && !string.IsNullOrWhiteSpace(tokens.RequestFingerprint) &&
@@ -115,6 +161,9 @@ public static class AiBudgetPolicy
             evidence.Operation.Status != AiOperationStatus.Reserved || evidence.Operation.AttemptId != expected.AttemptId ||
             !WindowOpen(evidence.Window, evidence.NowUtc) || !Enum.IsDefined(evidence.Mode) || evidence.Mode == AiExecutionMode.Unknown)
             throw Invalid();
+        if (evidence.Mode == AiExecutionMode.PaidText &&
+            (!AiTokenCountContract.MatchesBinding(evidence.Measurement, evidence.ExpectedPayloadBinding) ||
+             evidence.Measurement!.Evidence != evidence.Tokens)) throw Invalid();
         Estimate(evidence.Mode, evidence.Tokens, evidence.Pricing);
     }
 
@@ -123,7 +172,10 @@ public static class AiBudgetPolicy
         if (reservation is null || !ValidAttempt(reservation.Attempt) || !ValidWindow(reservation.Window) ||
             string.IsNullOrWhiteSpace(reservation.Model) || string.IsNullOrWhiteSpace(reservation.PricingRevision) ||
             string.IsNullOrWhiteSpace(reservation.RequestFingerprint) || reservation.ReservedUsd <= 0 ||
-            reservation.ReservedUsd > AiPrototypeLimits.BudgetUsd || !Enum.IsDefined(reservation.State)) return false;
+            reservation.ReservedUsd > AiPrototypeLimits.BudgetUsd || !Enum.IsDefined(reservation.State) ||
+            !AiTokenCountContract.MatchesBinding(reservation.Measurement, reservation.Measurement?.PayloadBinding) ||
+            reservation.Measurement!.Evidence!.Model != reservation.Model ||
+            reservation.Measurement.Evidence.RequestFingerprint != reservation.RequestFingerprint) return false;
         return reservation.State switch
         {
             AiBillingState.Reserved or AiBillingState.Pending => reservation.ActualUsd is null && reservation.BillingEventId is null && reservation.FinalEvidence is null,
@@ -142,6 +194,8 @@ public static class AiBudgetPolicy
         ValidReservation(stored) && stored.Attempt == prepared.Attempt && stored.Window == prepared.Window &&
         stored.Model == prepared.Pricing?.Model && stored.PricingRevision == prepared.Pricing?.Revision &&
         stored.RequestFingerprint == prepared.Tokens?.RequestFingerprint &&
+        stored.Measurement == prepared.Measurement &&
+        stored.Measurement?.PayloadBinding == prepared.ExpectedPayloadBinding &&
         stored.ReservedUsd == Estimate(prepared.Mode, prepared.Tokens, prepared.Pricing);
 
     public static bool ValidBilling(AiProviderBillingEvidence? report) => report is not null && report.EventId != Guid.Empty &&
@@ -150,9 +204,24 @@ public static class AiBudgetPolicy
         report.Kind switch
         {
             AiBillingEvidenceKind.Uncertain => report.ActualUsd is null,
-            AiBillingEvidenceKind.Final => report.UsageVerified && report.ActualUsd is >= 0,
+            AiBillingEvidenceKind.Final => report.UsageVerified && report.ActualUsd is >= 0 &&
+                report.Coverage == AiBillingCoverage.ApprovedComplete && ValidUsage(report.Usage) &&
+                report.Usage!.InputTokens == report.InputTokens && report.Usage.OutputTokens == report.BillableOutputTokens,
             _ => false
         };
+
+    public static bool ValidUsage(AiBillingUsage? usage) => usage is not null &&
+        usage.InputTokens >= 0 && usage.OutputTokens >= 0 && usage.InputTokens <= long.MaxValue - usage.OutputTokens &&
+        usage.TotalTokens == usage.InputTokens + usage.OutputTokens &&
+        (usage.CachedInputTokens is null || usage.CachedInputTokens >= 0 && usage.CachedInputTokens <= usage.InputTokens) &&
+        (usage.ReasoningTokens is null || usage.ReasoningTokens >= 0 && usage.ReasoningTokens <= usage.OutputTokens) &&
+        (usage.CacheWriteTokens is null || usage.CacheWriteTokens >= 0 && usage.CacheWriteTokens <= usage.InputTokens) &&
+        (usage.CachedInputTokens is null || usage.CacheWriteTokens is null ||
+            usage.CachedInputTokens <= usage.InputTokens - usage.CacheWriteTokens) &&
+        ((usage.CacheWrite30MinuteTokens is null && usage.CacheWrite12HourTokens is null) ||
+         (usage.CacheWrite30MinuteTokens is >= 0 && usage.CacheWrite12HourTokens is >= 0 &&
+          usage.CacheWrite30MinuteTokens <= long.MaxValue - usage.CacheWrite12HourTokens &&
+          usage.CacheWriteTokens == usage.CacheWrite30MinuteTokens + usage.CacheWrite12HourTokens));
 
     /// <summary>Final authoritative actual USD is not clamped to reservation or cap. A finalized
     /// cumulative zero/partial bill may release exposure; ambiguous billing keeps it all held.

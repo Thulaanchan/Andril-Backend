@@ -25,6 +25,47 @@ public sealed class OpenAiResponsesCodecTests
             }, current);
     private static OpenAiPreparedResponsesRequest Prepare(AiTokenCountRequest request) =>
         OpenAiResponsesRequestSerializer.Prepare(request, AiProviderRequestCandidate.FromMeasuredRequest(request, Settings()));
+    [Theory]
+    [InlineData("output")]
+    [InlineData("status")]
+    [InlineData("error")]
+    [InlineData("message")]
+    [InlineData("object")]
+    public void Correction_UnusableContentDoesNotDiscardIndependentUsage(string defect)
+    {
+        var root = Root();
+        switch (defect)
+        {
+            case "output": root["output"] = "invalid"; break;
+            case "status": root["status"] = null; break;
+            case "error": root["error"] = new JsonObject { ["code"] = "private-error", ["message"] = "sensitive" }; break;
+            case "message": root["output"]![0]!["role"] = "user"; break;
+            default: root["object"] = "invalid"; break;
+        }
+        var parsed = Parse(root);
+        Assert.Equal(OpenAiResponseParseOutcome.Malformed, parsed.Outcome);
+        Assert.Null(parsed.AssistantText);
+        Assert.Equal(OpenAiUsageObservationState.Observed, parsed.UsageState);
+        Assert.Equal(1000, parsed.Usage!.InputTokens);
+        Assert.Equal(100, parsed.Usage.OutputTokens);
+        Assert.Equal(20, parsed.Usage.CacheWriteTokens);
+        Assert.Equal(15, parsed.Usage.CacheWrite30MinuteTokens);
+        Assert.Equal(5, parsed.Usage.CacheWrite12HourTokens);
+        Assert.NotEqual(AiTextValidationOutcome.ValidText, parsed.ValidateUnverifiedText(LocalExpectation()).Outcome);
+    }
+
+    [Fact]
+    public void Correction_MalformedOrAmbiguousJsonCannotRecoverUsageFragments()
+    {
+        var malformed = OpenAiResponsesResponseParser.Parse(SyntheticResponse[..^1], Request().Model);
+        Assert.Equal(OpenAiUsageObservationState.Unknown, malformed.UsageState);
+        Assert.Null(malformed.Usage);
+        var ambiguous = SyntheticResponse.Replace("\"input_tokens\":1000", "\"input_tokens\":1000,\"input_tokens\":1000");
+        var parsed = OpenAiResponsesResponseParser.Parse(ambiguous, Request().Model);
+        Assert.Null(parsed.Usage);
+        Assert.Equal(OpenAiUsageObservationState.Unknown, parsed.UsageState);
+    }
+
     [Fact]
     public async Task PreparedOpenAiPayloadFlowsUnchangedThroughSyntheticCountingAndValidation()
     {

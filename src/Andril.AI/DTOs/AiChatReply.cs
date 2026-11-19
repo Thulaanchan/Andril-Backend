@@ -9,4 +9,7 @@ namespace Andril.AI.DTOs;
 public sealed record AiChatReply(
     AiModule Module,
     string Text,
-    bool IsMock);
+    bool IsMock)
+{
+    public override string ToString() => "AiChatReply [private content and bindings omitted]";
+}

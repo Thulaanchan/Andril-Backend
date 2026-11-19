@@ -19,6 +19,122 @@ public sealed class AiOperationPolicyTests
         AiDispatchState.NotDispatched, Now, DateOnly.FromDateTime(Now.UtcDateTime), Id(30), null);
 
     [Fact]
+    public void Correction_AllValidSourceStatesKeepIdentityAndReturnOnlyValidAccountingStates()
+    {
+        var validSources = new List<AiOperationSnapshot>();
+        foreach (var status in Enum.GetValues<AiOperationStatus>())
+        foreach (var quota in Enum.GetValues<AiQuotaState>())
+        foreach (var dispatch in Enum.GetValues<AiDispatchState>())
+        foreach (var attempt in new Guid?[] { null, Id(50) })
+        {
+            var state = State() with { Status = status, Quota = quota, Dispatch = dispatch, AttemptId = attempt };
+            if (AiOperationPolicy.ValidSnapshot(state)) validSources.Add(state);
+        }
+        Assert.NotEmpty(validSources);
+        foreach (var source in validSources)
+        foreach (var signal in Enum.GetValues<AiAccountingEvent>().Where(e => e != AiAccountingEvent.Unknown))
+        {
+            AiOperationSnapshot result;
+            try { result = AiOperationPolicy.ApplyAccounting(source, signal); }
+            catch (InvalidOperationException) { continue; } // Explicitly unsupported signals deny.
+            Assert.True(AiOperationPolicy.ValidSnapshot(result));
+            Assert.Equal(source.Operation, result.Operation);
+            Assert.Equal(source.AttemptId, result.AttemptId);
+            Assert.Equal(source.QuotaDay, result.QuotaDay);
+            if (signal is AiAccountingEvent.UserCancellation or AiAccountingEvent.AmbiguousFailure)
+                Assert.Equal(source.Quota == AiQuotaState.Released, result.Quota == AiQuotaState.Released);
+            if (source.Status is AiOperationStatus.Completed or AiOperationStatus.Cancelled)
+                Assert.Equal(source, result);
+        }
+    }
+
+    [Fact]
+    public void Correction_InvalidPrivateInputUsesContentFreeException()
+    {
+        var sensitive = new string('x', 501) + "recognizable-private-secret";
+        var error = Assert.Throws<ArgumentException>(() => AiOperationPolicy.ValidateRequest(Request() with { UserText = sensitive }));
+        Assert.DoesNotContain(sensitive, error.ToString());
+        Assert.DoesNotContain("recognizable-private-secret", error.Message);
+    }
+
+    [Fact]
+    public void Correction_PrivateLegacyRecordsPreserveDataButNotDiagnosticContent()
+    {
+        const string secret = "recognizable-private-prompt-reply-credential";
+        var values = new object[]
+        {
+            new AiProviderPrompt(AiModule.Learning, secret), new AiProviderResponse(secret, false),
+            new AiChatReply(AiModule.Learning, secret, false),
+            Reference(), State(), new AiManualRetryRequest(Reference(), true),
+            new AiStoredAiMessage(Id(21), Id(20), AiStoredMessageRole.User, secret, Now),
+            new AiStoredConversation(Id(20), Id(1), Id(10), AiModule.Learning, Now, Now, Now.AddDays(14)),
+            new AiTokenEvidence("private-model", secret, 100, 100, 100, 100, 100, 500, 500, true, true)
+        };
+        foreach (var value in values)
+        {
+            Assert.DoesNotContain(secret, value.ToString());
+            Assert.DoesNotContain(Id(1).ToString(), value.ToString());
+            Assert.DoesNotContain(Id(21).ToString(), value.ToString());
+        }
+        Assert.Equal(secret, new AiProviderResponse(secret, false).Text);
+        Assert.Contains(secret, System.Text.Json.JsonSerializer.Serialize(new AiChatReply(AiModule.Learning, secret, false)));
+    }
+
+    [Theory]
+    [InlineData(AiDispatchState.Confirmed)]
+    [InlineData(AiDispatchState.Uncertain)]
+    public void Correction_ExecutedSnapshotsRequireAttempt(AiDispatchState dispatch)
+    {
+        var invalid = State() with { Status = AiOperationStatus.PendingReconciliation, Dispatch = dispatch };
+        Assert.False(AiOperationPolicy.ValidSnapshot(invalid));
+        Assert.Throws<InvalidOperationException>(() => AiOperationPolicy.ApplyAccounting(invalid, AiAccountingEvent.UserCancellation));
+    }
+
+    [Fact]
+    public void Correction_DispatchPreservesReservedAttempt()
+    {
+        var before = State() with { AttemptId = Id(50) };
+        var after = before with { Status = AiOperationStatus.InProgress, Dispatch = AiDispatchState.Confirmed, Revision = Id(31) };
+        Assert.True(AiOperationPolicy.CanTransition(before, after));
+        Assert.False(AiOperationPolicy.CanTransition(before, after with { AttemptId = Id(51) }));
+    }
+
+    [Theory]
+    [InlineData("valid", true)]
+    [InlineData("missing", false)]
+    [InlineData("revision", false)]
+    [InlineData("attempt", false)]
+    [InlineData("operation", false)]
+    [InlineData("identity", false)]
+    [InlineData("time", false)]
+    public void Correction_UncertainConfirmationRequiresExactProtectedEvidence(string defect, bool valid)
+    {
+        var before = State() with { Status = AiOperationStatus.PendingReconciliation,
+            Dispatch = AiDispatchState.Uncertain, AttemptId = Id(50) };
+        var after = before with { Dispatch = AiDispatchState.Confirmed, Revision = Id(31) };
+        AiConfirmedExecutionEvidence? evidence = new(new(Reference(), Id(50)), before.Revision, Id(60), Now);
+        evidence = defect switch
+        {
+            "missing" => null,
+            "revision" => evidence with { ExpectedRevision = Id(99) },
+            "attempt" => evidence with { Attempt = evidence.Attempt with { AttemptId = Id(99) } },
+            "operation" => evidence with { Attempt = evidence.Attempt with { Operation = Reference() with { OperationId = Id(99) } } },
+            "identity" => evidence with { EvidenceId = Guid.Empty },
+            "time" => evidence with { ObservedAtUtc = Now.AddSeconds(-1) },
+            _ => evidence
+        };
+        Assert.Equal(valid, AiOperationPolicy.CanTransition(before, after, evidence));
+        Assert.Equal(evidence is null, AiOperationPolicy.CanTransition(after, after, evidence));
+        if (valid)
+        {
+            var cancelled = AiOperationPolicy.ApplyAccounting(after, AiAccountingEvent.UserCancellation);
+            Assert.True(AiOperationPolicy.ValidSnapshot(cancelled));
+            Assert.Equal(AiQuotaState.Committed, cancelled.Quota);
+            Assert.False(AiOperationPolicy.CanTransition(cancelled, before));
+        }
+    }
+
+    [Fact]
     public void MultilingualInput_IsValidAndNotNormalized()
     {
         var request = Request();
@@ -253,7 +369,7 @@ public sealed class AiOperationPolicyTests
     [Theory]
     [InlineData("active", true)]
     [InlineData("failed", true)]
-    [InlineData("uncertain", true)]
+    [InlineData("uncertain", false)]
     [InlineData("completed-without-dispatch", false)]
     [InlineData("wrong-bucket", false)]
     [InlineData("same-revision", false)]

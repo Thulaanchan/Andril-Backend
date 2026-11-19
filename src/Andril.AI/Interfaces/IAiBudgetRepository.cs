@@ -7,7 +7,11 @@ namespace Andril.AI.Interfaces;
 /// Resolve evidence IDs against immutable server records, never accept client token/pricing flags.
 /// Validate full exact request/framing/history/model token upper bound, reasoning-output contract,
 /// current pricing revision, supported text-only mode, operation admission/revision and server-issued
-/// attempt binding. Use trusted UTC configuration/clock; no hardcoded deployment dates.</summary>
+/// attempt binding. Retain exact measured payload binding/provenance; detached token evidence fails.
+/// Resolve complete approved pricing coverage for every supported category, including cache writes;
+/// missing approval is Unknown/Incomplete, never ApprovedComplete. Existing two-rate estimation is
+/// usable only if the approved configuration establishes those rates as full upper bounds.
+/// Use trusted UTC configuration/clock; no hardcoded deployment dates.</summary>
 public interface IAiBudgetEvidenceReader
 {
     Task<AiBudgetPreparation?> ReadPreparationAsync(AiGenerationAttemptReference attempt, Guid evidenceId, CancellationToken cancellationToken = default);
@@ -17,7 +21,10 @@ public interface IAiBudgetEvidenceReader
     /// unknown caller/evidence; ID is not a credential. Must work after user deletion/revocation,
     /// with no content resurrection. No permissive system authorization placeholder is supplied.
     /// Final actual USD must include all authoritative billable usage, including reasoning;
-    /// validate provider calculations/currency and cumulative finality, not requested token limits.</summary>
+    /// validate provider calculations/currency and cumulative finality, not requested token limits.
+    /// Preserve actual input/output/total, nullable cached/reasoning/cache-write/TTL observations.
+    /// Independently resolve complete accounting coverage; parser observations never establish it.
+    /// Unknown/unsupported billable categories must retain exposure, not finalize incomplete bills.</summary>
     Task<AiProviderBillingEvidence?> ReadSystemBillingAsync(Guid evidenceId, CancellationToken cancellationToken = default);
 }
 

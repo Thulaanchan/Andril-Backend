@@ -80,6 +80,8 @@ public static class AiOperationPolicy
             state.QuotaDay != DateOnly.FromDateTime(state.AdmittedAtUtc.UtcDateTime) || state.Revision == Guid.Empty ||
             state.AttemptId == Guid.Empty || !Enum.IsDefined(state.Status) || !Enum.IsDefined(state.Quota) ||
             !Enum.IsDefined(state.Dispatch)) return false;
+        if (state.Dispatch is AiDispatchState.Confirmed or AiDispatchState.Uncertain && state.AttemptId is null)
+            return false;
         return state.Status switch
         {
             AiOperationStatus.Reserved => state.Quota == AiQuotaState.Reserved && state.Dispatch == AiDispatchState.NotDispatched,
@@ -104,36 +106,43 @@ public static class AiOperationPolicy
             if (state.Status == AiOperationStatus.Completed) return state;
             if (state.Status is not (AiOperationStatus.InProgress or AiOperationStatus.PendingReconciliation) ||
                 state.Dispatch != AiDispatchState.Confirmed || state.AttemptId is null) throw InvalidTransition();
-            return state with { Status = AiOperationStatus.Completed, Quota = AiQuotaState.Committed };
+            return Validated(state with { Status = AiOperationStatus.Completed, Quota = AiQuotaState.Committed });
         }
         if (signal == AiAccountingEvent.ConfirmedUnrecoverableFailure)
         {
             // Caller must establish conclusive provider + storage evidence, not just rejection/timeout.
             if (state.Status != AiOperationStatus.ConfirmedFailed || state.Dispatch != AiDispatchState.ConclusivelyFailed)
                 throw InvalidTransition();
-            return state with { Quota = AiQuotaState.Released };
+            return Validated(state with { Quota = AiQuotaState.Released });
         }
         if (state.Status is AiOperationStatus.Completed or AiOperationStatus.Cancelled or AiOperationStatus.ConfirmedFailed)
             return state; // Terminal accounting cannot be reopened by cancellation/uncertainty.
         if (signal == AiAccountingEvent.UserCancellation && state.Dispatch == AiDispatchState.Confirmed)
-            return state with { Status = AiOperationStatus.Cancelled, Quota = AiQuotaState.Committed };
-        return state with { Status = AiOperationStatus.PendingReconciliation }; // Retain reservation.
+            return Validated(state with { Status = AiOperationStatus.Cancelled, Quota = AiQuotaState.Committed });
+        return Validated(state with { Status = AiOperationStatus.PendingReconciliation }); // Retain reservation.
     }
 
     /// <summary>Structural transition checks only, requiring authoritative event evidence and
     /// a new durable revision. Does not itself prove dispatch, failure, budget or completion.</summary>
-    public static bool CanTransition(AiOperationSnapshot before, AiOperationSnapshot after)
+    public static bool CanTransition(AiOperationSnapshot before, AiOperationSnapshot after,
+        AiConfirmedExecutionEvidence? confirmedExecution = null)
     {
         if (!ValidSnapshot(before) || !ValidSnapshot(after) || before.Operation != after.Operation ||
             before.AdmittedAtUtc != after.AdmittedAtUtc || before.QuotaDay != after.QuotaDay) return false;
-        if (before == after) return true; // Durable idempotent replay; no new ledger effect.
+        if (confirmedExecution is not null && !ValidConfirmation(before, after, confirmedExecution)) return false;
+        if (before == after) return confirmedExecution is null; // Ordinary exact-state replay only.
         if (before.Revision == after.Revision) return false;
         if (before.Status is AiOperationStatus.Completed or AiOperationStatus.Cancelled || before.Quota == AiQuotaState.Released) return false;
         if (before.Status == AiOperationStatus.ConfirmedFailed)
             return (after.Status == AiOperationStatus.ConfirmedFailed && after.Quota == AiQuotaState.Released && after.AttemptId == before.AttemptId) ||
                 (after.Status == AiOperationStatus.Reserved && after.Quota == AiQuotaState.Reserved && after.AttemptId is null);
         if (before.Status == AiOperationStatus.Reserved && after.Status == AiOperationStatus.InProgress)
-            return after.AttemptId is not null && after.AttemptId != before.AttemptId;
+            // A reserved budget/attempt identity must survive dispatch unchanged. A legacy
+            // no-attempt -> issued-attempt shape remains representable, never dispatch authority.
+            return after.AttemptId is not null && (before.AttemptId is null || after.AttemptId == before.AttemptId);
+        if (before.Status == AiOperationStatus.PendingReconciliation && before.Dispatch == AiDispatchState.Uncertain &&
+            after.Dispatch == AiDispatchState.Confirmed && after.Status is AiOperationStatus.PendingReconciliation or AiOperationStatus.InProgress)
+            return confirmedExecution is not null;
         if (after.Status is AiOperationStatus.Completed or AiOperationStatus.Cancelled)
             return before.Dispatch == AiDispatchState.Confirmed && before.AttemptId is not null && before.AttemptId == after.AttemptId;
         if (after.Status == AiOperationStatus.ConfirmedFailed)
@@ -155,4 +164,15 @@ public static class AiOperationPolicy
     }
 
     private static InvalidOperationException InvalidTransition() => new("Unsupported AI accounting transition.");
+    private static AiOperationSnapshot Validated(AiOperationSnapshot result) =>
+        ValidSnapshot(result) ? result : throw InvalidTransition();
+
+    private static bool ValidConfirmation(AiOperationSnapshot before, AiOperationSnapshot after, AiConfirmedExecutionEvidence evidence) =>
+        before.Status == AiOperationStatus.PendingReconciliation && before.Dispatch == AiDispatchState.Uncertain &&
+        evidence.Attempt is not null && evidence.Attempt.Operation == before.Operation &&
+        before.AttemptId is { } attempt && evidence.Attempt.AttemptId == attempt && after.AttemptId == attempt &&
+        evidence.ExpectedRevision == before.Revision && evidence.EvidenceId != Guid.Empty &&
+        ValidUtc(evidence.ObservedAtUtc) && evidence.ObservedAtUtc >= before.AdmittedAtUtc &&
+        after.Dispatch == AiDispatchState.Confirmed &&
+        after.Status is AiOperationStatus.PendingReconciliation or AiOperationStatus.InProgress;
 }

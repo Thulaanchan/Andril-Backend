@@ -16,16 +16,97 @@ public sealed class AiBudgetTests
     private static AiGenerationAttemptReference Attempt(AiModule module = AiModule.Learning) => new(new(Actor(module), Id(20), Id(21)), Id(22));
     private static AiBudgetWindow Window() => new(Id(30), Start, Start.AddDays(14));
     // FICTIONAL fixture rates, NOT live provider pricing.
-    private static AiPricingEvidence Price() => new("fictional-text", "fixture-v1", 1m, 2m, true);
-    private static AiTokenEvidence Tokens() => new("fictional-text", "synthetic-request-fingerprint", 100, 100, 100, 100, 100, 500, 500, true, true);
+    private static AiPricingEvidence Price() => new("fictional-text", "fixture-v1", 1m, 2m, true, AiBillingCoverage.ApprovedComplete);
+    private static AiTokenEvidence Tokens() => new("fictional-text", new string('A', 64), 100, 100, 100, 100, 100, 500, 500, true, true);
     private static AiBudgetPreparation Preparation(AiModule module = AiModule.Learning) => new(Attempt(module),
         new(Attempt(module).Operation, AiOperationStatus.Reserved, AiQuotaState.Reserved, AiDispatchState.NotDispatched,
             Start, DateOnly.FromDateTime(Start.UtcDateTime), Id(40), Attempt(module).AttemptId),
-        Window(), Start, AiExecutionMode.PaidText, Tokens(), Price());
+        Window(), Start, AiExecutionMode.PaidText, Tokens(), Price(), Measurement(), Binding());
     private static AiBudgetReservation Reservation(AiModule module = AiModule.Learning) => new(Attempt(module), Window(),
-        Price().Model, Price().Revision, Tokens().RequestFingerprint, AiBudgetPolicy.Estimate(AiExecutionMode.PaidText, Tokens(), Price()), AiBillingState.Reserved);
+        Price().Model, Price().Revision, Tokens().RequestFingerprint, AiBudgetPolicy.Estimate(AiExecutionMode.PaidText, Tokens(), Price()), AiBillingState.Reserved, Measurement: Measurement());
     private static AiProviderBillingEvidence Bill(decimal actual = 0.001m) => new(Id(50), Attempt(), Window().Id,
-        Price().Model, Price().Revision, AiBillingEvidenceKind.Final, 500, 250, actual, true);
+        Price().Model, Price().Revision, AiBillingEvidenceKind.Final, 500, 250, actual, true,
+        new(500, 250, 750, null, null, null, null, null), AiBillingCoverage.ApprovedComplete);
+
+    private static AiProviderPayloadBinding Binding() => new(Tokens().RequestFingerprint, null,
+        new string('B', 64), Price().Model, "synthetic-framing-v1", "synthetic-config", 500);
+    private static AiTokenCountResult Measurement() => new(AiTokenCountState.Measured, Tokens(),
+        new("synthetic-counter", "fixture-v1", "synthetic-framing-v1"), Binding());
+
+    [Theory]
+    [InlineData("payload")]
+    [InlineData("configuration")]
+    [InlineData("provenance")]
+    public void Correction_ReservationReplayCannotChangeRetainedMeasurement(string defect)
+    {
+        var stored = Reservation();
+        Assert.True(AiBudgetPolicy.SameReservation(stored, Preparation()));
+        var measured = Measurement();
+        measured = defect switch
+        {
+            "payload" => measured with { PayloadBinding = Binding() with { PayloadSha256 = new string('C', 64) } },
+            "configuration" => measured with { PayloadBinding = Binding() with { ExecutionConfiguration = "different" } },
+            _ => measured with { Provenance = measured.Provenance! with { CounterRevision = "different" } }
+        };
+        var changed = Preparation() with { Measurement = measured, ExpectedPayloadBinding = measured.PayloadBinding };
+        AiBudgetPolicy.ValidatePreparation(changed, Attempt());
+        Assert.False(AiBudgetPolicy.SameReservation(stored, changed));
+        Assert.Equal(Measurement(), stored.Measurement);
+    }
+
+    [Theory]
+    [InlineData("measurement")]
+    [InlineData("payload")]
+    [InlineData("provenance")]
+    [InlineData("configuration")]
+    [InlineData("coverage")]
+    public void Correction_PaidReservationRejectsIncompleteBindings(string defect)
+    {
+        var p = Preparation();
+        p = defect switch
+        {
+            "measurement" => p with { Measurement = null },
+            "payload" => p with { ExpectedPayloadBinding = Binding() with { PayloadSha256 = new string('C', 64) } },
+            "provenance" => p with { Measurement = Measurement() with { Provenance = null } },
+            "configuration" => p with { ExpectedPayloadBinding = Binding() with { ExecutionConfiguration = "other" } },
+            _ => p with { Pricing = Price() with { Coverage = AiBillingCoverage.Unknown } }
+        };
+        Assert.Throws<InvalidOperationException>(() => AiBudgetPolicy.ValidatePreparation(p, Attempt()));
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("unsupported")]
+    [InlineData("total")]
+    [InlineData("reasoning")]
+    [InlineData("cache")]
+    public void Correction_IncompleteBillingCannotReleaseReservation(string defect)
+    {
+        var bill = Bill();
+        bill = defect switch
+        {
+            "missing" => bill with { Usage = null },
+            "unsupported" => bill with { Coverage = AiBillingCoverage.Incomplete,
+                Usage = bill.Usage! with { CacheWriteTokens = 30 } },
+            "total" => bill with { Usage = bill.Usage! with { TotalTokens = 1 } },
+            "reasoning" => bill with { Usage = bill.Usage! with { ReasoningTokens = 251 } },
+            _ => bill with { Usage = bill.Usage! with { CacheWriteTokens = 100, CacheWrite30MinuteTokens = 50, CacheWrite12HourTokens = 51 } }
+        };
+        var original = Reservation();
+        Assert.Throws<InvalidOperationException>(() => AiBudgetPolicy.Settle(original, bill));
+        Assert.Equal(AiBillingState.Reserved, original.State);
+    }
+
+    [Fact]
+    public void Correction_ActualCacheAndReasoningObservationsAreRetainedWithoutClamping()
+    {
+        var bill = Bill(6m) with { InputTokens = 3000, BillableOutputTokens = 700,
+            Usage = new(3000, 700, 3700, 100, 500, 300, 100, 200) };
+        var settled = AiBudgetPolicy.Settle(Reservation(), bill);
+        Assert.Equal(6m, settled.AdditionalCommittedUsd);
+        Assert.Equal(bill.Usage, settled.Reservation.FinalEvidence!.Usage);
+        Assert.Equal(700, settled.Reservation.FinalEvidence.BillableOutputTokens);
+    }
 
     [Fact]
     public void A_ApprovedLimits_MatchExistingPolicies()
@@ -226,7 +307,7 @@ public sealed class AiBudgetTests
         bill = change switch
         {
             "cost" => bill with { ActualUsd = 2m },
-            "usage" => bill with { InputTokens = 501 },
+            "usage" => bill with { InputTokens = 501, Usage = bill.Usage! with { InputTokens = 501, TotalTokens = 751 } },
             "event" => bill with { EventId = Id(99) },
             _ => bill
         };
@@ -566,7 +647,7 @@ public sealed class AiBudgetTests
         setup.Evidence.Billing = Bill();
         var reservation = AiBudgetPolicy.Settle(Reservation(), Bill()).Reservation;
         if (defect == "cost") reservation = AiBudgetPolicy.Settle(Reservation(), Bill(1m)).Reservation;
-        if (defect == "usage") reservation = AiBudgetPolicy.Settle(Reservation(), Bill() with { InputTokens = 501 }).Reservation;
+        if (defect == "usage") reservation = AiBudgetPolicy.Settle(Reservation(), Bill() with { InputTokens = 501, Usage = Bill().Usage! with { InputTokens = 501, TotalTokens = 751 } }).Reservation;
         if (defect == "scope") reservation = reservation with { Attempt = Attempt(AiModule.Social) };
         if (defect == "state") reservation = Reservation();
         setup.Repo.Result = new(defect == "unknown" ? AiBudgetOutcome.Unknown : AiBudgetOutcome.Settled, reservation);
