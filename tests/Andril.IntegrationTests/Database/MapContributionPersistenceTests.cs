@@ -71,13 +71,27 @@ public sealed class MapContributionPersistenceTests
             Assert.IsType<MapContributionModerationStatus>(converter.ConvertFromProvider(1)));
         Assert.Null(context.Model.FindEntityType(typeof(MapContributionLocationEvidence)));
         var design = context.GetService<IDesignTimeModel>().Model.FindEntityType(typeof(MapContribution))!;
-        // Moderation has a column type and nullability, but no allowed-states database check.
         Assert.Equal(new[]
         {
             "ck_map_contribution_attraction_id", "ck_map_contribution_capture_session_id",
             "ck_map_contribution_description", "ck_map_contribution_id", "ck_map_contribution_location_evidence",
-            "ck_map_contribution_owner_id", "ck_map_contribution_photo_key"
+            "ck_map_contribution_moderation_status", "ck_map_contribution_owner_id", "ck_map_contribution_photo_key"
         }, design.GetCheckConstraints().Select(check => check.Name).Order(StringComparer.Ordinal));
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
+
+    [Fact]
+    public void Model_ModerationCheckMatchesPendingReviewAndAppearsInGeneratedSql()
+    {
+        using var context = CreateContext();
+        var entity = context.GetService<IDesignTimeModel>().Model.FindEntityType(typeof(MapContribution))!;
+        var check = Assert.Single(entity.GetCheckConstraints(),
+            constraint => constraint.Name == "ck_map_contribution_moderation_status");
+
+        Assert.Equal(MapContributionModerationStatus.PendingReview, Assert.Single(Enum.GetValues<MapContributionModerationStatus>()));
+        Assert.Equal("moderation_status = 1", check.Sql);
+        Assert.Contains("CONSTRAINT ck_map_contribution_moderation_status CHECK (moderation_status = 1)",
+            context.Database.GenerateCreateScript());
         Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
     }
 
@@ -300,6 +314,29 @@ public sealed class MapContributionPersistenceTests
             }
             Assert.Equal(0, await context.MapContributions.CountAsync());
             Assert.Equal(1, await insert.ExecuteNonQueryAsync());
+        });
+
+    [MapCapturePostgresFact]
+    public Task Database_AcceptsPendingReviewAndRejectsUndefinedModerationIntegers() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await using var context = CreateContext(connection);
+            var repository = Repository(context);
+            var original = CreateContribution();
+            await repository.AddAsync(original);
+
+            Task<int> SetStatusAsync(int status) => context.Database.ExecuteSqlInterpolatedAsync(
+                $"UPDATE map_contributions SET moderation_status = {status} WHERE contribution_id = {Id}");
+
+            Assert.Equal(1, await SetStatusAsync(1));
+            foreach (var unsupported in new[] { 0, -1, 2, 42, int.MinValue, int.MaxValue })
+            {
+                var error = await Assert.ThrowsAsync<PostgresException>(() => SetStatusAsync(unsupported));
+                Assert.Equal(PostgresErrorCodes.CheckViolation, error.SqlState);
+                Assert.Equal("ck_map_contribution_moderation_status", error.ConstraintName);
+            }
+
+            AssertContribution(original, await repository.FindOwnedAsync(Id, Owner));
         });
 
     [MapCapturePostgresFact]

@@ -43,6 +43,11 @@ public sealed class MapContributionConfiguration : IEntityTypeConfiguration<MapC
             table.HasCheckConstraint(
                 "ck_map_contribution_location_evidence",
                 "jsonb_typeof(location_evidence) = 'object'");
+
+            // PendingReview is the only supported persisted moderation state.
+            table.HasCheckConstraint(
+                "ck_map_contribution_moderation_status",
+                "moderation_status = 1");
         });
 
         builder.HasKey(contribution => contribution.ContributionId)
