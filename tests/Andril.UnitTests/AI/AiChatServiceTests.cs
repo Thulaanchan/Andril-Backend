@@ -112,18 +112,19 @@ public sealed class AiChatServiceTests
     [Fact]
     public async Task Exactly500Characters_AreAccepted()
     {
-        var provider = new RecordingProvider();
+        var provider = new MockAiResponseProvider();
 
         var service = new AiChatService(
             new StubAuthorization(
                 AuthorizedActor(AiModule.Learning)),
             provider);
 
-        await service.ReplyAsync(
+        var reply = await service.ReplyAsync(
             AiModule.Learning,
             new string('a', 500));
 
-        Assert.Equal(1, provider.Calls);
+        Assert.True(reply.IsMock);
+        Assert.Contains("[MOCK]", reply.Text);
     }
 
     [Fact]
@@ -147,7 +148,7 @@ public sealed class AiChatServiceTests
     [Fact]
     public async Task Exactly500EmojiTextElements_AreAccepted()
     {
-        var provider = new RecordingProvider();
+        var provider = new MockAiResponseProvider();
 
         var service = new AiChatService(
             new StubAuthorization(
@@ -157,10 +158,11 @@ public sealed class AiChatServiceTests
         var message = string.Concat(
             Enumerable.Repeat("😀", 500));
 
-        await service.ReplyAsync(
+        var reply = await service.ReplyAsync(
             AiModule.Learning, message);
 
-        Assert.Equal(1, provider.Calls);
+        Assert.True(reply.IsMock);
+        Assert.Contains("[MOCK]", reply.Text);
     }
 
     [Fact]
@@ -201,27 +203,26 @@ public sealed class AiChatServiceTests
     }
 
     [Fact]
-    public async Task Message_IsTrimmedBeforeReachingProvider()
+    public async Task PaddedValidMessage_PreservesBuiltInMockBehavior()
     {
-        var provider = new RecordingProvider();
+        var provider = new MockAiResponseProvider();
 
         var service = new AiChatService(
             new StubAuthorization(
                 AuthorizedActor(AiModule.Hobbies)),
             provider);
 
-        await service.ReplyAsync(
+        var reply = await service.ReplyAsync(
             AiModule.Hobbies, "  Hello  ");
 
-        Assert.Equal(1, provider.Calls);
-        Assert.Equal("Hello", provider.LastPrompt!.Text);
-        Assert.Equal(
-            AiModule.Hobbies,
-            provider.LastPrompt.Module);
+        var unpadded = await service.ReplyAsync(AiModule.Hobbies, "Hello");
+        Assert.Equal(unpadded, reply);
+        Assert.True(reply.IsMock);
+        Assert.Equal(AiModule.Hobbies, reply.Module);
     }
 
     [Fact]
-    public async Task EmptyProviderReply_IsRejected()
+    public async Task ArbitraryProviderWithEmptyMockReply_IsRejectedBeforeExecution()
     {
         var provider = new RecordingProvider(
             new AiProviderResponse("  ", true));
@@ -235,7 +236,8 @@ public sealed class AiChatServiceTests
             () => service.ReplyAsync(
                 AiModule.Learning, "Test"));
 
-        Assert.Equal(1, provider.Calls);
+        Assert.Equal(0, provider.Calls);
+        Assert.Null(provider.LastPrompt);
     }
 
     [Fact]
@@ -262,6 +264,163 @@ public sealed class AiChatServiceTests
         Assert.Equal(0, provider.Calls);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ArbitraryProvider_IsRejectedEvenWhenItClaimsToBeMock(bool claimsMock)
+    {
+        const string privateText = "private-prompt-do-not-log";
+        var actor = AuthorizedActor(AiModule.Learning);
+        var provider = new RecordingProvider(new AiProviderResponse("private-provider-reply", claimsMock));
+        var authorization = new StubAuthorization(actor);
+        var service = new AiChatService(authorization, provider);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ReplyAsync(AiModule.Learning, privateText));
+
+        Assert.Equal(1, authorization.Calls);
+        Assert.Equal(0, provider.Calls);
+        Assert.Null(provider.LastPrompt);
+        Assert.Null(error.InnerException);
+        foreach (var value in new[] { privateText, "private-provider-reply", actor.UserId.ToString(), actor.ModuleProfileId.ToString() })
+            Assert.DoesNotContain(value, error.ToString());
+    }
+
+    [Fact]
+    public async Task NullProviderFailsSafelyWithoutLiveOrMockFallback()
+    {
+        var service = new AiChatService(new StubAuthorization(AuthorizedActor(AiModule.Hobbies)), null!);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.ReplyAsync(AiModule.Hobbies, "private-prompt"));
+        Assert.DoesNotContain("private-prompt", error.ToString());
+        Assert.Contains("built-in development mock", error.Message);
+    }
+
+    [Theory]
+    [InlineData("தமிழ்")]
+    [InlineData("e\u0301")]
+    [InlineData("👩🏽‍💻")]
+    [InlineData("සිංහල")]
+    public async Task UnicodeTextElementBoundaryIsPreservedWithBuiltInMock(string fragment)
+    {
+        // Construct exactly 500 text elements even when the fixture fragment contains several.
+        var elements = System.Globalization.StringInfo.GetTextElementEnumerator(fragment);
+        elements.MoveNext();
+        var element = elements.GetTextElement();
+        var message = string.Concat(Enumerable.Repeat(element, 500));
+        Assert.Equal(500, new System.Globalization.StringInfo(message).LengthInTextElements);
+        var authorization = new StubAuthorization(AuthorizedActor(AiModule.Social));
+        var service = new AiChatService(authorization, new MockAiResponseProvider());
+        var reply = await service.ReplyAsync(AiModule.Social, message);
+        Assert.True(reply.IsMock);
+        Assert.Contains("[MOCK]", reply.Text);
+        Assert.DoesNotContain(message, reply.Text);
+        await Assert.ThrowsAsync<AiChatValidationException>(() => service.ReplyAsync(AiModule.Social, message + element));
+        Assert.Equal(1, authorization.Calls); // Over-limit rejection precedes authorization too.
+    }
+
+    [Fact]
+    public async Task PreCancellationPrecedesAuthorizationEvenForBuiltInMock()
+    {
+        var authorization = new StubAuthorization(AuthorizedActor(AiModule.Learning));
+        var service = new AiChatService(authorization, new MockAiResponseProvider());
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.ReplyAsync(AiModule.Learning, "Current", cancellation.Token));
+        Assert.Equal(cancellation.Token, error.CancellationToken);
+        Assert.Equal(0, authorization.Calls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancellationAfterAsyncAuthorizationPreventsProviderInvocation(bool builtInMock)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<AiAuthorizedActor?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var authorization = new ScriptedAuthorization((module, token) =>
+        {
+            Assert.Equal(AiModule.Hobbies, module);
+            Assert.Equal(cancellation.Token, token);
+            entered.SetResult();
+            return release.Task; // Deliberately ignores cancellation: service must recheck after await.
+        });
+        var recording = new RecordingProvider();
+        var service = new AiChatService(authorization, builtInMock ? new MockAiResponseProvider() : recording);
+        var pending = service.ReplyAsync(AiModule.Hobbies, "private-current", cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        release.SetResult(AuthorizedActor(AiModule.Hobbies));
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        Assert.Equal(cancellation.Token, error.CancellationToken);
+        Assert.Equal(0, recording.Calls);
+        Assert.Equal(1, authorization.Calls);
+    }
+
+    [Fact]
+    public async Task CancellationDuringCooperativeAuthorizationPropagatesWithoutFallback()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var authorization = new ScriptedAuthorization(async (_, token) =>
+        {
+            entered.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            return AuthorizedActor(AiModule.Learning);
+        });
+        var provider = new RecordingProvider();
+        var service = new AiChatService(authorization, provider);
+        var pending = service.ReplyAsync(AiModule.Learning, "current", cancellation.Token);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        cancellation.Cancel();
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        Assert.Equal(cancellation.Token, error.CancellationToken);
+        Assert.Equal(0, provider.Calls);
+        Assert.Equal(1, authorization.Calls);
+    }
+
+    [Fact]
+    public async Task AuthorizationFailureNeverFallsBackToProvider()
+    {
+        var failure = new InvalidOperationException("Synthetic authorization unavailable");
+        var authorization = new ScriptedAuthorization((_, _) => throw failure);
+        var provider = new RecordingProvider();
+        var service = new AiChatService(authorization, provider);
+        Assert.Same(failure, await Assert.ThrowsAsync<InvalidOperationException>(() => service.ReplyAsync(AiModule.Learning, "current")));
+        Assert.Equal(0, provider.Calls);
+    }
+
+    [Theory]
+    [InlineData(AiModule.Learning)]
+    [InlineData(AiModule.Hobbies)]
+    [InlineData(AiModule.Social)]
+    public async Task BuiltInMockIsSealedDeterministicAndExplicitlyDevelopmentOnly(AiModule module)
+    {
+        Assert.True(typeof(MockAiResponseProvider).IsSealed);
+        var authorization = new StubAuthorization(AuthorizedActor(module));
+        var service = new AiChatService(authorization, new MockAiResponseProvider());
+        var first = await service.ReplyAsync(module, "private-first");
+        var second = await service.ReplyAsync(module, "private-second");
+        Assert.Equal(first, second);
+        Assert.True(first.IsMock);
+        Assert.StartsWith("[MOCK]", first.Text);
+        Assert.DoesNotContain("private-", first.Text);
+        Assert.Equal(2, authorization.Calls); // No cached actor approval.
+    }
+
+    private sealed class ScriptedAuthorization(Func<AiModule, CancellationToken, Task<AiAuthorizedActor?>> authorize)
+        : IAiActorAuthorization
+    {
+        public int Calls { get; private set; }
+        public Task<AiAuthorizedActor?> GetAuthorizedActorAsync(AiModule module, CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return authorize(module, cancellationToken);
+        }
+    }
+
     private static AiAuthorizedActor AuthorizedActor(
         AiModule module) =>
         new(Guid.NewGuid(), Guid.NewGuid(), module);
@@ -270,10 +429,14 @@ public sealed class AiChatServiceTests
         AiAuthorizedActor? actor)
         : IAiActorAuthorization
     {
+        public int Calls { get; private set; }
         public Task<AiAuthorizedActor?> GetAuthorizedActorAsync(
             AiModule module,
-            CancellationToken cancellationToken = default) =>
-            Task.FromResult(actor);
+            CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(actor);
+        }
     }
 
     private sealed class RecordingProvider(
