@@ -1,10 +1,11 @@
+using Andril.Social.DTOs;
 using Andril.Social.Personality;
 using Andril.Social.Validators;
 
 namespace Andril.Social.Services;
 
 /// <summary>
-/// Validates submissions against exact server-owned questionnaire versions.
+/// Retrieves definitions and validates submissions for exact server-owned questionnaire versions.
 /// Questionnaire completion does not authorize Social access.
 /// </summary>
 public sealed class QuestionnaireApplicationService
@@ -15,6 +16,15 @@ public sealed class QuestionnaireApplicationService
         QuestionnaireDefinitionCatalog catalog)
     {
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
+    }
+
+    public QuestionnaireDefinitionDto? GetDefinition(string? version)
+    {
+        var definition = _catalog.FindByVersion(version);
+
+        return definition is null
+            ? null
+            : QuestionnaireDefinitionDto.FromDefinition(definition);
     }
 
     public QuestionnaireValidationResult Validate(
