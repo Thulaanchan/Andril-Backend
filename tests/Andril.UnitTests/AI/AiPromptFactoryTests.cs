@@ -24,6 +24,84 @@ public sealed class AiPromptFactoryTests
         Func<AiConstructedPrompt, int>? count = null) => AiPromptFactory.Create(data.Actor, data.Conversation, data.Messages,
             data.Messages[^1].Id, Now.AddSeconds(3), 100, count ?? (_ => 100));
 
+    private static Task<AiPromptMeasurement> Measure(AiConstructedPrompt prompt, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        var request = AiTokenCountRequest.FromPrompt("synthetic-model", "fixture-framing", prompt);
+        var payload = new AiPreparedProviderPayload(request, System.Text.Encoding.UTF8.GetBytes(
+            System.Text.Json.JsonSerializer.Serialize(prompt.Messages)), "fixture-execution");
+        var result = new AiTokenCountResult(AiTokenCountState.Measured,
+            new(request.Model, request.Fingerprint, 100, 100, 100, 100, 100, 500, 500, true, true),
+            new("synthetic-counter", "fixture-v1", request.FramingRevision), payload.Binding);
+        return Task.FromResult(new AiPromptMeasurement(request, payload, result));
+    }
+
+    [Fact]
+    public async Task Correction_NewConversationPreparationNeedsNoPersistedEntityOrOperation()
+    {
+        var actor = new AiAuthorizedActor(Id(1), Id(2), AiModule.Learning);
+        var context = AiPreAdmissionPromptContext.ForNewConversation(actor, Id(3), Id(4));
+        var calls = 0;
+        var prepared = await AiPromptFactory.PrepareBeforeAdmissionAsync(context, Id(5), "Unsaved private input", 100,
+            async (prompt, token) => { calls++; await Task.Yield(); return await Measure(prompt, token); });
+        Assert.Equal(1, calls);
+        Assert.Equal("Unsaved private input", Assert.Single(prepared.Prompt.Messages).Text);
+        Assert.True(prepared.MatchesCurrentContext(actor, Id(3), Id(4)));
+        Assert.False(prepared.MatchesCurrentContext(actor, Id(3), Id(6)));
+        Assert.False(prepared.MatchesCurrentContext(actor with { Module = AiModule.Hobbies }, Id(3), Id(4)));
+        Assert.Equal(prepared.Prompt.Fingerprint, prepared.Measurement.Payload.Binding.LogicalPromptFingerprint);
+        var bytes = prepared.Measurement.Payload.CopyUtf8Payload(); bytes[0] ^= 1;
+        Assert.False(prepared.Measurement.Payload.MatchesPayload(bytes));
+        Assert.Empty(context.History);
+    }
+
+    [Fact]
+    public async Task Correction_ExistingContextPreservesFingerprintWithoutSavingCurrentInput()
+    {
+        var data = Data(text: "Unsaved current");
+        var original = Build(data);
+        var history = data.Messages.Take(2).ToArray();
+        var context = AiPreAdmissionPromptContext.ForExistingConversation(data.Actor, data.Conversation,
+            history, Id(40), Now.AddSeconds(3));
+        var before = data.Conversation.LastSavedUserMessageAtUtc;
+        var prepared = await AiPromptFactory.PrepareBeforeAdmissionAsync(context, data.Messages[^1].Id,
+            "Unsaved current", 100, Measure);
+        Assert.Equal(original.Fingerprint, prepared.Prompt.Fingerprint);
+        Assert.Equal(original.Messages, prepared.Prompt.Messages);
+        Assert.Single(prepared.Prompt.Messages, m => m.Text == "Unsaved current");
+        Assert.Equal(before, data.Conversation.LastSavedUserMessageAtUtc);
+        Assert.Equal(2, history.Length);
+        Assert.DoesNotContain("Unsaved current", prepared.ToString());
+    }
+
+    [Fact]
+    public async Task Correction_CancellationAndMismatchedMeasurementFailClosed()
+    {
+        var data = Data();
+        var context = AiPreAdmissionPromptContext.ForNewConversation(data.Actor, Id(3), Id(40));
+        using var cancelled = new CancellationTokenSource(); cancelled.Cancel();
+        var calls = 0;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => AiPromptFactory.PrepareBeforeAdmissionAsync(
+            context, Id(4), "Private", 10, (p, t) => { calls++; return Measure(p, t); }, cancelled.Token));
+        Assert.Equal(0, calls);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => AiPromptFactory.PrepareBeforeAdmissionAsync(
+            context, Id(4), "Private", 10, async (p, t) =>
+            {
+                var measured = await Measure(p, t);
+                return measured with { Result = measured.Result with { PayloadBinding = measured.Payload.Binding with { ExecutionConfiguration = "other" } } };
+            }));
+    }
+
+    [Fact]
+    public void Correction_PreparationRejectsForeignOrExpiredContext()
+    {
+        var data = Data();
+        Assert.Throws<InvalidOperationException>(() => AiPreAdmissionPromptContext.ForExistingConversation(
+            data.Actor with { UserId = Id(99) }, data.Conversation, data.Messages, Id(40), Now.AddSeconds(3)));
+        Assert.Throws<InvalidOperationException>(() => AiPreAdmissionPromptContext.ForExistingConversation(
+            data.Actor, data.Conversation, data.Messages, Id(40), Now.AddDays(15)));
+    }
+
     [Theory]
     [InlineData(AiModule.Learning, "constructive feedback")]
     [InlineData(AiModule.Hobbies, "creative ideas")]

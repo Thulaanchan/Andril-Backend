@@ -20,11 +20,11 @@ public sealed class AiConversationLifecycleServiceTests
     [InlineData(AiModule.Learning)]
     [InlineData(AiModule.Hobbies)]
     [InlineData(AiModule.Social)]
-    public async Task Start_CreatesPrivateConversationAndSavesTrimmedUserMessage(
+    public async Task SeededConversation_PreservesPrivateScopeAndHistory(
         AiModule module)
     {
         var test = new Fixture(module);
-        var conversation = await test.StartAsync("  Hello ANDRIL  ");
+        var conversation = await test.SeedAsync("Hello ANDRIL");
 
         Assert.Equal(test.Actor.UserId, conversation.AccountId);
         Assert.Equal(test.Actor.ModuleProfileId, conversation.ModuleProfileId);
@@ -47,9 +47,11 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture();
         test.Authorization.Current = null;
-
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
-            test.StartAsync("No access"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            test.Service.StartConversationAsync(test.Actor.Module, Guid.NewGuid(), "No access"));
+        Assert.Equal(0, test.Recording.Calls);
+        Assert.Equal(0, test.Authorization.Calls);
+        test.Authorization.Current = test.Actor;
         Assert.Empty(await test.Repository.ListAsync(test.Actor, 10));
     }
 
@@ -68,21 +70,45 @@ public sealed class AiConversationLifecycleServiceTests
             _ => owner with { Module = AiModule.Hobbies }
         };
 
-        // The service's initial authorization resolves the owner, while
-        // the repository's independent recheck sees a different identity.
+        // Neither initial nor repository authorization can enable the disabled creation method.
         var initialAuthorization = new MutableAuthorization(owner);
         test.Authorization.Current = other;
         var service = new AiConversationLifecycleService(
             initialAuthorization, test.Repository);
 
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
             service.StartConversationAsync(
                 owner.Module, Guid.NewGuid(), "Blocked"));
+        Assert.Equal(0, initialAuthorization.Calls);
 
         // Verify no conversation was written under either identity.
         Assert.Empty(await test.Repository.ListAsync(other, 10));
         test.Authorization.Current = owner;
         Assert.Empty(await test.Repository.ListAsync(owner, 10));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public async Task RepositoryReauthorizationStillProtectsReadsAfterInitialServiceAuthorization(int variant)
+    {
+        var test = new Fixture();
+        var conversation = await test.SeedAsync("Owner history");
+        var initial = new MutableAuthorization(test.Actor);
+        var service = new AiConversationLifecycleService(initial, test.Repository);
+        test.Authorization.Current = variant switch
+        {
+            0 => test.Actor with { UserId = Guid.NewGuid() },
+            1 => test.Actor with { ModuleProfileId = Guid.NewGuid() },
+            _ => test.Actor with { Module = AiModule.Hobbies }
+        };
+        Assert.Null(await service.FindConversationAsync(test.Actor.Module, conversation.ConversationId));
+        Assert.Empty(await service.ListConversationsAsync(test.Actor.Module, 10));
+        Assert.Empty(await service.ReadRecentMessagesAsync(test.Actor.Module, conversation.ConversationId, 10));
+        Assert.Equal(3, initial.Calls);
+        test.Authorization.Current = test.Actor;
+        Assert.Equal(conversation, await service.FindConversationAsync(test.Actor.Module, conversation.ConversationId));
     }
 
     [Theory]
@@ -98,10 +124,9 @@ public sealed class AiConversationLifecycleServiceTests
             1 => test.Actor with { ModuleProfileId = Guid.Empty },
             _ => test.Actor with { Module = AiModule.Hobbies }
         };
-
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
-            test.StartAsync("Blocked"));
-
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            test.Service.StartConversationAsync(test.Actor.Module, Guid.NewGuid(), "Blocked"));
+        Assert.Equal(0, test.Recording.Calls);
         test.Authorization.Current = test.Actor;
         Assert.Empty(await test.Repository.ListAsync(test.Actor, 10));
     }
@@ -110,7 +135,7 @@ public sealed class AiConversationLifecycleServiceTests
     public async Task UnsupportedModule_IsRejected()
     {
         var test = new Fixture();
-        await Assert.ThrowsAsync<AiChatValidationException>(() =>
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
             test.Service.StartConversationAsync((AiModule)99, Guid.NewGuid(), "Hello"));
     }
 
@@ -121,21 +146,22 @@ public sealed class AiConversationLifecycleServiceTests
     public async Task EmptyUserMessage_IsRejected(string? text)
     {
         var test = new Fixture();
-        await Assert.ThrowsAsync<AiChatValidationException>(() =>
-            test.StartAsync(text));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            test.Service.StartConversationAsync(test.Actor.Module, Guid.NewGuid(), text));
+        Assert.Equal(0, test.Recording.Calls);
     }
 
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Exactly500TextElements_AreAccepted(bool emoji)
+    public async Task Exactly500TextElements_CannotEnableLegacyCreation(bool emoji)
     {
         var test = new Fixture();
-        var input = emoji
-            ? string.Concat(Enumerable.Repeat("😀", 500))
-            : new string('a', 500);
-        var conversation = await test.StartAsync(input);
-        Assert.NotEqual(Guid.Empty, conversation.ConversationId);
+        var input = emoji ? string.Concat(Enumerable.Repeat("😀", 500)) : new string('a', 500);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            test.Service.StartConversationAsync(test.Actor.Module, Guid.NewGuid(), input));
+        Assert.Equal(0, test.Recording.Calls);
+        Assert.Empty(await test.Repository.ListAsync(test.Actor, 10));
     }
 
     [Theory]
@@ -144,21 +170,21 @@ public sealed class AiConversationLifecycleServiceTests
     public async Task MoreThan500TextElements_AreRejected(bool emoji)
     {
         var test = new Fixture();
-        var input = emoji
-            ? string.Concat(Enumerable.Repeat("😀", 501))
-            : new string('a', 501);
-        await Assert.ThrowsAsync<AiChatValidationException>(() =>
-            test.StartAsync(input));
+        var input = emoji ? string.Concat(Enumerable.Repeat("😀", 501)) : new string('a', 501);
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            test.Service.StartConversationAsync(test.Actor.Module, Guid.NewGuid(), input));
+        Assert.Equal(0, test.Recording.Calls);
+        Assert.Empty(await test.Repository.ListAsync(test.Actor, 10));
     }
 
     [Fact]
     public async Task MissingOperationId_IsRejected()
     {
         var test = new Fixture();
-        await Assert.ThrowsAsync<AiChatValidationException>(() =>
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
             test.Service.StartConversationAsync(test.Actor.Module, Guid.Empty, "Hello"));
-        var conversation = await test.StartAsync("First");
-        await Assert.ThrowsAsync<AiChatValidationException>(() =>
+        var conversation = await test.SeedAsync("First");
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
             test.Service.ContinueConversationAsync(test.Actor.Module,
                 conversation.ConversationId, Guid.Empty, "Second"));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -172,7 +198,7 @@ public sealed class AiConversationLifecycleServiceTests
         var test = new Fixture();
         await Assert.ThrowsAsync<AiChatValidationException>(() =>
             test.Service.FindConversationAsync(test.Actor.Module, Guid.Empty));
-        await Assert.ThrowsAsync<AiChatValidationException>(() =>
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
             test.Service.ContinueConversationAsync(test.Actor.Module,
                 Guid.Empty, Guid.NewGuid(), "Hello"));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -190,7 +216,7 @@ public sealed class AiConversationLifecycleServiceTests
     public async Task ReadLimitsOutsideTechnicalBound_AreRejected(int limit)
     {
         var test = new Fixture();
-        var conversation = await test.StartAsync("First");
+        var conversation = await test.SeedAsync("First");
         await Assert.ThrowsAsync<AiChatValidationException>(() =>
             test.Service.ListConversationsAsync(test.Actor.Module, limit));
         await Assert.ThrowsAsync<AiChatValidationException>(() =>
@@ -203,12 +229,12 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture();
         var firstOperation = Guid.NewGuid();
-        var conversation = await test.StartAsync("First", firstOperation);
+        var conversation = await test.SeedAsync("First", firstOperation);
         test.Clock.Advance(TimeSpan.FromHours(2));
         var secondOperation = Guid.NewGuid();
-        var userReply = await test.Service.ContinueConversationAsync(
-            test.Actor.Module, conversation.ConversationId,
-            secondOperation, "  Second  ");
+        // Test-only fixture setup: production continuation remains disabled.
+        var userReply = await test.Repository.AppendUserMessageAsync(
+            test.Actor, conversation.ConversationId, secondOperation, "Second");
         // Test-only arrangement for read-policy coverage; never use the disabled service to seed.
         var assistantReply = await test.Repository.AppendAssistantMessageAsync(
             test.Actor, conversation.ConversationId, secondOperation, "Assistant response");
@@ -232,7 +258,7 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture();
         var operation = Guid.NewGuid();
-        var conversation = await test.StartAsync("First", operation);
+        var conversation = await test.SeedAsync("First", operation);
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             test.Service.SaveAssistantReplyAsync(test.Actor.Module,
                 conversation.ConversationId, operation, text));
@@ -242,26 +268,23 @@ public sealed class AiConversationLifecycleServiceTests
     public async Task UnmatchedAssistantOperation_IsRejected()
     {
         var test = new Fixture();
-        var conversation = await test.StartAsync("First");
+        var conversation = await test.SeedAsync("First");
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             test.Service.SaveAssistantReplyAsync(test.Actor.Module,
                 conversation.ConversationId, Guid.NewGuid(), "Orphan"));
     }
 
     [Fact]
-    public async Task CreateRetry_IsIdempotentAndDoesNotRenewExpiry()
+    public async Task RepeatedLegacyCreation_CannotInsertConversationOrFirstMessage()
     {
         var test = new Fixture();
         var operation = Guid.NewGuid();
-        var first = await test.StartAsync("First", operation);
-        test.Clock.Advance(TimeSpan.FromHours(3));
-        var retry = await test.StartAsync("First", operation);
-
-        Assert.Equal(first.ConversationId, retry.ConversationId);
-        Assert.Equal(first.ExpiresAtUtc, retry.ExpiresAtUtc);
-        Assert.Single(await test.Service.ListConversationsAsync(test.Actor.Module, 10));
-        Assert.Single(await test.Service.ReadRecentMessagesAsync(
-            test.Actor.Module, first.ConversationId, 10));
+        for (var attempt = 0; attempt < 3; attempt++)
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                test.Service.StartConversationAsync(test.Actor.Module, operation, "First"));
+        Assert.Equal(0, test.Recording.CreateCalls);
+        Assert.Equal(0, test.Recording.Calls);
+        Assert.Empty(await test.Repository.ListAsync(test.Actor, 10));
     }
 
     [Fact]
@@ -269,32 +292,27 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture();
         var operation = Guid.NewGuid();
-        await test.StartAsync("First", operation);
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            test.StartAsync("Changed", operation));
+        foreach (var text in new[] { "First", "Changed" })
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                test.Service.StartConversationAsync(test.Actor.Module, operation, text));
+        Assert.Equal(0, test.Recording.CreateCalls);
+        Assert.Empty(await test.Repository.ListAsync(test.Actor, 10));
     }
 
     [Fact]
-    public async Task ContinueRetry_IsIdempotentAndDoesNotRenewExpiry()
+    public async Task RepeatedLegacyContinuation_CannotInsertOrRenewExpiry()
     {
         var test = new Fixture();
-        var conversation = await test.StartAsync("First");
+        var conversation = await test.SeedAsync("First");
         test.Clock.Advance(TimeSpan.FromDays(1));
         var operation = Guid.NewGuid();
-        var first = await test.Service.ContinueConversationAsync(
-            test.Actor.Module, conversation.ConversationId, operation, "Second");
-        var before = await test.Service.FindConversationAsync(
-            test.Actor.Module, conversation.ConversationId);
-        test.Clock.Advance(TimeSpan.FromDays(1));
-        var retry = await test.Service.ContinueConversationAsync(
-            test.Actor.Module, conversation.ConversationId, operation, "Second");
-        var after = await test.Service.FindConversationAsync(
-            test.Actor.Module, conversation.ConversationId);
-
-        Assert.Equal(first.MessageId, retry.MessageId);
-        Assert.Equal(before!.ExpiresAtUtc, after!.ExpiresAtUtc);
-        Assert.Equal(2, (await test.Service.ReadRecentMessagesAsync(
-            test.Actor.Module, conversation.ConversationId, 10)).Count);
+        foreach (var text in new[] { "Second", "Second", "Changed" })
+            await Assert.ThrowsAsync<InvalidOperationException>(() => test.Service.ContinueConversationAsync(
+                test.Actor.Module, conversation.ConversationId, operation, text));
+        Assert.Equal(conversation, await test.Repository.FindAsync(test.Actor, conversation.ConversationId));
+        Assert.Single(await test.Repository.ReadRecentMessagesAsync(test.Actor, conversation.ConversationId, 10));
+        Assert.Equal(0, test.Recording.UserAppendCalls);
+        Assert.Equal(0, test.Recording.Calls);
     }
 
     [Fact]
@@ -302,7 +320,7 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture();
         var operation = Guid.NewGuid();
-        var conversation = await test.StartAsync("First", operation);
+        var conversation = await test.SeedAsync("First", operation);
         var before = await test.Service.FindConversationAsync(
             test.Actor.Module, conversation.ConversationId);
         test.Clock.Advance(TimeSpan.FromHours(2));
@@ -322,7 +340,7 @@ public sealed class AiConversationLifecycleServiceTests
     public async Task ReadingAndResuming_DoNotRenewExpiry()
     {
         var test = new Fixture();
-        var conversation = await test.StartAsync("First");
+        var conversation = await test.SeedAsync("First");
         test.Clock.Advance(TimeSpan.FromDays(10));
         Assert.NotNull(await test.Service.FindConversationAsync(
             test.Actor.Module, conversation.ConversationId));
@@ -339,7 +357,7 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture();
         var operation = Guid.NewGuid();
-        var conversation = await test.StartAsync("First", operation);
+        var conversation = await test.SeedAsync("First", operation);
         test.Clock.Advance(TimeSpan.FromDays(14).Subtract(TimeSpan.FromTicks(1)));
         Assert.NotNull(await test.Service.FindConversationAsync(
             test.Actor.Module, conversation.ConversationId));
@@ -358,12 +376,13 @@ public sealed class AiConversationLifecycleServiceTests
     }
 
     [Fact]
-    public async Task NewUserMessageBeforeDeadline_RenewsExpiry()
+    public async Task SeededSavedUserMessage_RenewsExpiryWhileLegacyContinuationStaysDisabled()
     {
         var test = new Fixture();
-        var conversation = await test.StartAsync("First");
+        var conversation = await test.SeedAsync("First");
         test.Clock.Advance(TimeSpan.FromDays(13));
-        await test.Service.ContinueConversationAsync(test.Actor.Module,
+        // Test-only saved-user fixture for expiry/read-policy verification.
+        await test.Repository.AppendUserMessageAsync(test.Actor,
             conversation.ConversationId, Guid.NewGuid(), "Second");
         var renewed = await test.Service.FindConversationAsync(
             test.Actor.Module, conversation.ConversationId);
@@ -384,7 +403,7 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture();
         var owner = test.Actor;
-        var conversation = await test.StartAsync("Private Learning text");
+        var conversation = await test.SeedAsync("Private Learning text");
         var other = variant switch
         {
             0 => owner with { UserId = Guid.NewGuid() },
@@ -413,11 +432,11 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture(AiModule.Social);
         var operation = Guid.NewGuid();
-        var conversation = await test.StartAsync("Fictional content", operation);
+        var conversation = await test.SeedAsync("Fictional content", operation);
         test.Authorization.Current = null;
 
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
-            test.StartAsync("Denied"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            test.Service.StartConversationAsync(test.Actor.Module, Guid.NewGuid(), "Denied"));
         await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
             test.Service.FindConversationAsync(test.Actor.Module,
                 conversation.ConversationId));
@@ -426,7 +445,7 @@ public sealed class AiConversationLifecycleServiceTests
         await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
             test.Service.ReadRecentMessagesAsync(test.Actor.Module,
                 conversation.ConversationId, 10));
-        await Assert.ThrowsAsync<UnauthorizedAccessException>(() =>
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
             test.Service.ContinueConversationAsync(test.Actor.Module,
                 conversation.ConversationId, Guid.NewGuid(), "Denied"));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
@@ -442,7 +461,7 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture();
         var operation = Guid.NewGuid();
-        var conversation = await test.StartAsync("Private", operation);
+        var conversation = await test.SeedAsync("Private", operation);
         await test.Service.DeleteConversationAsync(test.Actor.Module,
             conversation.ConversationId);
         await test.Service.DeleteConversationAsync(test.Actor.Module,
@@ -454,7 +473,7 @@ public sealed class AiConversationLifecycleServiceTests
         Assert.Empty(await test.Service.ReadRecentMessagesAsync(test.Actor.Module,
             conversation.ConversationId, 10));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            test.StartAsync("Private", operation));
+            test.Service.StartConversationAsync(test.Actor.Module, operation, "Private"));
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             test.Service.ContinueConversationAsync(test.Actor.Module,
                 conversation.ConversationId, Guid.NewGuid(), "Resurrect"));
@@ -465,7 +484,7 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture();
         var operation = Guid.NewGuid();
-        var conversation = await test.StartAsync("First", operation);
+        var conversation = await test.SeedAsync("First", operation);
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
@@ -502,7 +521,7 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture(module);
         var operation = Guid.NewGuid();
-        var conversation = await test.StartAsync("Synthetic user", operation);
+        var conversation = await test.SeedAsync("Synthetic user", operation);
         var messages = await test.Repository.ReadRecentMessagesAsync(test.Actor, conversation.ConversationId, 10);
         var calls = test.Recording.Calls;
         var authCalls = test.Authorization.Calls;
@@ -537,7 +556,7 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture();
         var operation = Guid.NewGuid();
-        var conversation = await test.StartAsync("Owner user", operation);
+        var conversation = await test.SeedAsync("Owner user", operation);
         if (context == "deleted")
             await test.Service.DeleteConversationAsync(test.Actor.Module, conversation.ConversationId);
         if (context == "expired") test.Clock.Advance(TimeSpan.FromDays(14));
@@ -582,7 +601,7 @@ public sealed class AiConversationLifecycleServiceTests
     {
         var test = new Fixture();
         var operation = Guid.NewGuid();
-        var conversation = await test.StartAsync("First", operation);
+        var conversation = await test.SeedAsync("First", operation);
         using var cancellation = new CancellationTokenSource();
         if (preCancelled) cancellation.Cancel();
         var calls = test.Recording.Calls;
@@ -608,8 +627,6 @@ public sealed class AiConversationLifecycleServiceTests
     }
 
     [Theory]
-    [InlineData("create")]
-    [InlineData("continue")]
     [InlineData("find")]
     [InlineData("list")]
     [InlineData("read")]
@@ -617,14 +634,12 @@ public sealed class AiConversationLifecycleServiceTests
     public async Task UnrelatedLifecycleRepositoryFailuresPropagateWithoutRetry(string action)
     {
         var test = new Fixture();
-        var conversation = await test.StartAsync("First");
+        var conversation = await test.SeedAsync("First");
         var failure = new InvalidOperationException("Synthetic storage unavailable");
         test.Recording.Failure = failure;
         var calls = test.Recording.Calls;
         Task Invoke() => action switch
         {
-            "create" => test.StartAsync("Another"),
-            "continue" => test.Service.ContinueConversationAsync(test.Actor.Module, conversation.ConversationId, Guid.NewGuid(), "Second"),
             "find" => test.Service.FindConversationAsync(test.Actor.Module, conversation.ConversationId),
             "list" => test.Service.ListConversationsAsync(test.Actor.Module, 10),
             "read" => test.Service.ReadRecentMessagesAsync(test.Actor.Module, conversation.ConversationId, 10),
@@ -652,6 +667,170 @@ public sealed class AiConversationLifecycleServiceTests
         Assert.Equal(0, test.Recording.AssistantAppendCalls);
     }
 
+    [Theory]
+    [InlineData(AiModule.Learning)]
+    [InlineData(AiModule.Hobbies)]
+    [InlineData(AiModule.Social)]
+    public async Task ValidUserWritesFailWithoutAuthorizationStorageOrExpiryChanges(AiModule module)
+    {
+        var test = new Fixture(module);
+        var operation = Guid.NewGuid();
+        var conversation = await test.SeedAsync("Existing user", operation);
+        test.Clock.Advance(TimeSpan.FromDays(13));
+        var messages = await test.Repository.ReadRecentMessagesAsync(test.Actor, conversation.ConversationId, 10);
+        var calls = test.Recording.Calls;
+        var authCalls = test.Authorization.Calls;
+        const string privateText = "private current தமிழ் සිංහල [MOCK]";
+        var creation = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            test.Service.StartConversationAsync(module, operation, privateText));
+        var continuation = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            test.Service.ContinueConversationAsync(module, conversation.ConversationId, operation, privateText));
+        foreach (var error in new[] { creation, continuation })
+        {
+            Assert.Contains("disabled", error.Message);
+            Assert.Contains("guarded admission", error.Message);
+            Assert.Null(error.InnerException);
+            foreach (var value in new[] { privateText, test.Actor.UserId.ToString(), test.Actor.ModuleProfileId.ToString(), operation.ToString() })
+                Assert.DoesNotContain(value, error.ToString());
+        }
+        Assert.Equal(calls, test.Recording.Calls);
+        Assert.Equal(authCalls, test.Authorization.Calls);
+        Assert.Equal(0, test.Recording.CreateCalls);
+        Assert.Equal(0, test.Recording.UserAppendCalls);
+        Assert.Equal(conversation, await test.Repository.FindAsync(test.Actor, conversation.ConversationId));
+        Assert.Equal(messages, await test.Repository.ReadRecentMessagesAsync(test.Actor, conversation.ConversationId, 10));
+        Assert.Single(await test.Repository.ListAsync(test.Actor, 10));
+        test.Clock.Advance(TimeSpan.FromDays(1));
+        Assert.Null(await test.Service.FindConversationAsync(module, conversation.ConversationId));
+    }
+
+    [Theory]
+    [InlineData("missing-actor")]
+    [InlineData("empty-account")]
+    [InlineData("empty-profile")]
+    [InlineData("foreign-account")]
+    [InlineData("foreign-profile")]
+    [InlineData("foreign-module")]
+    [InlineData("unknown-module")]
+    [InlineData("expired")]
+    [InlineData("deleted")]
+    [InlineData("empty-conversation")]
+    [InlineData("empty-operation")]
+    [InlineData("missing-conversation")]
+    public async Task ContextOrIdentifiersCannotEnableLegacyUserWrites(string context)
+    {
+        var test = new Fixture();
+        var conversation = await test.SeedAsync("Owner user");
+        if (context == "expired") test.Clock.Advance(TimeSpan.FromDays(14));
+        if (context == "deleted") await test.Service.DeleteConversationAsync(test.Actor.Module, conversation.ConversationId);
+        test.Authorization.Current = context switch
+        {
+            "missing-actor" => null,
+            "empty-account" => test.Actor with { UserId = Guid.Empty },
+            "empty-profile" => test.Actor with { ModuleProfileId = Guid.Empty },
+            "foreign-account" => test.Actor with { UserId = Guid.NewGuid() },
+            "foreign-profile" => test.Actor with { ModuleProfileId = Guid.NewGuid() },
+            "foreign-module" => test.Actor with { Module = AiModule.Hobbies },
+            _ => test.Actor
+        };
+        var module = context == "unknown-module" ? (AiModule)99 : test.Authorization.Current?.Module ?? test.Actor.Module;
+        var operation = context == "empty-operation" ? Guid.Empty : Guid.NewGuid();
+        var conversationId = context == "empty-conversation" ? Guid.Empty : context == "missing-conversation" ? Guid.NewGuid() : conversation.ConversationId;
+        var calls = test.Recording.Calls;
+        var authCalls = test.Authorization.Calls;
+        for (var attempt = 0; attempt < 2; attempt++)
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() => test.Service.StartConversationAsync(module, operation, "User"));
+            await Assert.ThrowsAsync<InvalidOperationException>(() => test.Service.ContinueConversationAsync(module, conversationId, operation, "User"));
+        }
+        Assert.Equal(calls, test.Recording.Calls);
+        Assert.Equal(authCalls, test.Authorization.Calls);
+        Assert.Equal(0, test.Recording.CreateCalls);
+        Assert.Equal(0, test.Recording.UserAppendCalls);
+        test.Authorization.Current = test.Actor;
+        if (context is "expired" or "deleted")
+            Assert.Null(await test.Repository.FindAsync(test.Actor, conversation.ConversationId));
+        else
+        {
+            Assert.Equal(conversation, await test.Repository.FindAsync(test.Actor, conversation.ConversationId));
+            Assert.Single(await test.Repository.ReadRecentMessagesAsync(test.Actor, conversation.ConversationId, 10));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CancelledLegacyUserWritesCannotCreateAppendOrRetry(bool preCancelled)
+    {
+        var test = new Fixture();
+        var conversation = await test.SeedAsync("First");
+        using var cancellation = new CancellationTokenSource();
+        if (preCancelled) cancellation.Cancel();
+        Func<Task>[] actions =
+        {
+            () => test.Service.StartConversationAsync(test.Actor.Module, Guid.NewGuid(), "Cancelled", cancellation.Token),
+            () => test.Service.ContinueConversationAsync(test.Actor.Module, conversation.ConversationId, Guid.NewGuid(), "Cancelled", cancellation.Token)
+        };
+        if (preCancelled)
+        {
+            foreach (var action in actions)
+            {
+                var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(action);
+                Assert.Equal(cancellation.Token, error.CancellationToken);
+            }
+        }
+        else
+        {
+            var results = actions.Select(action => action()).ToArray();
+            Assert.All(results, task => Assert.True(task.IsFaulted));
+            cancellation.Cancel();
+            foreach (var task in results) await Assert.ThrowsAsync<InvalidOperationException>(() => task);
+        }
+        Assert.Equal(0, test.Recording.Calls);
+        Assert.Equal(0, test.Recording.CreateCalls);
+        Assert.Equal(0, test.Recording.UserAppendCalls);
+        Assert.Single(await test.Repository.ReadRecentMessagesAsync(test.Actor, conversation.ConversationId, 10));
+        Assert.Equal(conversation, await test.Repository.FindAsync(test.Actor, conversation.ConversationId));
+    }
+
+    [Fact]
+    public async Task DisabledUserWritesDoNotConsultFailingDependencies()
+    {
+        var test = new Fixture();
+        test.Recording.Failure = new InvalidOperationException("Storage must not execute");
+        var authorization = new ThrowingAuthorization();
+        var service = new AiConversationLifecycleService(authorization, test.Recording);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.StartConversationAsync(AiModule.Learning, Guid.NewGuid(), "Valid"));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ContinueConversationAsync(AiModule.Learning, Guid.NewGuid(), Guid.NewGuid(), "Valid"));
+        Assert.Equal(0, authorization.Calls);
+        Assert.Equal(0, test.Recording.Calls);
+    }
+
+    [Theory]
+    [InlineData("missing")]
+    [InlineData("account")]
+    [InlineData("profile")]
+    [InlineData("module")]
+    public async Task InvalidInitialActorStillBlocksEnabledReadsAndDeletion(string defect)
+    {
+        var test = new Fixture();
+        var conversation = await test.SeedAsync("Owner");
+        test.Authorization.Current = defect switch
+        {
+            "missing" => null,
+            "account" => test.Actor with { UserId = Guid.Empty },
+            "profile" => test.Actor with { ModuleProfileId = Guid.Empty },
+            _ => test.Actor with { Module = AiModule.Hobbies }
+        };
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => test.Service.FindConversationAsync(test.Actor.Module, conversation.ConversationId));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => test.Service.ListConversationsAsync(test.Actor.Module, 10));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => test.Service.ReadRecentMessagesAsync(test.Actor.Module, conversation.ConversationId, 10));
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => test.Service.DeleteConversationAsync(test.Actor.Module, conversation.ConversationId));
+        Assert.Equal(0, test.Recording.Calls);
+        test.Authorization.Current = test.Actor;
+        Assert.NotNull(await test.Service.FindConversationAsync(test.Actor.Module, conversation.ConversationId));
+    }
+
     private sealed class ThrowingAuthorization : IAiActorAuthorization
     {
         public int Calls { get; private set; }
@@ -667,6 +846,8 @@ public sealed class AiConversationLifecycleServiceTests
     {
         public int Calls { get; private set; }
         public int AssistantAppendCalls { get; private set; }
+        public int CreateCalls { get; private set; }
+        public int UserAppendCalls { get; private set; }
         public Exception? Failure { get; set; }
         private void Record()
         {
@@ -674,7 +855,7 @@ public sealed class AiConversationLifecycleServiceTests
             if (Failure is not null) throw Failure;
         }
         public Task<AiStoredConversation> CreateWithUserMessageAsync(AiAuthorizedActor actor, Guid operationId, string validatedUserText, CancellationToken cancellationToken = default)
-        { Record(); return inner.CreateWithUserMessageAsync(actor, operationId, validatedUserText, cancellationToken); }
+        { CreateCalls++; Record(); return inner.CreateWithUserMessageAsync(actor, operationId, validatedUserText, cancellationToken); }
         public Task<AiStoredConversation?> FindAsync(AiAuthorizedActor actor, Guid conversationId, CancellationToken cancellationToken = default)
         { Record(); return inner.FindAsync(actor, conversationId, cancellationToken); }
         public Task<IReadOnlyList<AiStoredConversation>> ListAsync(AiAuthorizedActor actor, int limit, CancellationToken cancellationToken = default)
@@ -682,7 +863,7 @@ public sealed class AiConversationLifecycleServiceTests
         public Task<IReadOnlyList<AiStoredAiMessage>> ReadRecentMessagesAsync(AiAuthorizedActor actor, Guid conversationId, int limit, CancellationToken cancellationToken = default)
         { Record(); return inner.ReadRecentMessagesAsync(actor, conversationId, limit, cancellationToken); }
         public Task<AiStoredAiMessage> AppendUserMessageAsync(AiAuthorizedActor actor, Guid conversationId, Guid operationId, string validatedUserText, CancellationToken cancellationToken = default)
-        { Record(); return inner.AppendUserMessageAsync(actor, conversationId, operationId, validatedUserText, cancellationToken); }
+        { UserAppendCalls++; Record(); return inner.AppendUserMessageAsync(actor, conversationId, operationId, validatedUserText, cancellationToken); }
         public Task<AiStoredAiMessage> AppendAssistantMessageAsync(AiAuthorizedActor actor, Guid conversationId, Guid operationId, string assistantText, CancellationToken cancellationToken = default)
         { AssistantAppendCalls++; Record(); return inner.AppendAssistantMessageAsync(actor, conversationId, operationId, assistantText, cancellationToken); }
         public Task DeleteAsync(AiAuthorizedActor actor, Guid conversationId, CancellationToken cancellationToken = default)
@@ -708,10 +889,10 @@ public sealed class AiConversationLifecycleServiceTests
             Service = new AiConversationLifecycleService(Authorization, Recording);
         }
 
-        public Task<AiStoredConversation> StartAsync(
+        public Task<AiStoredConversation> SeedAsync(
             string? text, Guid? operationId = null) =>
-            Service.StartConversationAsync(Actor.Module,
-                operationId ?? Guid.NewGuid(), text);
+            Repository.CreateWithUserMessageAsync(Actor,
+                operationId ?? Guid.NewGuid(), text!);
     }
 
     private sealed class MutableAuthorization(AiAuthorizedActor? current)

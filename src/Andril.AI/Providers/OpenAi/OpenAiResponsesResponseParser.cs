@@ -6,14 +6,14 @@ using Andril.AI.Policies;
 namespace Andril.AI.Providers.OpenAi;
 
 public enum OpenAiResponseParseOutcome { Malformed, Parsed, ModelMismatch, UnsupportedOutput, Unresolved }
-public enum OpenAiUsageObservationState { Missing, Observed, Invalid }
+public enum OpenAiUsageObservationState { Missing, Observed, Invalid, Unknown }
 public enum OpenAiIncompleteReason { None, MaxOutputTokens, ContentFilter, MaxMessages, Steered, Unknown }
 public enum OpenAiResponseErrorClass { None, ProviderError }
 
 /// <summary>Untrusted observations with syntactic consistency checks only, never a verified bill.
 /// OutputTokens already includes ReasoningTokens; do not add them. Missing detail stays null.
-/// Cache writes/TTL pricing cannot be represented by current AiBudgetPolicy pricing evidence:
-/// financial integration must be reviewed before spending; no rate or discount is inferred here.</summary>
+/// Cache-write observations do not establish approved pricing/accounting coverage.
+/// Financial integration must be reviewed before spending; no rate or discount is inferred here.</summary>
 public sealed record OpenAiObservedUsage(long InputTokens, long OutputTokens, long TotalTokens,
     long? CachedInputTokens, long? ReasoningTokens, long? CacheWriteTokens,
     long? CacheWrite30MinuteTokens, long? CacheWrite12HourTokens)
@@ -70,11 +70,16 @@ public static class OpenAiResponsesResponseParser
     public static OpenAiParsedResponsesResponse Parse(string? json, string? expectedModel)
     {
         if (string.IsNullOrWhiteSpace(json) || expectedModel != OpenAiResponsesRequestSerializer.ApprovedModel)
-            return new(OpenAiResponseParseOutcome.Malformed);
+            return new(OpenAiResponseParseOutcome.Malformed, UsageState: OpenAiUsageObservationState.Unknown);
+        OpenAiObservedUsage? observedUsage = null;
+        var observedState = OpenAiUsageObservationState.Unknown;
+        string? responseId = null, returnedModel = null;
+        OpenAiParsedResponsesResponse Malformed() => new(OpenAiResponseParseOutcome.Malformed,
+            responseId, returnedModel, Usage: observedUsage, UsageState: observedState);
         try
         {
             var encoding = new UTF8Encoding(false, true);
-            if (encoding.GetByteCount(json) > ProposedMaxJsonBytes) return new(OpenAiResponseParseOutcome.Malformed);
+            if (encoding.GetByteCount(json) > ProposedMaxJsonBytes) return new(OpenAiResponseParseOutcome.Malformed, UsageState: OpenAiUsageObservationState.Unknown);
             using var document = JsonDocument.Parse(encoding.GetBytes(json), new JsonDocumentOptions
             {
                 MaxDepth = ProposedMaxDepth, AllowTrailingCommas = false, CommentHandling = JsonCommentHandling.Disallow
@@ -82,11 +87,12 @@ public static class OpenAiResponsesResponseParser
             var root = document.RootElement;
             Require(root.ValueKind == JsonValueKind.Object);
             RejectDuplicates(root);
+            (observedUsage, observedState) = ReadUsage(root);
             Require(Text(root, "object") == "response");
-            var id = Text(root, "id");
-            var model = Text(root, "model");
+            var id = responseId = Text(root, "id");
+            var model = returnedModel = Text(root, "model");
             var status = Text(root, "status");
-            var (usage, usageState) = ReadUsage(root);
+            var (usage, usageState) = (observedUsage, observedState);
             if (usageState == OpenAiUsageObservationState.Invalid)
                 return new(OpenAiResponseParseOutcome.Malformed, id, model, UsageState: usageState);
 
@@ -139,10 +145,10 @@ public static class OpenAiResponsesResponseParser
                 id, model, completion, completion == AiTextCompletionState.Completed ? text : null, refusal,
                 incomplete, usage, usageState, errorClass, errorCode);
         }
-        catch (JsonException) { return new(OpenAiResponseParseOutcome.Malformed); }
-        catch (EncoderFallbackException) { return new(OpenAiResponseParseOutcome.Malformed); }
-        catch (InvalidOperationException) { return new(OpenAiResponseParseOutcome.Malformed); }
-        catch (FormatException) { return new(OpenAiResponseParseOutcome.Malformed); }
+        catch (JsonException) { return Malformed(); }
+        catch (EncoderFallbackException) { return Malformed(); }
+        catch (InvalidOperationException) { return Malformed(); }
+        catch (FormatException) { return Malformed(); }
     }
 
     private static bool ReadOutput(JsonElement output, bool completed, out string text, out string? refusal)

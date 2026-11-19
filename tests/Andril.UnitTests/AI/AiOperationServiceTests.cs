@@ -168,7 +168,7 @@ public sealed class AiOperationServiceTests
         var setup = new Setup();
         var state = completed
             ? State() with { Status = AiOperationStatus.Completed, Quota = AiQuotaState.Committed, Dispatch = AiDispatchState.Confirmed, AttemptId = Id(40) }
-            : State() with { Status = AiOperationStatus.PendingReconciliation, Dispatch = AiDispatchState.Uncertain };
+            : State() with { Status = AiOperationStatus.PendingReconciliation, Dispatch = AiDispatchState.Uncertain, AttemptId = Id(40) };
         setup.Repo.Admission = new(AiOperationOutcome.Existing, state);
         Assert.Equal(setup.Repo.Admission, await setup.Service.AdmitAsync(Request()));
         Assert.Equal(setup.Repo.Admission, await setup.Service.AdmitAsync(Request()));
@@ -214,7 +214,7 @@ public sealed class AiOperationServiceTests
         var state = scenario switch
         {
             "active" => State() with { Status = AiOperationStatus.InProgress, Dispatch = AiDispatchState.Confirmed, AttemptId = Id(40) },
-            "uncertain" => State() with { Status = AiOperationStatus.PendingReconciliation, Dispatch = AiDispatchState.Uncertain },
+            "uncertain" => State() with { Status = AiOperationStatus.PendingReconciliation, Dispatch = AiDispatchState.Uncertain, AttemptId = Id(40) },
             "released" => failed with { Quota = AiQuotaState.Released },
             "prepared" => State(),
             _ => failed

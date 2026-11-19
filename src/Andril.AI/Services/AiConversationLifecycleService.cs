@@ -1,5 +1,4 @@
 ﻿
-using System.Globalization;
 using Andril.AI.ChatBox;
 using Andril.AI.Interfaces;
 using Andril.AI.Policies;
@@ -14,7 +13,6 @@ namespace Andril.AI.Services;
 /// </summary>
 public sealed class AiConversationLifecycleService
 {
-    private const int MaxUserCharacters = 500;
     private const int MaxReadLimit = 100; // Technical safeguard, not a product quota.
 
     private readonly IAiActorAuthorization _authorization;
@@ -31,30 +29,27 @@ public sealed class AiConversationLifecycleService
     }
 
     /// <summary>
-    /// Creates a conversation with its first user message.
-    /// Repository enforces atomic idempotency.
+    /// Disabled legacy creation path, retained for signature compatibility. Future protected
+    /// admission must coordinate the first message, operation identity, quota and budget atomically.
+    /// No proposed transaction design is approved or implemented by this service.
     /// </summary>
-    public async Task<AiStoredConversation> StartConversationAsync(
+    public Task<AiStoredConversation> StartConversationAsync(
         AiModule module,
         Guid operationId,
         string? userMessage,
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        RequireOperationId(operationId);
-
-        var validatedText = ValidateUserMessage(userMessage);
-        var actor = await ResolveActorAsync(module, cancellationToken);
-
-        return await _conversations.CreateWithUserMessageAsync(
-            actor, operationId, validatedText, cancellationToken);
+        // No authorization lookup, repository write, admission delegation or accounting effect.
+        return Task.FromException<AiStoredConversation>(new InvalidOperationException(
+            "Legacy conversation creation is disabled; guarded admission integration is required."));
     }
 
     /// <summary>
-    /// Saves a user message in an existing conversation.
-    /// Only a successfully saved user message renews the expiry.
+    /// Disabled legacy continuation path, retained for signature compatibility. User messages
+    /// and their expiry updates require guarded admission integration, never a separate append.
     /// </summary>
-    public async Task<AiStoredAiMessage> ContinueConversationAsync(
+    public Task<AiStoredAiMessage> ContinueConversationAsync(
         AiModule module,
         Guid conversationId,
         Guid operationId,
@@ -62,19 +57,9 @@ public sealed class AiConversationLifecycleService
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
-
-        RequireConversationId(conversationId);
-        RequireOperationId(operationId);
-
-        var validatedText = ValidateUserMessage(userMessage);
-        var actor = await ResolveActorAsync(module, cancellationToken);
-
-        return await _conversations.AppendUserMessageAsync(
-            actor,
-            conversationId,
-            operationId,
-            validatedText,
-            cancellationToken);
+        // No user append or expiry renewal. Caller input cannot enable this legacy path.
+        return Task.FromException<AiStoredAiMessage>(new InvalidOperationException(
+            "Legacy user-message continuation is disabled; guarded admission integration is required."));
     }
 
     /// <summary>
@@ -205,41 +190,12 @@ public sealed class AiConversationLifecycleService
         return actor;
     }
 
-    private static string ValidateUserMessage(string? message)
-    {
-        if (string.IsNullOrWhiteSpace(message))
-        {
-            throw new AiChatValidationException(
-                "A non-empty message is required.");
-        }
-
-        // Provisional Unicode text-element counting,
-        // consistent with the existing AiChatService.
-        if (new StringInfo(message).LengthInTextElements
-            > MaxUserCharacters)
-        {
-            throw new AiChatValidationException(
-                "AI messages may contain at most 500 characters.");
-        }
-
-        return message.Trim();
-    }
-
     private static void RequireConversationId(Guid conversationId)
     {
         if (conversationId == Guid.Empty)
         {
             throw new AiChatValidationException(
                 "A conversation ID is required.");
-        }
-    }
-
-    private static void RequireOperationId(Guid operationId)
-    {
-        if (operationId == Guid.Empty)
-        {
-            throw new AiChatValidationException(
-                "An operation ID is required.");
         }
     }
 

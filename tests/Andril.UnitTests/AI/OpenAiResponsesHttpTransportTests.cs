@@ -52,7 +52,7 @@ public sealed class OpenAiResponsesHttpTransportTests
         var prepared = Prepare(request);
         var bytes = prepared.CopyUtf8Payload();
         HttpRequestMessage? captured = null;
-        var stream = new TrackingStream(Encoding.UTF8.GetBytes(Json()));
+        TrackingStream? stream = null;
         var handler = new Handler(async (message, token) =>
         {
             captured = message;
@@ -66,6 +66,7 @@ public sealed class OpenAiResponsesHttpTransportTests
             using var json = JsonDocument.Parse(bytes);
             Assert.Equal(request.Model, json.RootElement.GetProperty("model").GetString());
             Assert.Equal(request.Messages[^1].Text, json.RootElement.GetProperty("input")[3].GetProperty("content").GetString());
+            stream = new TrackingStream(Encoding.UTF8.GetBytes(Json()));
             var response = StreamResponse(stream);
             response.Headers.Add("x-request-id", "req_synthetic-123");
             return response;
@@ -80,13 +81,16 @@ public sealed class OpenAiResponsesHttpTransportTests
         Assert.True(result.ExecutionMayHaveOccurred);
         Assert.Equal(1, handler.Calls);
         Assert.Equal(bytes, prepared.CopyUtf8Payload());
-        Assert.True(stream.Disposed);
+        Assert.True(stream!.Disposed);
         Assert.NotNull(captured);
         await Assert.ThrowsAsync<ObjectDisposedException>(() => captured!.Content!.ReadAsByteArrayAsync());
         Assert.Empty(client.DefaultRequestHeaders);
         Assert.False(handler.Disposed);
         // Reuse confirms that the injected client remains usable; still one send per invocation.
-        await Send(transport);
+        var second = await Send(transport);
+        Assert.Equal(OpenAiTransportOutcome.ResponseReceived, second.Outcome);
+        Assert.Equal(Answer, second.Response!.AssistantText);
+        Assert.True(stream!.Disposed);
         Assert.Equal(2, handler.Calls);
     }
 
