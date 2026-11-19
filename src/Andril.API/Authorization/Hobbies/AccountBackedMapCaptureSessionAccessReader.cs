@@ -64,8 +64,9 @@ public sealed class AccountBackedMapCaptureSessionAccessReader
         }
 
         // Resolve the verified authentication subject.
-        if (_currentUser.UserId is not Guid subjectId
-            || subjectId == Guid.Empty)
+        if (!_currentUser.IsAuthenticated
+     || _currentUser.UserId is not Guid subjectId
+     || subjectId == Guid.Empty)
         {
             return null;
         }
