@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Andril.Social.DTOs;
 using Andril.Social.Personality;
 using Andril.Social.Services;
 using Xunit;
@@ -269,5 +270,119 @@ public sealed class QuestionnaireApplicationServiceTests
         Assert.Equal(catalogBefore, JsonSerializer.Serialize(catalog.FindByVersion("test-v2")));
         Assert.Equal(submissionBefore, JsonSerializer.Serialize(submission));
         Assert.Same(answers, submission.Answers);
+    }
+
+    [Theory]
+    [InlineData("test-v1", 1, "old-option")]
+    [InlineData("test-v2", 2, "new-option")]
+    public void GetDefinition_UsesExactVersionAndMapsDefinitionFields(
+        string version, int questionCount, string optionId)
+    {
+        var service = Service(
+            Definition("test-v1", questionCount: 1, optionId: "old-option"),
+            Definition("test-v2", questionCount: 2, optionId: "new-option"));
+
+        var result = service.GetDefinition(version);
+
+        Assert.NotNull(result);
+        Assert.Equal(version, result.Version);
+        Assert.Equal(
+            Enumerable.Range(1, questionCount).Select(number => $"q{number}").ToArray(),
+            result.Questions.Select(question => question.Id).ToArray());
+        for (var index = 0; index < result.Questions.Count; index++)
+        {
+            var question = result.Questions[index];
+            Assert.Equal($"Synthetic question {index + 1}", question.Prompt);
+            Assert.True(question.IsRequired);
+            var option = Assert.Single(question.Options);
+            Assert.Equal(optionId, option.Id);
+            Assert.Equal("Synthetic option", option.Label);
+        }
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("\t\r\n")]
+    [InlineData("unknown")]
+    [InlineData("TEST-V2")]
+    [InlineData(" test-v2 ")]
+    public void GetDefinition_UnresolvableVersion_ReturnsNullWithoutFallback(
+        string? version)
+    {
+        var service = Service(Definition("test-v1"), Definition("test-v2"));
+
+        var result = service.GetDefinition(version);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void GetDefinition_SerializesOnlyAnswerFreeDefinitionFields()
+    {
+        var service = Service(Definition(questionCount: 1));
+
+        var result = service.GetDefinition("test-v2");
+
+        Assert.NotNull(result);
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(result));
+        var definition = document.RootElement;
+        Assert.Equal(new[] { "Questions", "Version" },
+            definition.EnumerateObject().Select(field => field.Name).OrderBy(name => name).ToArray());
+        var question = Assert.Single(definition.GetProperty("Questions").EnumerateArray());
+        Assert.Equal(new[] { "Id", "IsRequired", "Options", "Prompt" },
+            question.EnumerateObject().Select(field => field.Name).OrderBy(name => name).ToArray());
+        var option = Assert.Single(question.GetProperty("Options").EnumerateArray());
+        Assert.Equal(new[] { "Id", "Label" },
+            option.EnumerateObject().Select(field => field.Name).OrderBy(name => name).ToArray());
+    }
+
+    [Fact]
+    public void GetDefinition_QuestionAndOptionCollectionsAreReadOnly()
+    {
+        var service = Service(Definition(questionCount: 1));
+
+        var result = service.GetDefinition("test-v2");
+
+        Assert.NotNull(result);
+        var before = JsonSerializer.Serialize(result);
+        var questions = Assert.IsAssignableFrom<IList<QuestionnaireQuestionDto>>(result.Questions);
+        var options = Assert.IsAssignableFrom<IList<QuestionnaireOptionDto>>(result.Questions[0].Options);
+        Assert.Throws<NotSupportedException>(() => questions.Clear());
+        Assert.Throws<NotSupportedException>(() => options.Clear());
+        Assert.Equal(before, JsonSerializer.Serialize(result));
+        Assert.Equal(before, JsonSerializer.Serialize(service.GetDefinition("test-v2")));
+    }
+
+    [Theory]
+    [InlineData("yes", true)]
+    [InlineData("invalid-option", false)]
+    public void GetDefinition_RepeatedRetrievalPreservesCatalogAndValidation(
+        string optionId, bool expectedValid)
+    {
+        var definition = Definition();
+        var catalog = new QuestionnaireDefinitionCatalog(new[] { definition });
+        var service = new QuestionnaireApplicationService(catalog);
+        var submission = Submission(optionId: optionId);
+        var validationBefore = service.Validate(submission);
+        var definitionBefore = JsonSerializer.Serialize(definition);
+        var catalogBefore = JsonSerializer.Serialize(catalog.FindByVersion("test-v2"));
+        var submissionBefore = JsonSerializer.Serialize(submission);
+
+        var first = service.GetDefinition("test-v2");
+        var second = service.GetDefinition("test-v2");
+        var validationAfter = service.Validate(submission);
+
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+        Assert.Equal(JsonSerializer.Serialize(first), JsonSerializer.Serialize(second));
+        Assert.Equal(definitionBefore, JsonSerializer.Serialize(definition));
+        Assert.Equal(catalogBefore, JsonSerializer.Serialize(catalog.FindByVersion("test-v2")));
+        Assert.Equal(submissionBefore, JsonSerializer.Serialize(submission));
+        Assert.Equal(expectedValid, validationBefore.IsValid);
+        Assert.Equal(expectedValid, validationAfter.IsValid);
+        Assert.Equal(validationBefore.Status, validationAfter.Status);
+        Assert.Equal(validationBefore.Errors.ToArray(), validationAfter.Errors.ToArray());
     }
 }
