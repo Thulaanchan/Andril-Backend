@@ -1,11 +1,12 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
 namespace Andril.Hobbies.Map.Places;
 
 /// <summary>
-/// Defines persistence and identifier-based retrieval of canonical Map attractions.
+/// Defines persistence, identifier-based retrieval and discovery of canonical Map attractions.
 /// </summary>
 /// <remarks>
 /// Operations require trusted backend callers and expose only canonical attraction data.
@@ -40,5 +41,17 @@ public interface IMapAttractionRepository
     /// </remarks>
     Task<MapAttraction?> FindByIdAsync(
         Guid attractionId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Retrieves a read-only page for trusted backend callers in ascending attraction ID order.
+    /// Returns at most the requested limit and an empty list when no records remain.
+    /// </summary>
+    /// <remarks>
+    /// Honors cancellation and propagates persistence failures. Offset pagination can skip
+    /// or repeat records if rows are inserted or deleted between requests.
+    /// </remarks>
+    Task<IReadOnlyList<MapAttractionDiscoveryItem>> DiscoverAsync(
+        MapAttractionDiscoveryQuery query,
         CancellationToken cancellationToken = default);
 }

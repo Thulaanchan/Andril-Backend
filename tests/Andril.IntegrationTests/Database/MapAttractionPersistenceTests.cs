@@ -1,5 +1,6 @@
 using System;
 using System.Data;
+using System.Data.Common;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -8,6 +9,7 @@ using Andril.Hobbies.Map.Places;
 using Andril.Persistence.DbContexts;
 using Andril.Persistence.Repositories.Hobbies;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Npgsql;
@@ -23,6 +25,77 @@ public sealed class MapAttractionPersistenceTests
     private const string Name = "  Synthetic attraction  ";
     private static readonly Guid AttractionId = new("33333333-3333-4333-8333-333333333333");
     private static readonly Guid MissingId = new("44444444-4444-4444-8444-444444444444");
+
+    [Fact]
+    public async Task Discover_RejectsNullAndPreCancellationBeforeUsingDatabase()
+    {
+        var probe = new OfflineDiscoveryProbe();
+        await using var context = CreateContext(ModelOnlyConnection, probe);
+        var repository = new MapAttractionRepository<HobbiesMapDbContext>(context);
+
+        await Assert.ThrowsAsync<ArgumentNullException>("query", () => repository.DiscoverAsync(null!));
+        var token = new CancellationToken(canceled: true);
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => repository.DiscoverAsync(new MapAttractionDiscoveryQuery(0, 1), token));
+        Assert.Equal(token, error.CancellationToken);
+        Assert.Null(probe.CommandText);
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
+
+    [Fact]
+    public async Task Discover_CompilesOnlyCanonicalColumnsAndPaginatesOnServer()
+    {
+        var probe = new OfflineDiscoveryProbe();
+        await using var context = CreateContext(ModelOnlyConnection, probe);
+        var repository = new MapAttractionRepository<HobbiesMapDbContext>(context);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repository.DiscoverAsync(new MapAttractionDiscoveryQuery(17, 23)));
+
+        Assert.Same(probe.Stop, error);
+        Assert.NotNull(probe.CommandText);
+        Assert.Matches(
+            @"^SELECT m\.attraction_id, m\.name, m\.latitude, m\.longitude\s+FROM map_attractions AS m\s+ORDER BY m\.attraction_id\s+LIMIT @\w+ OFFSET @\w+\s*$",
+            probe.CommandText);
+        Assert.Equal(new[] { 17, 23 }, probe.ParameterValues!.Order());
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+        Assert.Empty(context.ChangeTracker.Entries());
+    }
+
+    [MapCapturePostgresFact]
+    public Task Discover_PagesStableCanonicalRecordsAndLeavesTrackedStateUntouched() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await using var context = CreateContext(connection);
+            var repository = new MapAttractionRepository<HobbiesMapDbContext>(context);
+            Assert.Empty(await repository.DiscoverAsync(new MapAttractionDiscoveryQuery(0, 1)));
+
+            var count = MapAttractionDiscoveryQuery.MaximumLimit + 1;
+            var ids = Enumerable.Range(1, count)
+                .Select(index => new Guid($"00000000-0000-4000-8000-{index:D12}"))
+                .ToArray();
+            context.MapAttractions.AddRange(ids.Reverse().Select(id => MapAttraction.Create(id, Name, 7.5, -80.5)));
+            await context.SaveChangesAsync();
+            context.ChangeTracker.Clear();
+
+            var pending = MapAttraction.Create(MissingId, "Pending attraction", 0, 0);
+            context.MapAttractions.Add(pending);
+            var first = await repository.DiscoverAsync(new MapAttractionDiscoveryQuery(0, count - 1));
+            var second = await repository.DiscoverAsync(new MapAttractionDiscoveryQuery(count - 1, count - 1));
+            Assert.Equal(count - 1, first.Count);
+            Assert.Single(second);
+            Assert.Equal(ids, first.Concat(second).Select(item => item.AttractionId));
+            Assert.All(first.Concat(second), item =>
+            {
+                Assert.Equal(Name, item.Name);
+                Assert.Equal(7.5, item.Latitude);
+                Assert.Equal(-80.5, item.Longitude);
+            });
+            Assert.Empty(await repository.DiscoverAsync(new MapAttractionDiscoveryQuery(count + 1, 1)));
+            var tracked = Assert.Single(context.ChangeTracker.Entries());
+            Assert.Same(pending, tracked.Entity);
+            Assert.Equal(EntityState.Added, tracked.State);
+        });
 
     [Fact]
     public void Model_RegistersAttractionWithRequiredPostgresMappings()
@@ -273,6 +346,9 @@ public sealed class MapAttractionPersistenceTests
                     () => repository.FindByIdAsync(id, token));
                 Assert.Equal(token, findError.CancellationToken);
             }
+            var discoveryError = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => repository.DiscoverAsync(new MapAttractionDiscoveryQuery(0, 1), token));
+            Assert.Equal(token, discoveryError.CancellationToken);
 
             Assert.Empty(context.ChangeTracker.Entries());
             Assert.Equal(1, await context.MapAttractions.CountAsync());
@@ -295,6 +371,10 @@ public sealed class MapAttractionPersistenceTests
 
             var readError = await Assert.ThrowsAsync<PostgresException>(() => repository.FindByIdAsync(AttractionId));
             Assert.Equal(PostgresErrorCodes.UndefinedTable, readError.SqlState);
+
+            var discoveryError = await Assert.ThrowsAsync<PostgresException>(
+                () => repository.DiscoverAsync(new MapAttractionDiscoveryQuery(0, 1)));
+            Assert.Equal(PostgresErrorCodes.UndefinedTable, discoveryError.SqlState);
         });
 
     private static MapAttraction CreateAttraction() =>
@@ -329,8 +409,30 @@ public sealed class MapAttractionPersistenceTests
         return await command.ExecuteNonQueryAsync();
     }
 
-    private static HobbiesMapDbContext CreateContext(string connection) =>
-        new(new DbContextOptionsBuilder<HobbiesMapDbContext>().UseNpgsql(connection).Options);
+    private static HobbiesMapDbContext CreateContext(string connection, params IInterceptor[] interceptors) =>
+        new(new DbContextOptionsBuilder<HobbiesMapDbContext>()
+            .UseNpgsql(connection).AddInterceptors(interceptors).Options);
+
+    private sealed class OfflineDiscoveryProbe : DbCommandInterceptor, IDbConnectionInterceptor
+    {
+        public InvalidOperationException Stop { get; } = new("Offline discovery SQL captured.");
+        public string? CommandText { get; private set; }
+        public int[]? ParameterValues { get; private set; }
+
+        public override DbCommand CommandInitialized(CommandEndEventData eventData, DbCommand result)
+        {
+            CommandText = result.CommandText;
+            ParameterValues = result.Parameters.Cast<DbParameter>().Select(parameter => (int)parameter.Value!).ToArray();
+            result.Dispose();
+            throw Stop;
+        }
+
+        public ValueTask<InterceptionResult> ConnectionOpeningAsync(
+            DbConnection connection, ConnectionEventData eventData, InterceptionResult result,
+            CancellationToken cancellationToken = default) =>
+            // Let EF create the command without opening an actual PostgreSQL connection.
+            ValueTask.FromResult(InterceptionResult.Suppress());
+    }
 
     private static async Task WithDatabaseAsync(Func<string, Task> test)
     {
