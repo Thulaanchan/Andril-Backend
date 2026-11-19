@@ -100,7 +100,10 @@ public sealed record AiStoredConversation(
     AiModule Module,
     DateTimeOffset CreatedAtUtc,
     DateTimeOffset LastSavedUserMessageAtUtc,
-    DateTimeOffset ExpiresAtUtc);
+    DateTimeOffset ExpiresAtUtc)
+{
+    public override string ToString() => "AiStoredConversation [private content and bindings omitted]";
+}
 
 public enum AiStoredMessageRole
 {
@@ -117,4 +120,7 @@ public sealed record AiStoredAiMessage(
     Guid ConversationId,
     AiStoredMessageRole Role,
     string Text,
-    DateTimeOffset SavedAtUtc);
+    DateTimeOffset SavedAtUtc)
+{
+    public override string ToString() => "AiStoredAiMessage [private content and bindings omitted]";
+}

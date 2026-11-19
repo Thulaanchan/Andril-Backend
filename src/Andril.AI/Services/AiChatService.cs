@@ -4,16 +4,16 @@ using Andril.AI.ChatBox;
 using Andril.AI.DTOs;
 using Andril.AI.Interfaces;
 using Andril.AI.Policies;
+using Andril.AI.Providers;
 
 namespace Andril.AI.Services;
 
 /// <summary>
-/// First mock-first AI service boundary.
-/// Not a persistent conversation service.
-///
-/// Do not expose through HTTP until authenticated,
-/// database-backed module authorization, privacy
-/// acknowledgment and quota controls are implemented.
+/// Synthetic-data, built-in-mock-only development primitive. Never register as production AI Chat
+/// or expose through HTTP. Not a persistent conversation service or live execution boundary.
+/// Live generation requires separate guarded orchestration: fresh authorization/privacy,
+/// admission/quota, trusted token measurement/budget, input safety/applicable consent,
+/// fenced dispatch, output safety, atomic completion and fresh delivery authorization.
 /// </summary>
 public sealed class AiChatService(
     IAiActorAuthorization authorization,
@@ -58,6 +58,8 @@ public sealed class AiChatService(
         var actor = await authorization
             .GetAuthorizedActorAsync(module, cancellationToken);
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         // Step 6: Deny missing, invalid or mismatched actors.
         if (actor is null ||
             actor.UserId == Guid.Empty ||
@@ -68,15 +70,22 @@ public sealed class AiChatService(
                 "AI module access denied.");
         }
 
-        // Step 7: Generate a response only after authorization.
-        var response = await provider.GenerateAsync(
+        // Step 7: Only the sealed, deterministic, network-free built-in mock may execute here.
+        // An arbitrary implementation's IsMock claim is not evidence: reject BEFORE invocation.
+        if (provider is not MockAiResponseProvider mock)
+            throw new InvalidOperationException("Legacy AI chat supports only the built-in development mock.");
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var response = await mock.GenerateAsync(
             new AiProviderPrompt(
                 module,
                 userMessage.Trim()),
             cancellationToken);
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         // Step 8: Reject unusable provider responses.
-        if (response is null ||
+        if (response is null || !response.IsMock ||
             string.IsNullOrWhiteSpace(response.Text))
         {
             throw new InvalidOperationException(
