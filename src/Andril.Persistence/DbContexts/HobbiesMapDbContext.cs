@@ -1,5 +1,6 @@
 
 using Andril.Hobbies.Map.Contributions;
+using Andril.Hobbies.Map.Places;
 using Andril.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
 
@@ -24,6 +25,11 @@ public sealed class HobbiesMapDbContext : DbContext
         CaptureSessions =>
             Set<MapContributionCaptureSession>();
 
+    /// <summary>
+    /// Canonical Map attraction records.
+    /// </summary>
+    public DbSet<MapAttraction> MapAttractions => Set<MapAttraction>();
+
     protected override void OnModelCreating(
         ModelBuilder modelBuilder)
     {
@@ -31,5 +37,8 @@ public sealed class HobbiesMapDbContext : DbContext
 
         modelBuilder.ApplyConfiguration(
             new MapContributionCaptureSessionConfiguration());
+
+        modelBuilder.ApplyConfiguration(
+            new MapAttractionConfiguration());
     }
 }
