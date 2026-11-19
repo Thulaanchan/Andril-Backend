@@ -78,11 +78,12 @@ public sealed class AiConversationLifecycleService
     }
 
     /// <summary>
-    /// Saves an assistant response for an accepted user operation.
-    /// It must not renew the conversation inactivity deadline.
-    /// Internal use only; never expose as a client write endpoint.
+    /// Disabled legacy assistant write path, retained for signature compatibility only.
+    /// Generated replies require guarded late-reply completion integration and its protected
+    /// atomic repository boundary. No arguments or mock claims can enable this method.
+    /// This failure does not establish provider cost, quota release or permission to retry.
     /// </summary>
-    public async Task<AiStoredAiMessage> SaveAssistantReplyAsync(
+    public Task<AiStoredAiMessage> SaveAssistantReplyAsync(
         AiModule module,
         Guid conversationId,
         Guid operationId,
@@ -91,23 +92,10 @@ public sealed class AiConversationLifecycleService
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        RequireConversationId(conversationId);
-        RequireOperationId(operationId);
-
-        if (string.IsNullOrWhiteSpace(assistantText))
-        {
-            throw new AiChatValidationException(
-                "A non-empty assistant response is required.");
-        }
-
-        var actor = await ResolveActorAsync(module, cancellationToken);
-
-        return await _conversations.AppendAssistantMessageAsync(
-            actor,
-            conversationId,
-            operationId,
-            assistantText,
-            cancellationToken);
+        // Unconditional denial: do not resolve an actor, load a conversation, append, mutate
+        // quota/budget or delegate to an incomplete completion integration. Never echo content.
+        return Task.FromException<AiStoredAiMessage>(new InvalidOperationException(
+            "Legacy assistant persistence is disabled; guarded completion integration is required."));
     }
 
     /// <summary>
