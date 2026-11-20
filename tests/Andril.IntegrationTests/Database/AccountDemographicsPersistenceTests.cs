@@ -45,15 +45,15 @@ public sealed class AccountDemographicsPersistenceTests
         var a = await accounts.GetOrCreateAsync(Guid.NewGuid(), DateTimeOffset.UtcNow);
         var b = await accounts.GetOrCreateAsync(Guid.NewGuid(), DateTimeOffset.UtcNow);
         var repository = new AccountDemographicsRepository(db);
-        var first = await repository.SaveAsync(a.Id, new(2000, 2, 29), "private text", DateTimeOffset.UtcNow);
-        var repeated = await repository.SaveAsync(a.Id, new(2000, 2, 29), "private text", DateTimeOffset.UtcNow.AddHours(1));
+        var first = await repository.SaveAsync(a.Id, new(2000, 2, 29), "prefer_not_to_say", DateTimeOffset.UtcNow);
+        var repeated = await repository.SaveAsync(a.Id, new(2000, 2, 29), "prefer_not_to_say", DateTimeOffset.UtcNow.AddHours(1));
         Assert.Equal(first.CreatedAtUtc, repeated.CreatedAtUtc);
         Assert.Equal(first.UpdatedAtUtc, repeated.UpdatedAtUtc);
         Assert.Null(await repository.FindAsync(b.Id));
         await using var fresh = database.Open();
         var persisted = await new AccountDemographicsRepository(fresh).FindAsync(a.Id);
         Assert.Equal(new(2000, 2, 29), persisted!.DateOfBirth);
-        Assert.Equal("private text", persisted.Gender);
+        Assert.Equal("prefer_not_to_say", persisted.Gender);
         Assert.Equal(a.UpdatedAtUtc, (await fresh.Accounts.AsNoTracking().SingleAsync(x => x.Id == a.Id)).UpdatedAtUtc);
         await db.GetService<IMigrator>().MigrateAsync(Previous);
         Assert.Equal(2, await db.Accounts.CountAsync());
@@ -90,7 +90,7 @@ public sealed class AccountDemographicsPersistenceTests
         await using (var failing = database.Open(new FailRead()))
         {
             await Assert.ThrowsAsync<InvalidOperationException>(() => new AccountDemographicsRepository(failing)
-                .SaveAsync(account.Id, new(2000, 1, 1), "value", DateTimeOffset.UtcNow));
+                .SaveAsync(account.Id, new(2000, 1, 1), "other", DateTimeOffset.UtcNow));
         }
         Assert.Empty(await db.Demographics.ToListAsync());
     }

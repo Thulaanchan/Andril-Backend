@@ -212,9 +212,8 @@ components:
           description: Valid ISO calendar date yyyy-MM-dd, no later than today's UTC date. The provider sentinel 0001-01-01 is unsupported.
         gender:
           type: string
-          minLength: 1
-          maxLength: 100
-          description: Non-whitespace text without control characters; trimmed. Vocabulary pending review, not an approved enum.
+          enum: [male, female, other, prefer_not_to_say]
+          description: Exact case-sensitive canonical value. Whitespace and translated labels are rejected.
     AccountEligibility:
       type: object
       additionalProperties: false
@@ -422,7 +421,7 @@ components:
           schema:
             $ref: '#/components/schemas/AccountEligibility'
     EligibilityInvalid:
-      description: Invalid/missing DOB or gender, future DOB, oversized/control-character gender, or unknown property. No data changed.
+      description: Invalid or missing DOB or gender, future DOB, noncanonical gender, or unknown property. No data changed.
       content:
         application/problem+json:
           schema:
@@ -563,8 +562,8 @@ paths:
       description: >-
         Requires existing profile and current owner prerequisites. Names are trimmed and
         ASCII-case-folded for module/name and account/name uniqueness. Exact retries
-        are idempotent. Allowed characters, reserved names and completion rules remain
-        pending; saving a draft is not approval. Visibility is restricted to private.
+        are idempotent. Saving a draft does not complete the profile.
+        Visibility is restricted to private.
         Unknown/duplicate fields are rejected. Maximum transport body is 16384 bytes.
       requestBody:
         required: true
@@ -575,8 +574,26 @@ paths:
               additionalProperties: false
               required: [displayName, bio, visibility]
               properties:
-                displayName: { type: string }
-                bio: { type: string, nullable: true }
+                displayName:
+                  type: string
+                  description: >-
+                    Trimmed name with 3 to 30 Unicode grapheme clusters. Allows Unicode
+                    letters, decimal digits, attached combining marks, ordinary spaces,
+                    underscores, and hyphens. Requires a letter or digit. Join controls
+                    are allowed in supported Tamil and Sinhala consonant sequences.
+                    Emoji, unsupported punctuation or symbols, directional controls,
+                    other invalid invisible characters, NUL, and malformed Unicode are rejected.
+                    Reserved names are andril, admin, administrator, moderator, support,
+                    system, official, andriladmin, andrilmoderator, andrilsupport,
+                    andrilofficial, and andrilteam. The entire name is compared after
+                    ASCII case folding and removing ordinary spaces, underscores, and hyphens.
+                bio:
+                  type: string
+                  nullable: true
+                  description: >-
+                    Optional content. Use null or an empty string for no bio. Accepts
+                    up to 300 Unicode grapheme clusters, including multiline text and
+                    emoji. Text is preserved as submitted. NUL and malformed Unicode are rejected.
                 visibility: { type: string, enum: [private] }
       responses:
         '200':

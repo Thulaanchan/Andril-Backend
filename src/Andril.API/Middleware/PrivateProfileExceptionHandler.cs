@@ -10,6 +10,10 @@ public sealed class PrivateProfileExceptionHandler(IProblemDetailsService proble
     {
         var (status, title) = exception switch
         {
+            BadHttpRequestException { StatusCode: StatusCodes.Status413PayloadTooLarge }
+                when HttpMethods.IsPut(context.Request.Method)
+                    && context.Request.Path.StartsWithSegments("/api/v1/account/profiles", StringComparison.OrdinalIgnoreCase)
+                => (413, "Private profile request too large"),
             ProfileValidationException => (400, "Invalid private profile request"),
             ProfileNameConflictException => (409, "Display name unavailable"),
             PhotoDependencyException => (503, "Private photo validation unavailable"),

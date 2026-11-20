@@ -33,7 +33,7 @@ public sealed class OnboardingResumePersistenceTests
         Assert.Equal("complete_demographics", (await Read(subject)).NextStep);
         await using (var db = database.Open())
         {
-            db.Demographics.Add(AccountDemographics.Create(accountId, new(2000, 1, 1), "private", now));
+            db.Demographics.Add(AccountDemographics.Create(accountId, new(2000, 1, 1), "other", now));
             await db.SaveChangesAsync();
         }
         Assert.Equal("review_policies", (await Read(subject)).NextStep);

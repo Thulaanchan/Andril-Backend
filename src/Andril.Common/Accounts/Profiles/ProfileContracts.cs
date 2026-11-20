@@ -1,4 +1,5 @@
 using Andril.Common.Accounts.StarterModules;
+using Andril.Common.Validators;
 
 namespace Andril.Common.Accounts.Profiles;
 
@@ -36,9 +37,11 @@ public static class DisplayNames
     public static string Canonical(string value) => string.Concat(Trim(value).Select(c => c is >= 'A' and <= 'Z' ? (char)(c + 32) : c));
     public static ProfileEdit Validate(ProfileEdit edit)
     {
-        if (edit.Visibility != "private" || edit.DisplayName is null || edit.DisplayName.Contains('\0') || edit.Bio?.Contains('\0') == true)
+        if (edit.Visibility != "private"
+            || !PrivateProfileFieldValidator.TryNormalizeDisplayName(edit.DisplayName, out var name)
+            || !PrivateProfileFieldValidator.IsValidBio(edit.Bio))
             throw new ProfileValidationException();
-        return edit with { DisplayName = Trim(edit.DisplayName) };
+        return edit with { DisplayName = name };
     }
 }
 public sealed class ProfileNameConflictException : Exception { }

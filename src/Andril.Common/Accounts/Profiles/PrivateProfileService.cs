@@ -36,7 +36,6 @@ public sealed class PrivateProfileService(ICurrentUser user, IOnboardingIdentity
             ModuleAgeEligibility age;
             try
             {
-                GenderInputPolicy.Normalize(demographics.Gender);
                 age = AgeEligibilityPolicy.Evaluate(demographics.DateOfBirth, DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime));
             }
             catch (EligibilityValidationException) { throw new ProfileAccessDeniedException(); }

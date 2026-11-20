@@ -17,8 +17,9 @@ public sealed class PrivateModuleProfile
     public void SetDraftFields(ProfileEdit edit)
     {
         var valid = DisplayNames.Validate(edit);
+        var canonicalName = DisplayNames.Canonical(valid.DisplayName);
         DisplayName = valid.DisplayName;
-        CanonicalDisplayName = DisplayNames.Canonical(valid.DisplayName);
+        CanonicalDisplayName = canonicalName;
         Bio = valid.Bio;
         Visibility = valid.Visibility;
     }
