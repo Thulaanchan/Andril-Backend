@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
+using System.Runtime.ExceptionServices;
 
 namespace Andril.IntegrationTests.Communication.Notifications;
 
@@ -15,8 +16,8 @@ internal sealed class SimulatedNotificationDatabase
         new(StringComparer.Ordinal);
 
     internal bool FailCreation { get; set; }
+    internal bool LoseCreationAcknowledgement { get; set; }
     internal bool FailDeletion { get; set; }
-
     internal int CreateCalls { get; private set; }
     internal int DeleteCalls { get; private set; }
 
@@ -37,7 +38,11 @@ internal sealed class SimulatedNotificationDatabase
         if (!databases.Add(name))
             throw new InvalidOperationException(
                 "Database already exists.");
-
+        if (LoseCreationAcknowledgement)
+        {
+            throw new InvalidOperationException(
+                "Simulated CREATE response lost.");
+        }
         return Task.CompletedTask;
     }
 
@@ -81,6 +86,7 @@ internal sealed class NotificationOfflineDatabaseLifecycle
             throw new ArgumentNullException(nameof(database));
     }
 
+
     internal async Task RunAsync(
         Func<CancellationToken, Task> testBody,
         CancellationToken cancellationToken = default)
@@ -88,8 +94,10 @@ internal sealed class NotificationOfflineDatabaseLifecycle
         ArgumentNullException.ThrowIfNull(testBody);
 
         if (Interlocked.Exchange(ref started, 1) != 0)
+        {
             throw new InvalidOperationException(
                 "Fixture cannot run more than once.");
+        }
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -99,26 +107,57 @@ internal sealed class NotificationOfflineDatabaseLifecycle
 
         gate.RecordSuccessfulCreation(gate.DatabaseName);
 
+        Exception? bodyFailure = null;
+        Exception? cleanupFailure = null;
+
         try
         {
             await testBody(cancellationToken);
         }
-        finally
+        catch (Exception error)
+        {
+            bodyFailure = error;
+        }
+
+        try
         {
             if (!gate.CanDelete(gate.DatabaseName))
+            {
                 throw new InvalidOperationException(
                     "Database cleanup ownership denied.");
+            }
 
-            // Cleanup must not use an already-cancelled
-            // test request token.
             await database.DeleteAsync(
                 gate.DatabaseName,
                 CancellationToken.None);
 
-            // Confirm deletion only after success.
             gate.RecordSuccessfulDeletion(gate.DatabaseName);
         }
+        catch (Exception error)
+        {
+            cleanupFailure = error;
+        }
+
+        if (bodyFailure is not null &&
+            cleanupFailure is not null)
+        {
+            throw new AggregateException(
+                "Test execution and database cleanup both failed.",
+                bodyFailure,
+                cleanupFailure);
+        }
+
+        if (bodyFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(bodyFailure).Throw();
+        }
+
+        if (cleanupFailure is not null)
+        {
+            ExceptionDispatchInfo.Capture(cleanupFailure).Throw();
+        }
     }
+
 }
 
 public sealed class NotificationOfflineDatabaseLifecycleTests
@@ -262,4 +301,91 @@ public sealed class NotificationOfflineDatabaseLifecycleTests
         Assert.Equal(1, db.CreateCalls);
         Assert.Equal(1, db.DeleteCalls);
     }
+
+    [Fact]
+    public async Task LostCreationAcknowledgement_ShouldNotBlindDelete()
+    {
+        var gate = CreateGate();
+        var db = new SimulatedNotificationDatabase
+        {
+            LoseCreationAcknowledgement = true
+        };
+
+        var fixture =
+            new NotificationOfflineDatabaseLifecycle(gate, db);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => fixture.RunAsync(_ => Task.CompletedTask));
+
+        Assert.True(db.Exists(gate.DatabaseName));
+        Assert.False(gate.CanDelete(gate.DatabaseName));
+        Assert.Equal(0, db.DeleteCalls);
+    }
+
+    [Fact]
+    public async Task TestAndCleanupFailure_ShouldPreserveBothErrors()
+    {
+        var gate = CreateGate();
+        var db = new SimulatedNotificationDatabase
+        {
+            FailDeletion = true
+        };
+
+        var fixture =
+            new NotificationOfflineDatabaseLifecycle(gate, db);
+
+        var error = await Assert.ThrowsAsync<AggregateException>(
+            () => fixture.RunAsync(
+                _ => Task.FromException(
+                    new InvalidOperationException("Test failed."))));
+
+        Assert.Equal(2, error.InnerExceptions.Count);
+        Assert.Equal(
+            "Test failed.",
+            error.InnerExceptions[0].Message);
+
+        Assert.Equal(
+            "Simulated database cleanup failure.",
+            error.InnerExceptions[1].Message);
+
+        Assert.True(db.Exists(gate.DatabaseName));
+        Assert.True(gate.CanDelete(gate.DatabaseName));
+    }
+
+    [Fact]
+    public async Task CancellationAndCleanupFailure_ShouldPreserveBoth()
+    {
+        var gate = CreateGate();
+        var db = new SimulatedNotificationDatabase
+        {
+            FailDeletion = true
+        };
+
+        var fixture =
+            new NotificationOfflineDatabaseLifecycle(gate, db);
+
+        using var cancellation = new CancellationTokenSource();
+
+        var error = await Assert.ThrowsAsync<AggregateException>(
+            () => fixture.RunAsync(
+                token =>
+                {
+                    cancellation.Cancel();
+                    token.ThrowIfCancellationRequested();
+                    return Task.CompletedTask;
+                },
+                cancellation.Token));
+
+        Assert.Equal(2, error.InnerExceptions.Count);
+
+        Assert.IsAssignableFrom<OperationCanceledException>(
+            error.InnerExceptions[0]);
+
+        Assert.IsType<InvalidOperationException>(
+            error.InnerExceptions[1]);
+
+        Assert.True(db.Exists(gate.DatabaseName));
+        Assert.True(gate.CanDelete(gate.DatabaseName));
+    }
+
 }
