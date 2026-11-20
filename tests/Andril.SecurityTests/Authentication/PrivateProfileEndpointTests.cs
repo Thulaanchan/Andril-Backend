@@ -6,6 +6,10 @@ using Andril.Common.Accounts.Eligibility;
 using Andril.Common.Accounts.Policies;
 using Andril.Common.Accounts.Profiles;
 using Andril.Common.Accounts.StarterModules;
+using Microsoft.AspNetCore.Hosting;
+using Andril.Common.DTOs;
+using Andril.Common.Entities;
+using Andril.Common.Interfaces;
 using Microsoft.AspNetCore.Hosting.Server;
 using Microsoft.AspNetCore.Hosting.Server.Features;
 using Microsoft.AspNetCore.TestHost;
@@ -57,7 +61,9 @@ public sealed class PrivateProfileEndpointTests
     {
         var store = new Store();
         using var factory = new AuthenticationFactory(identityHandler: new ConfirmEachSyntheticSubject());
-        using var app = factory.WithWebHostBuilder(b => b.ConfigureTestServices(s => Configure(s, store)));
+        using var app = factory.WithWebHostBuilder(b => b
+            .UseSetting("ConnectionStrings:AndrilAccounts", "Host=127.0.0.1;Database=not_connected;Username=not_connected")
+            .ConfigureTestServices(s => Configure(s, store)));
         using var client = app.CreateClient();
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token());
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(Route)).StatusCode);
@@ -175,6 +181,201 @@ public sealed class PrivateProfileEndpointTests
         Assert.Null(store.Profile!.DisplayName);
     }
 
+    [Fact]
+    public async Task EnabledConfigurationCannotBypassUnavailableInspectorOrTriggerPhotoWrites()
+    {
+        var profileStore = new Store();
+        var photoStore = new PhotoFixture();
+        using var factory = new AuthenticationFactory();
+        using var app = factory.WithWebHostBuilder(b => b
+            .UseSetting("ProfilePhotos:Enabled", "true")
+            .UseSetting("ProfilePhotos:Storage:ProjectUrl", "https://photo-test.supabase.co")
+            .UseSetting("ProfilePhotos:Storage:SecretKey", "sb_secret_test_only")
+            .ConfigureTestServices(s =>
+            {
+                Configure(s, profileStore);
+                s.AddSingleton<IPrivateProfilePhotoStore>(photoStore);
+                s.AddSingleton<IPrivateProfilePhotoObjectStorage>(photoStore);
+            }));
+        using var client = app.CreateClient();
+        string url = Route + "/photos/" + Guid.NewGuid();
+        using var anonymous = await client.PostAsync(url, Bytes([1]));
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+        using var anonymousContent = await client.GetAsync(url + "/content");
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymousContent.StatusCode);
+
+        client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token());
+        using var created = await client.PostAsJsonAsync(Route, new { });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        using var rejected = await client.PostAsync(url, Bytes([1]));
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, rejected.StatusCode);
+        Assert.True(rejected.Headers.CacheControl?.NoStore);
+        Assert.Contains("Private photo validation unavailable", await rejected.Content.ReadAsStringAsync());
+        using var current = await client.GetAsync(Route + "/photos/current");
+        using var content = await client.GetAsync(url + "/content");
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, current.StatusCode);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, content.StatusCode);
+        Assert.False(app.Services.GetRequiredService<IProfileImageInspector>().IsApprovedAndConfigured);
+        Assert.Empty(photoStore.Rows);
+        Assert.Equal(0, photoStore.Calls);
+    }
+
+    [Fact]
+    public async Task ControlledPhotoRoutesProtectCurrentMediaAndRejectInvalidOrForeignRequests()
+    {
+        var profiles = new Store();
+        var photos = new PhotoFixture();
+        using var factory = new AuthenticationFactory(identityHandler: new ConfirmEachSyntheticSubject());
+        using var app = factory.WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+        {
+            Configure(s, profiles);
+            s.AddSingleton<IPrivateProfilePhotoStore>(photos);
+            s.AddSingleton<IPrivateProfilePhotoObjectStorage>(photos);
+            s.AddSingleton<IProfileImageInspector>(photos);
+            s.AddSingleton<IPhotoUploadPolicy>(photos);
+        }));
+        using var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token());
+        using var created = await client.PostAsJsonAsync(Route, new { });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        string endpoint = Route + "/photos/";
+        string request = endpoint + Guid.NewGuid();
+        using var badType = await client.PostAsJsonAsync(request, new { });
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, badType.StatusCode);
+        using var empty = await client.PostAsync(request, Bytes([]));
+        Assert.Equal(HttpStatusCode.BadRequest, empty.StatusCode);
+        using var oversized = await client.PostAsync(request, Bytes(new byte[17]));
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, oversized.StatusCode);
+        using var zero = await client.PostAsync(endpoint + Guid.Empty, Bytes([1]));
+        Assert.Equal(HttpStatusCode.BadRequest, zero.StatusCode);
+        using var malformed = await client.GetAsync(endpoint + "not-a-guid/content");
+        Assert.Equal(HttpStatusCode.NotFound, malformed.StatusCode);
+        using var invalidModule = await client.GetAsync("/api/v1/account/profiles/dating/photos/current");
+        Assert.Equal(HttpStatusCode.BadRequest, invalidModule.StatusCode);
+
+        using var first = await client.PostAsync(request, Bytes([1]));
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        var firstStatus = (await first.Content.ReadFromJsonAsync<PrivatePhotoStatus>())!;
+        Assert.True(firstStatus.IsCurrent);
+        using var conflict = await client.PostAsync(request, Bytes([2]));
+        Assert.Equal(HttpStatusCode.Conflict, conflict.StatusCode);
+        Assert.True(conflict.Headers.CacheControl?.NoStore);
+        using var second = await client.PostAsync(endpoint + Guid.NewGuid(), Bytes([2]));
+        Assert.Equal(HttpStatusCode.OK, second.StatusCode);
+        var secondStatus = (await second.Content.ReadFromJsonAsync<PrivatePhotoStatus>())!;
+        string currentContent = endpoint + secondStatus.UploadId + "/content";
+        using var current = await client.GetAsync(endpoint + "current");
+        Assert.Equal(secondStatus, await current.Content.ReadFromJsonAsync<PrivatePhotoStatus>());
+        var statusJson = await current.Content.ReadAsStringAsync();
+        Assert.DoesNotContain("objectKey", statusJson);
+        Assert.DoesNotContain("hash", statusJson, StringComparison.OrdinalIgnoreCase);
+        using var image = await client.GetAsync(currentContent);
+        Assert.Equal(HttpStatusCode.OK, image.StatusCode);
+        Assert.Equal("image/jpeg", image.Content.Headers.ContentType?.MediaType);
+        Assert.True(image.Headers.CacheControl?.Private);
+        Assert.True(image.Headers.CacheControl?.NoStore);
+        Assert.Equal("nosniff", Assert.Single(image.Headers.GetValues("X-Content-Type-Options")));
+        Assert.Equal(new byte[] { 42, 2 }, await image.Content.ReadAsByteArrayAsync());
+        using var historical = await client.GetAsync(endpoint + firstStatus.UploadId + "/content");
+        Assert.Equal(HttpStatusCode.NotFound, historical.StatusCode);
+        using var wrongModule = await client.GetAsync(currentContent.Replace("/learning/", "/hobbies/"));
+        Assert.Equal(HttpStatusCode.Forbidden, wrongModule.StatusCode);
+        client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token(subject: Guid.NewGuid()));
+        using var foreignContent = await client.GetAsync(currentContent + "?profileId=" + profiles.Profile!.Id);
+        using var foreignStatus = await client.GetAsync(endpoint + secondStatus.UploadId);
+        Assert.Equal(HttpStatusCode.NotFound, foreignContent.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, foreignStatus.StatusCode);
+    }
+
+    private static ByteArrayContent Bytes(byte[] bytes)
+    {
+        var content = new ByteArrayContent(bytes);
+        content.Headers.ContentType = new("application/octet-stream");
+        return content;
+    }
+
+    private sealed class PhotoFixture : IPrivateProfilePhotoStore, IPrivateProfilePhotoObjectStorage, IProfileImageInspector, IPhotoUploadPolicy
+    {
+        internal int Calls;
+        internal readonly Dictionary<Guid, PrivateProfilePhoto> Rows = [];
+        private readonly Dictionary<PhotoObjectAddress, byte[]> objects = [];
+        public bool IsConfigured => true;
+        public bool IsApprovedAndConfigured => true;
+        public int RequireMaximumBytes() => 16;
+        public Task<SafeProfileImage> InspectAsync(byte[] bytes, CancellationToken ct) =>
+            Task.FromResult(new SafeProfileImage([42, .. bytes], "image/jpeg", 300, 300));
+        public Task<PrivateProfilePhoto?> FindRequestAsync(PhotoScope scope, Guid requestId, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(Matches(scope).SingleOrDefault(x => x.RequestId == requestId));
+        }
+        public async Task<PrivateProfilePhoto> ReserveAsync(PhotoScope scope, Guid requestId, string originalHash, PhotoUploadEvidence? evidence, CancellationToken ct)
+        {
+            var existing = await FindRequestAsync(scope, requestId, ct);
+            if (existing is not null) throw new PhotoUploadConflictException();
+            var now = DateTimeOffset.UtcNow;
+            var photo = PrivateProfilePhoto.Create(scope, Guid.NewGuid(), requestId, evidence!, Guid.NewGuid(), now, now.AddMinutes(2));
+            Rows.Add(photo.Id, photo);
+            return photo;
+        }
+        public Task<bool> OwnsLeaseAsync(PhotoScope scope, Guid id, Guid token, CancellationToken ct) =>
+            Task.FromResult(Matches(scope).Single(x => x.Id == id).OwnsLease(token, DateTimeOffset.UtcNow));
+        public Task<PrivatePhotoStatus> FinalizeAsync(PhotoScope scope, Guid id, Guid token, CancellationToken ct)
+        {
+            var now = DateTimeOffset.UtcNow;
+            Matches(scope).SingleOrDefault(x => x.IsCurrent)?.MarkSuperseded(now);
+            var row = Matches(scope).Single(x => x.Id == id);
+            row.MarkStored(token, now);
+            return Task.FromResult(row.Status());
+        }
+        public Task<PrivatePhotoStatus> FailAsync(PhotoScope scope, Guid id, Guid token, PhotoReason reason, CancellationToken ct) =>
+            throw new NotSupportedException();
+        public Task<PrivatePhotoStatus?> ReadAsync(PhotoScope scope, Guid id, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(Matches(scope).SingleOrDefault(x => x.Id == id)?.Status());
+        }
+        public Task<StoredProfilePhoto?> ReadCurrentAsync(PhotoScope scope, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(Matches(scope).SingleOrDefault(x => x.IsCurrent)?.Evidence());
+        }
+        public Task<PhotoCleanupClaim?> ClaimCleanupAsync(PhotoScope scope, CancellationToken ct)
+        {
+            Calls++;
+            var now = DateTimeOffset.UtcNow;
+            return Task.FromResult(Matches(scope).FirstOrDefault(x => x.CanClaimCleanup(now))
+                ?.ClaimCleanup(Guid.NewGuid(), now, now.AddSeconds(65)));
+        }
+
+        public Task<bool> RecordCleanupAsync(PhotoCleanupClaim claim, bool removed, TimeSpan retryDelay, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(Matches(claim.Address.Scope).Single(x => x.Id == claim.Address.UploadId)
+                .RecordCleanupAttempt(claim.Token, removed, retryDelay, DateTimeOffset.UtcNow));
+        }
+        public Task<PhotoObjectOutcome> UploadAsync(StoredProfilePhoto expected, byte[] jpeg, CancellationToken ct)
+        {
+            Calls++;
+            objects.Add(expected.Address, jpeg);
+            return Task.FromResult(PhotoObjectOutcome.Success);
+        }
+        public Task<PhotoObjectRead> ReadAsync(StoredProfilePhoto expected, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(objects.TryGetValue(expected.Address, out var jpeg)
+                ? new PhotoObjectRead(PhotoObjectOutcome.Success, jpeg) : new(PhotoObjectOutcome.Missing));
+        }
+        public Task<PhotoObjectOutcome> DeleteAsync(PhotoObjectAddress address, CancellationToken ct)
+        {
+            Calls++;
+            return Task.FromResult(objects.Remove(address) ? PhotoObjectOutcome.Success : PhotoObjectOutcome.Missing);
+        }
+        private IEnumerable<PrivateProfilePhoto> Matches(PhotoScope scope) =>
+            Rows.Values.Where(x => x.ProfileId == scope.ProfileId && x.Module == scope.Module);
+    }
+
     private static void Configure(IServiceCollection services, Store store)
     {
         services.AddSingleton<IAccountRepository>(store);
@@ -216,6 +417,12 @@ public sealed class PrivateProfileEndpointTests
                 [AccountPolicyRecord.Create(Account.Id, PolicyActions.TermsAgreed, "v1", now),
                  AccountPolicyRecord.Create(Account.Id, PolicyActions.PrivacyAcknowledged, "v1", now)],
                  StarterMembership.Create(Account.Id, "learning", false, now)));
+        }
+        public async Task<T> WithAuthorizedProfileAsync<T>(Guid accountId, string module, Action<StarterModuleState> validate,
+            Func<PrivateModuleProfile, Task<T>> action, CancellationToken cancellationToken)
+        {
+            Validate(accountId, validate);
+            return await action(Profile ?? throw new ProfileMissingException());
         }
         public Task<PrivateModuleProfile?> ReadAsync(Guid accountId, string module, Action<StarterModuleState> validate, CancellationToken cancellationToken = default)
         {

@@ -22,21 +22,31 @@ public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivatePro
         Action<StarterModuleState> validate, CancellationToken cancellationToken = default) =>
         await Execute(accountId, module, validate, TimeProvider.System, cancellationToken, DisplayNames.Validate(edit)) ?? throw new ProfileMissingException();
 
+    public async Task<T> WithAuthorizedProfileAsync<T>(Guid accountId, string module, Action<StarterModuleState> validate,
+        Func<PrivateModuleProfile, Task<T>> action, CancellationToken cancellationToken)
+    {
+        T result = default!;
+        await Execute(accountId, module, validate, null, cancellationToken,
+            authorizedAction: async profile => { result = await action(profile); });
+        return result;
+    }
+
     private async Task<PrivateModuleProfile?> Execute(Guid accountId, string module, Action<StarterModuleState> validate,
-        TimeProvider? clock, CancellationToken ct, ProfileEdit? edit = null)
+        TimeProvider? clock, CancellationToken ct, ProfileEdit? edit = null, Func<PrivateModuleProfile, Task>? authorizedAction = null)
     {
         if (accountId == Guid.Empty || !StarterModules.IsValid(module)) throw new ProfileValidationException();
         try
         {
+            bool lockAccount = clock is not null || authorizedAction is not null;
             await using var tx = await db.Database.BeginTransactionAsync(
-                clock is null ? IsolationLevel.RepeatableRead : IsolationLevel.ReadCommitted, ct);
-            if (clock is not null)
+                lockAccount ? IsolationLevel.ReadCommitted : IsolationLevel.RepeatableRead, ct);
+            if (lockAccount)
             {
                 var account = await db.Accounts.FromSqlInterpolated($"SELECT * FROM andril_identity.accounts WHERE id = {accountId} FOR UPDATE")
                     .AsNoTracking().SingleOrDefaultAsync(ct);
                 if (account is null) throw new StarterModuleAccountMissingException();
             }
-            var demographics = clock is null
+            var demographics = !lockAccount
                 ? await db.Demographics.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId, ct)
                 : await db.Demographics.FromSqlInterpolated($"SELECT * FROM andril_identity.account_demographics WHERE account_id = {accountId} FOR UPDATE")
                     .AsNoTracking().SingleOrDefaultAsync(ct);
@@ -45,7 +55,14 @@ public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivatePro
             if (membership?.Module != module) throw new ProfileAccessDeniedException();
             var policies = await db.PolicyRecords.AsNoTracking().Where(x => x.AccountId == accountId).ToArrayAsync(ct);
             validate(new(demographics, policies, membership));
-            var profile = await db.PrivateProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId && x.Module == module, ct);
+            var profile = authorizedAction is null
+                ? await db.PrivateProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId && x.Module == module, ct)
+                : await db.PrivateProfiles.FromSqlInterpolated($"""
+                    SELECT * FROM andril_identity.private_module_profiles
+                    WHERE account_id = {accountId} AND module = {module} FOR UPDATE
+                    """).AsNoTracking().SingleOrDefaultAsync(ct);
+            if (authorizedAction is not null)
+                await authorizedAction(profile ?? throw new ProfileMissingException());
             if (edit is not null)
             {
                 if (profile is null) throw new ProfileMissingException();
