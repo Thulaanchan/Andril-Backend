@@ -1,14 +1,14 @@
 namespace Andril.Common.Accounts.Eligibility;
 
-/// <summary>Technical input limits only. Approved gender vocabulary remains a separate policy decision.</summary>
+/// <summary>Canonical gender values for new and updated demographic submissions.</summary>
 public static class GenderInputPolicy
 {
     public const int MaximumLength = 100;
 
     public static string Normalize(string? gender)
     {
-        if (string.IsNullOrWhiteSpace(gender) || gender.Length > MaximumLength || gender.Any(char.IsControl))
+        if (gender is not ("male" or "female" or "other" or "prefer_not_to_say"))
             throw new EligibilityValidationException();
-        return gender.Trim();
+        return gender;
     }
 }

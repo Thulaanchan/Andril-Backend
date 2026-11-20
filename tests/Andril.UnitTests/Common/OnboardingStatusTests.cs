@@ -295,7 +295,7 @@ public sealed class OnboardingStatusTests
             => Demographics = AccountDemographics.Create(
                 Account.Id,
                 new(2026 - age, 11, 15),
-                "private",
+                "other",
                 Now);
 
         internal void AcceptPolicies()

@@ -33,6 +33,36 @@ public sealed class PrivateProfileTests
         Assert.Equal("approved_profile_contract", first.BlockingDependency);
     }
 
+    [Theory]
+    [InlineData("Admin", "new bio", "private")]
+    [InlineData("Valid Name", "invalid\0bio", "private")]
+    [InlineData("Valid Name", "new bio", "public")]
+    public void InvalidDraftNeverChangesEntity(string name, string bio, string visibility)
+    {
+        var profile = PrivateModuleProfile.Create(Guid.NewGuid(), "learning", DateTimeOffset.UtcNow);
+        const string originalBio = "  தமிழ் 👩‍💻\r\nසිංහල  ";
+        profile.SetDraftFields(new("  Alex_2000  ", originalBio, "private"));
+        Assert.Throws<ProfileValidationException>(() => profile.SetDraftFields(new(name, bio, visibility)));
+        Assert.Equal("Alex_2000", profile.DisplayName);
+        Assert.Equal("alex_2000", profile.CanonicalDisplayName);
+        Assert.Equal(originalBio, profile.Bio);
+        Assert.Equal("private", profile.Visibility);
+    }
+
+    [Fact]
+    public async Task LegacyGenderDoesNotChangeSocialAgeChecksOrEnableHome()
+    {
+        var f = new Fixture("social", 18);
+        var demographics = f.State.Demographics!;
+        typeof(AccountDemographics).GetProperty(nameof(AccountDemographics.Gender))!
+            .SetValue(demographics, "prefer not to say");
+        var draft = await f.Service.CreateAsync("social");
+        Assert.False(draft.IsComplete);
+        await Assert.ThrowsAsync<ProfileContractPendingException>(() =>
+            new PrivateModuleAccess(new PrivateProfileCompletionReader(f.Service)).RequireAsync("social"));
+        Assert.Equal("prefer not to say", demographics.Gender);
+    }
+
     [Fact]
     public void ThreeModuleIdentityRootsHaveIndependentRandomIds()
     {
@@ -115,7 +145,7 @@ public sealed class PrivateProfileTests
         internal PrivateProfileService Service => new(this, this, this, this, this, this);
         internal Fixture(string module = "learning", int age = 18)
         {
-            State = new(AccountDemographics.Create(Account.Id, new(2026 - age, 1, 1), "dummy", GetUtcNow()),
+            State = new(AccountDemographics.Create(Account.Id, new(2026 - age, 1, 1), "other", GetUtcNow()),
                 [AccountPolicyRecord.Create(Account.Id, PolicyActions.TermsAgreed, "v1", GetUtcNow()),
                  AccountPolicyRecord.Create(Account.Id, PolicyActions.PrivacyAcknowledged, "v1", GetUtcNow())],
                 StarterMembership.Create(Account.Id, module, module == "social", GetUtcNow()));

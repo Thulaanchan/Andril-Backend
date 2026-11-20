@@ -156,7 +156,7 @@ public sealed class OnboardingEndpointTests
         internal void Ready()
         {
             var now = DateTimeOffset.UtcNow;
-            demographics = Andril.Common.Accounts.Eligibility.AccountDemographics.Create(Account.Id, new(2000, 1, 1), "private", now);
+            demographics = Andril.Common.Accounts.Eligibility.AccountDemographics.Create(Account.Id, new(2000, 1, 1), "other", now);
             Policies = [AccountPolicyRecord.Create(Account.Id, PolicyActions.TermsAgreed, "v1", now),
                 AccountPolicyRecord.Create(Account.Id, PolicyActions.PrivacyAcknowledged, "v1", now)];
             membership = StarterMembership.Create(Account.Id, "learning", null, now);

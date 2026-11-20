@@ -26,7 +26,7 @@ public sealed class AccountEligibilityEndpointTests
         foreach (var token in new[] { "", "invalid", auth.Token("expired") })
         {
             client.DefaultRequestHeaders.Authorization = token == "" ? null : new("Bearer", token);
-            var response = put ? await client.PutAsJsonAsync(Path, new { dateOfBirth = "2000-01-01", gender = "private value" }) : await client.GetAsync(Path);
+            var response = put ? await client.PutAsJsonAsync(Path, new { dateOfBirth = "2000-01-01", gender = "other" }) : await client.GetAsync(Path);
             Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
         }
         Assert.Equal(0, store.Calls);
@@ -57,6 +57,26 @@ public sealed class AccountEligibilityEndpointTests
     }
 
     [Theory]
+    [InlineData("Male")]
+    [InlineData("prefer not to say")]
+    [InlineData("other ")]
+    [InlineData(null)]
+    public async Task InvalidGenderDoesNotReplaceSavedDetails(string? gender)
+    {
+        var store = new Store();
+        var original = AccountDemographics.Create(store.Account.Id, new(2000, 1, 1), "female", Clock.Now);
+        store.Details[store.Account.Id] = original;
+        using var auth = new AuthenticationFactory();
+        using var factory = auth.WithWebHostBuilder(b => b.ConfigureTestServices(s => Register(s, store)));
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", auth.Token());
+        using var response = await client.PutAsJsonAsync(Path, new { dateOfBirth = "2001-01-01", gender });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Same(original, store.Details[store.Account.Id]);
+    }
+
+    [Theory]
     [InlineData("2011-11-15", false, false)]
     [InlineData("2010-11-15", true, false)]
     [InlineData("2008-11-15", true, true)]
@@ -64,7 +84,7 @@ public sealed class AccountEligibilityEndpointTests
     {
         var store = new Store();
         var other = Guid.NewGuid();
-        store.Details[other] = AccountDemographics.Create(other, new(1990, 1, 1), "other private value", Clock.Now);
+        store.Details[other] = AccountDemographics.Create(other, new(1990, 1, 1), "other", Clock.Now);
         using var auth = new AuthenticationFactory();
         using var factory = auth.WithWebHostBuilder(b => b.ConfigureTestServices(s => Register(s, store)));
         using var client = factory.CreateClient();
@@ -73,7 +93,7 @@ public sealed class AccountEligibilityEndpointTests
         Assert.False(absent!.HasSubmission);
         Assert.Equal(new(false, false, false), absent.AgeEligibility);
         var response = await client.PutAsJsonAsync(Path + "?accountId=" + other,
-            new { dateOfBirth = birth, gender = "my private value" });
+            new { dateOfBirth = birth, gender = "prefer_not_to_say" });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.True(response.Headers.CacheControl?.NoStore);
         var result = await response.Content.ReadFromJsonAsync<AccountEligibilityDto>();
@@ -86,7 +106,7 @@ public sealed class AccountEligibilityEndpointTests
         {
             Assert.DoesNotContain("dateOfBirth", body);
             Assert.DoesNotContain("gender", body);
-            Assert.DoesNotContain("private value", body);
+            Assert.DoesNotContain("prefer_not_to_say", body);
             Assert.DoesNotContain(AuthenticationFactory.Subject.ToString(), body);
             Assert.DoesNotContain("accountId", body);
         }
@@ -105,7 +125,7 @@ public sealed class AccountEligibilityEndpointTests
         client.DefaultRequestHeaders.Authorization = new("Bearer", auth.Token());
         Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync(Path)).StatusCode);
         Assert.Equal(HttpStatusCode.NotFound, (await client.PutAsJsonAsync(Path,
-            new { dateOfBirth = "2000-01-01", gender = "value" })).StatusCode);
+            new { dateOfBirth = "2000-01-01", gender = "other" })).StatusCode);
         Assert.Empty(store.Details);
     }
 

@@ -37,15 +37,42 @@ public sealed class AccountEligibilityTests
     [InlineData(" \t")]
     [InlineData("\u00a0")]
     [InlineData("value\n")]
-    public void EmptyOrControlGenderIsRejected(string? gender) =>
+    [InlineData("Male")]
+    [InlineData("FEMALE")]
+    [InlineData(" male")]
+    [InlineData("female ")]
+    [InlineData("prefer_not_to_say ")]
+    [InlineData("prefer not to say")]
+    [InlineData("self-described value")]
+    [InlineData("சுய விளக்கம்")]
+    public void NonCanonicalGenderIsRejected(string? gender) =>
         Assert.Throws<EligibilityValidationException>(() => GenderInputPolicy.Normalize(gender));
 
+    [Theory]
+    [InlineData("male")]
+    [InlineData("female")]
+    [InlineData("other")]
+    [InlineData("prefer_not_to_say")]
+    public void CanonicalGenderIsReturnedUnchanged(string gender) =>
+        Assert.Equal(gender, GenderInputPolicy.Normalize(gender));
+
     [Fact]
-    public void GenderVocabularyIsNotInvented_AndTechnicalLimitIsEnforced()
+    public async Task RejectedUpdatePreservesStoredLegacyDemographics()
     {
-        Assert.Equal("self-described value", GenderInputPolicy.Normalize("  self-described value  "));
-        Assert.Equal("சுய விளக்கம்", GenderInputPolicy.Normalize("சுய விளக்கம்"));
-        Assert.Throws<EligibilityValidationException>(() => GenderInputPolicy.Normalize(new string('x', 101)));
+        var store = new Store();
+        var original = AccountDemographics.Create(store.Account.Id, new(2000, 1, 1), "other", DateTimeOffset.UtcNow);
+        // Simulate EF hydration of a legacy value without going through the write policy.
+        typeof(AccountDemographics).GetProperty(nameof(AccountDemographics.Gender))!.SetValue(original, "prefer not to say");
+        store.Details = original;
+
+        var service = Service(store);
+        Assert.Equal(new(true, true, true), (await service.GetAsync()).AgeEligibility);
+        await Assert.ThrowsAsync<EligibilityValidationException>(() => service.SubmitAsync(new(2001, 1, 1), original.Gender));
+        Assert.Throws<EligibilityValidationException>(() =>
+            AccountDemographics.Create(store.Account.Id, original.DateOfBirth, original.Gender, DateTimeOffset.UtcNow));
+        Assert.Equal(0, store.Writes);
+        Assert.Same(original, store.Details);
+        Assert.Equal("prefer not to say", store.Details!.Gender);
     }
 
     [Fact]
@@ -53,9 +80,9 @@ public sealed class AccountEligibilityTests
     {
         var store = new Store();
         var service = Service(store);
-        await Assert.ThrowsAsync<EligibilityValidationException>(() => service.SubmitAsync(null, "value"));
-        await Assert.ThrowsAsync<EligibilityValidationException>(() => service.SubmitAsync(DateOnly.MinValue, "value"));
-        await Assert.ThrowsAsync<EligibilityValidationException>(() => service.SubmitAsync(new(2026, 11, 16), "value"));
+        await Assert.ThrowsAsync<EligibilityValidationException>(() => service.SubmitAsync(null, "other"));
+        await Assert.ThrowsAsync<EligibilityValidationException>(() => service.SubmitAsync(DateOnly.MinValue, "other"));
+        await Assert.ThrowsAsync<EligibilityValidationException>(() => service.SubmitAsync(new(2026, 11, 16), "other"));
         Assert.Null(store.Details);
     }
 
@@ -66,7 +93,7 @@ public sealed class AccountEligibilityTests
         // Local date is Nov 15, but UTC date is still Nov 14.
         var clock = new Clock(new(2026, 11, 15, 0, 0, 0, TimeSpan.FromHours(5.5)));
         var service = Service(store, clock);
-        var result = await service.SubmitAsync(new(2010, 11, 15), "value");
+        var result = await service.SubmitAsync(new(2010, 11, 15), "other");
         Assert.Equal(new(2026, 11, 14), result.EvaluatedOnUtc);
         Assert.False(result.AgeEligibility.Learning);
         clock.Now = new(2026, 11, 15, 0, 0, 0, TimeSpan.Zero);
@@ -85,10 +112,10 @@ public sealed class AccountEligibilityTests
         Assert.Equal(new(false, false, false), result.AgeEligibility);
         var unauthenticated = new AccountEligibilityService(new User(store.Subject, false), store, store, new Clock());
         await Assert.ThrowsAsync<AccountAuthenticationRequiredException>(() => unauthenticated.GetAsync());
-        await Assert.ThrowsAsync<AccountAuthenticationRequiredException>(() => unauthenticated.SubmitAsync(new(2000, 1, 1), "value"));
+        await Assert.ThrowsAsync<AccountAuthenticationRequiredException>(() => unauthenticated.SubmitAsync(new(2000, 1, 1), "other"));
         store.Exists = false;
         await Assert.ThrowsAsync<EligibilityAccountMissingException>(() => Service(store).GetAsync());
-        await Assert.ThrowsAsync<EligibilityAccountMissingException>(() => Service(store).SubmitAsync(new(2000, 1, 1), "value"));
+        await Assert.ThrowsAsync<EligibilityAccountMissingException>(() => Service(store).SubmitAsync(new(2000, 1, 1), "other"));
         Assert.Equal(0, store.Writes);
     }
 
