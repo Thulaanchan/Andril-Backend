@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.Hobbies.Map.Places;
@@ -67,5 +69,23 @@ public sealed class MapAttractionRepository<TDbContext> : IMapAttractionReposito
             .SingleOrDefaultAsync(
                 attraction => attraction.AttractionId == attractionId,
                 cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<MapAttractionDiscoveryItem>> DiscoverAsync(
+        MapAttractionDiscoveryQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(query);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var items = await _dbContext.Set<MapAttraction>()
+            .AsNoTracking()
+            .OrderBy(attraction => attraction.AttractionId)
+            .Skip(query.Offset)
+            .Take(query.Limit)
+            .Select(attraction => new MapAttractionDiscoveryItem(
+                attraction.AttractionId, attraction.Name, attraction.Latitude, attraction.Longitude))
+            .ToListAsync(cancellationToken);
+        return items.AsReadOnly();
     }
 }
