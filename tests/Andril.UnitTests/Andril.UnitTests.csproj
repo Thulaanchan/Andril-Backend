@@ -21,5 +21,6 @@
     <ProjectReference Include="..\..\src\Andril.Communication\Andril.Communication.csproj" />
     <ProjectReference Include="..\..\src\Andril.Economy\Andril.Economy.csproj" />
     <ProjectReference Include="..\..\src\Andril.AI\Andril.AI.csproj" />
+    <ProjectReference Include="..\..\src\Andril.Persistence\Andril.Persistence.csproj" />
   </ItemGroup>
 </Project>
