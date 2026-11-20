@@ -131,6 +131,31 @@ public sealed class FlightPointsLedgerRepository<TDbContext> : IFlightPointsLedg
             .SumAsync(entry => (long)entry.PointsDelta, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<FlightPointsHistoryItem>> GetHistoryAsync(
+        Guid ownerHobbiesModuleProfileId,
+        FlightPointsHistoryQuery query,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (ownerHobbiesModuleProfileId == Guid.Empty)
+            throw new ArgumentException("An owner Hobbies profile ID is required.", nameof(ownerHobbiesModuleProfileId));
+        ArgumentNullException.ThrowIfNull(query);
+
+        var items = await _dbContext.Set<FlightPointsLedgerEntry>()
+            .AsNoTracking()
+            .Where(entry => entry.OwnerHobbiesModuleProfileId == ownerHobbiesModuleProfileId)
+            .OrderByDescending(entry => entry.CreatedAtUtc)
+            .ThenBy(entry => entry.LedgerEntryId)
+            .Skip(query.Offset)
+            .Take(query.Limit)
+            .Select(entry => new FlightPointsHistoryItem(
+                entry.LedgerEntryId, entry.ContributionId, entry.AttractionId,
+                entry.EntryType, entry.RewardType, entry.PointsDelta,
+                entry.ReversedEntryId, entry.CreatedAtUtc))
+            .ToListAsync(cancellationToken);
+        return items.AsReadOnly();
+    }
+
     private async Task ValidateReversalsAsync(
         Dictionary<Guid, FlightPointsLedgerEntry> reversals,
         CancellationToken cancellationToken)
