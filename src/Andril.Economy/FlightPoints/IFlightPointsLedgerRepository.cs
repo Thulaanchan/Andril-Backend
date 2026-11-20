@@ -57,4 +57,34 @@ public interface IFlightPointsLedgerRepository
         Guid ledgerEntryId,
         Guid ownerHobbiesModuleProfileId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the signed net total of persisted ledger entries for a Hobbies profile.
+    /// Grants increase the total, reversals decrease it, and an empty ledger returns zero.
+    /// </summary>
+    /// <remarks>
+    /// The profile ID must come from trusted backend authorization. Reward eligibility and
+    /// spending authorization require separate checks. Honors cancellation and propagates
+    /// persistence and overflow failures.
+    /// </remarks>
+    /// <exception cref="ArgumentException">The owner profile ID is empty.</exception>
+    Task<long> GetNetPointsAsync(
+        Guid ownerHobbiesModuleProfileId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns at most the requested number of persisted grants and reversals, ordered by
+    /// descending UTC creation time and ascending entry ID. An empty page returns an empty list.
+    /// </summary>
+    /// <remarks>
+    /// The owner profile ID must come from trusted backend authorization. Results are read-only.
+    /// Honors cancellation and propagates unexpected persistence failures. New entries between
+    /// requests can shift offset pages and cause entries to appear again or be missed.
+    /// </remarks>
+    /// <exception cref="ArgumentException">The owner profile ID is empty.</exception>
+    /// <exception cref="ArgumentNullException"><paramref name="query"/> is null.</exception>
+    Task<IReadOnlyList<FlightPointsHistoryItem>> GetHistoryAsync(
+        Guid ownerHobbiesModuleProfileId,
+        FlightPointsHistoryQuery query,
+        CancellationToken cancellationToken = default);
 }
