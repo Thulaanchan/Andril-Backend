@@ -38,6 +38,89 @@ public sealed class FlightPointsLedgerPersistenceTests
     private static readonly DateTimeOffset CreatedAt = new(2026, 11, 19, 12, 0, 0, TimeSpan.FromHours(5.5));
 
     [Fact]
+    public async Task GetNetPoints_RejectsEmptyOwnerAndHonorsCancellationWithoutUsingDatabase()
+    {
+        var probe = new OfflineAggregateProbe();
+        await using var context = CreateContext(interceptor: probe);
+        var repository = Repository(context);
+
+        await Assert.ThrowsAsync<ArgumentException>("ownerHobbiesModuleProfileId",
+            () => repository.GetNetPointsAsync(Guid.Empty));
+        var token = new CancellationToken(canceled: true);
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => repository.GetNetPointsAsync(Owner, token));
+        Assert.Equal(token, error.CancellationToken);
+        Assert.Equal(0, probe.OpenAttempts);
+        AssertClosed(context);
+    }
+
+    [Fact]
+    public async Task GetNetPoints_TranslatesOwnerFilterAndWideSignedSum()
+    {
+        var probe = new OfflineAggregateProbe();
+        await using var context = CreateContext(interceptor: probe);
+
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Repository(context).GetNetPointsAsync(Owner));
+
+        Assert.Same(probe.Stop, error);
+        Assert.NotNull(probe.Sql);
+        Assert.Matches(
+            @"(?i)^SELECT COALESCE\(sum\(\w+\.points_delta::bigint\), 0\.0\)::bigint\s+FROM flight_point_ledger AS \w+\s+WHERE \w+\.owner_hobbies_module_profile_id = @\w+\s*$",
+            probe.Sql);
+        Assert.Equal(Owner, probe.OwnerParameter);
+        AssertClosed(context);
+        Assert.Empty(context.ChangeTracker.Entries());
+    }
+
+    [MapCapturePostgresFact]
+    public Task GetNetPoints_SumsOnlyPersistedGrantsAndReversalsForRequestedOwner() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await using var writer = CreateContext(connection);
+            await using var reader = CreateContext(connection);
+            var ledger = Repository(writer);
+            var totals = Repository(reader);
+            var contributionGrant = Grant(FirstId);
+            var explorerGrant = Grant(SecondId, FlightPointsRewardType.FirstExplorer);
+            var otherGrant = Grant(ThirdId, FlightPointsRewardType.FirstExplorer, OtherOwner);
+
+            Assert.Equal(0L, await totals.GetNetPointsAsync(Owner));
+            await ledger.AppendAsync([contributionGrant, otherGrant]);
+            Assert.Equal(5L, await totals.GetNetPointsAsync(Owner));
+            Assert.Equal(10L, await totals.GetNetPointsAsync(OtherOwner));
+            await ledger.AppendAsync([explorerGrant]);
+            Assert.Equal(15L, await totals.GetNetPointsAsync(Owner));
+            await ledger.AppendAsync([Reverse(new Guid("10000000-0000-4000-8000-000000000004"), contributionGrant)]);
+            Assert.Equal(10L, await totals.GetNetPointsAsync(Owner));
+
+            var pending = Grant(new Guid("10000000-0000-4000-8000-000000000005"));
+            reader.FlightPointsLedgerEntries.Add(pending);
+            await ledger.AppendAsync([Reverse(new Guid("10000000-0000-4000-8000-000000000006"), explorerGrant)]);
+            Assert.Equal(0L, await totals.GetNetPointsAsync(Owner));
+            Assert.Equal(10L, await totals.GetNetPointsAsync(OtherOwner));
+            var tracked = Assert.Single(reader.ChangeTracker.Entries());
+            Assert.Same(pending, tracked.Entity);
+            Assert.Equal(EntityState.Added, tracked.State);
+        });
+
+    [MapCapturePostgresFact]
+    public Task GetNetPoints_PropagatesCancellationAndDatabaseFailure() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await using var context = CreateContext(connection);
+            var ledger = Repository(context);
+            var token = new CancellationToken(canceled: true);
+            var canceled = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => ledger.GetNetPointsAsync(Owner, token));
+            Assert.Equal(token, canceled.CancellationToken);
+
+            await context.Database.ExecuteSqlRawAsync("DROP TABLE flight_point_ledger");
+            var failure = await Assert.ThrowsAsync<PostgresException>(() => ledger.GetNetPointsAsync(Owner));
+            Assert.Equal(PostgresErrorCodes.UndefinedTable, failure.SqlState);
+        });
+
+    [Fact]
     public void Model_RegistersLedgerWithAllTenColumnMappings()
     {
         using var context = CreateContext();
@@ -530,6 +613,32 @@ public sealed class FlightPointsLedgerPersistenceTests
         Assert.Empty(firstContext.ChangeTracker.Entries());
         Assert.Empty(secondContext.ChangeTracker.Entries());
         return errors[0] is null ? first : second;
+    }
+
+    private sealed class OfflineAggregateProbe : DbCommandInterceptor, IDbConnectionInterceptor
+    {
+        public InvalidOperationException Stop { get; } = new("Offline aggregate SQL captured.");
+        public string? Sql { get; private set; }
+        public Guid? OwnerParameter { get; private set; }
+        public int OpenAttempts { get; private set; }
+
+        public ValueTask<InterceptionResult> ConnectionOpeningAsync(
+            DbConnection connection, ConnectionEventData eventData, InterceptionResult result,
+            CancellationToken cancellationToken = default)
+        {
+            OpenAttempts++;
+            return ValueTask.FromResult(InterceptionResult.Suppress());
+        }
+
+        public override DbCommand CommandInitialized(CommandEndEventData eventData, DbCommand result)
+        {
+            using (result)
+            {
+                Sql = result.CommandText;
+                OwnerParameter = (Guid)Assert.Single(result.Parameters.Cast<DbParameter>()).Value!;
+                throw Stop;
+            }
+        }
     }
 
     private sealed class SaveGate : SaveChangesInterceptor

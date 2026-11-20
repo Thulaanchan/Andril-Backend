@@ -57,4 +57,18 @@ public interface IFlightPointsLedgerRepository
         Guid ledgerEntryId,
         Guid ownerHobbiesModuleProfileId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Returns the signed net total of persisted ledger entries for a Hobbies profile.
+    /// Grants increase the total, reversals decrease it, and an empty ledger returns zero.
+    /// </summary>
+    /// <remarks>
+    /// The profile ID must come from trusted backend authorization. Reward eligibility and
+    /// spending authorization require separate checks. Honors cancellation and propagates
+    /// persistence and overflow failures.
+    /// </remarks>
+    /// <exception cref="ArgumentException">The owner profile ID is empty.</exception>
+    Task<long> GetNetPointsAsync(
+        Guid ownerHobbiesModuleProfileId,
+        CancellationToken cancellationToken = default);
 }
