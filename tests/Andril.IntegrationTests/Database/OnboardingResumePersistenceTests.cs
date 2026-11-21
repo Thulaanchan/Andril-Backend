@@ -62,13 +62,17 @@ public sealed class OnboardingResumePersistenceTests
         Assert.All(reads, status =>
         {
             Assert.True(status.Progress.PrivateProfileComplete);
-            Assert.False(status.OnboardingComplete);
+            Assert.True(status.OnboardingComplete);
             Assert.False(status.ModuleHomeAuthorized);
             Assert.Null(status.BlockingDependency);
         });
-        Assert.False((await Read(loser)).Progress.PrivateProfileComplete);
+        var incomplete = await Read(loser);
+        Assert.False(incomplete.Progress.PrivateProfileComplete);
+        Assert.False(incomplete.OnboardingComplete);
         catalog.Version = "v2";
-        Assert.False((await Read(winner)).Progress.PrivateProfileComplete);
+        var policyReview = await Read(winner);
+        Assert.False(policyReview.Progress.PrivateProfileComplete);
+        Assert.False(policyReview.OnboardingComplete);
         await using var check = database.Open();
         Assert.Equal(1, await check.PrivateProfiles.CountAsync(x => x.CanonicalDisplayName == "social person"));
     }
