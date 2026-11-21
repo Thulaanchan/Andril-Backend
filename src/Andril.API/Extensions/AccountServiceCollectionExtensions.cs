@@ -1,4 +1,8 @@
 using Andril.API.Middleware;
+using Andril.API.Configuration;
+using Andril.API.Integrations;
+using Andril.Common.Accounts.Profiles;
+using Andril.Common.Interfaces;
 using Andril.Common.Accounts;
 using Andril.Common.Accounts.Preferences;
 using Andril.Common.Accounts.Eligibility;
@@ -15,11 +19,20 @@ public static class AccountServiceCollectionExtensions
     public static IServiceCollection AddAccounts(this IServiceCollection services, IConfiguration configuration)
     {
         services.TryAddSingleton(TimeProvider.System);
-        services.AddScoped<Andril.Common.Accounts.Profiles.IProfilePhotoService, Andril.Common.Accounts.Profiles.ProfilePhotoService>();
-        services.AddSingleton<Andril.Common.Accounts.Profiles.IPhotoUploadPolicy, Andril.Common.Accounts.Profiles.UnavailableProfilePhotos>();
-        services.AddSingleton<Andril.Common.Accounts.Profiles.IProfileImageInspector, Andril.Common.Accounts.Profiles.UnavailableProfilePhotos>();
-        services.AddSingleton<Andril.Common.Accounts.Profiles.IProfileFaceValidator, Andril.Common.Accounts.Profiles.UnavailableProfilePhotos>();
-        services.AddSingleton<Andril.Common.Accounts.Profiles.IPrivateProfilePhotoStore, Andril.Common.Accounts.Profiles.UnavailableProfilePhotos>();
+        services.Configure<ProfilePhotoOptions>(configuration.GetSection("ProfilePhotos"));
+        services.AddScoped<IProfilePhotoService, ProfilePhotoService>();
+        services.AddScoped<IPrivateProfilePhotoStore, PrivateProfilePhotoStore>();
+        services.AddSingleton<IPhotoUploadPolicy, ConfiguredPhotoUploadPolicy>();
+        services.AddSingleton<IProfileImageInspector, UnavailableProfilePhotos>();
+        services.AddHttpClient<IPrivateProfilePhotoObjectStorage, SupabaseProfilePhotoObjectStorage>()
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                AllowAutoRedirect = false,
+                UseCookies = false,
+                MaxResponseHeadersLength = 16
+            })
+            .RedactLoggedHeaders(_ => true)
+            .RemoveAllLoggers();
         services.AddScoped<Andril.Common.Accounts.Profiles.IPrivateProfileRepository, PrivateProfileRepository>();
         services.AddScoped<Andril.Common.Accounts.Profiles.IPrivateProfileService, Andril.Common.Accounts.Profiles.PrivateProfileService>();
         services.AddScoped<Andril.Common.Accounts.Profiles.IPrivateProfileCompletionReader, Andril.Common.Accounts.Profiles.PrivateProfileCompletionReader>();
