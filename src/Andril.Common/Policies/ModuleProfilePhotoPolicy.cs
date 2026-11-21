@@ -1,72 +1,22 @@
-
 using Andril.Common.Accounts.Profiles;
-using Andril.Common.Accounts.StarterModules;
+using Andril.Common.DTOs;
+using ModuleNames = Andril.Common.Accounts.StarterModules.StarterModules;
 
 namespace Andril.Common.Policies;
 
-/// <summary>
-/// Defines module-specific profile-photo requirements.
-///
-/// Learning and Hobbies: photo is optional.
-/// Social (Dating): an approved photo is mandatory.
-///
-/// This policy must only receive photo evidence retrieved
-/// from trusted, owner-scoped server-side persistence.
-/// It must never trust photo status submitted by a client.
-/// </summary>
 public static class ModuleProfilePhotoPolicy
 {
-    /// <summary>
-    /// Determines whether a module requires an approved
-    /// profile photo to complete onboarding.
-    /// </summary>
-    public static bool RequiresApprovedPhoto(string module)
+    public static bool RequiresStoredPhoto(string module)
     {
-        ValidateModule(module);
-
-        return module == StarterModules.Social;
+        if (!ModuleNames.IsValid(module)) throw new ProfileValidationException();
+        return module == ModuleNames.Social;
     }
 
-    /// <summary>
-    /// Evaluates only the photo requirement.
-    ///
-    /// This does not determine overall profile completion
-    /// or grant module-home authorization.
-    /// </summary>
-    public static bool MeetsPhotoRequirement(
-        string module,
-        PrivatePhotoStatus? photo)
+    // Supply only owner-scoped evidence from trusted persistence. This policy grants no module access.
+    public static bool MeetsPhotoRequirement(PhotoScope scope, StoredProfilePhoto? photo)
     {
-        ValidateModule(module);
-
-        // Learning and Hobbies can complete their photo
-        // requirement without an uploaded image.
-        if (module != StarterModules.Social)
-            return true;
-
-        // Dating requires a valid, approved, server-verified
-        // photo associated with the authorized module profile.
-        if (photo is null)
-            return false;
-
-        if (photo.UploadId == Guid.Empty)
-            return false;
-
-        if (photo.State != PhotoState.Approved)
-            return false;
-
-        if (photo.Reason != PhotoReason.None)
-            return false;
-
-        return true;
-    }
-
-    private static void ValidateModule(string module)
-    {
-        if (string.IsNullOrWhiteSpace(module) ||
-            !StarterModules.IsValid(module))
-        {
-            throw new ProfileValidationException();
-        }
+        if (!RequiresStoredPhoto(scope.Module)) return true;
+        return photo is { State: PhotoState.Stored, IsCurrent: true }
+            && photo.Address.Scope == scope && photo.Address.IsValid;
     }
 }

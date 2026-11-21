@@ -1,0 +1,188 @@
+name: ANDRIL Member-02 QA
+
+on:
+  push:
+    branches: [Member-2]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  offline:
+    if: github.ref == 'refs/heads/Member-2'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      QA_NAME: member02-offline
+    outputs:
+      details: ${{ steps.details.outputs.details }}
+    steps:
+      - name: Verify exact Member-2 ref
+        run: if ($env:GITHUB_REF -cne 'refs/heads/Member-2') { throw 'Unauthorized ref.' }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Audited solution restore
+        run: ./scripts/ci/member-02-qa.ps1 Restore
+      - name: Release solution build and analyzers
+        run: ./scripts/ci/member-02-qa.ps1 Build
+      - name: Validate the TRX verifier
+        run: ./scripts/ci/Test-VerifyMember02Results.ps1
+      - name: Offline suites and coverage
+        run: ./scripts/ci/member-02-qa.ps1 Offline
+      - name: Audited standalone photo processor restore
+        run: ./scripts/ci/member-02-qa.ps1 ProcessorRestore
+      - name: Licensed photo processor build and required tests
+        env:
+          SIXLABORS_LICENSE_KEY: ${{ secrets.SIXLABORS_LICENSE_KEY }}
+        run: ./scripts/ci/member-02-qa.ps1 Processor
+      - name: Publish offline details
+        if: always()
+        id: details
+        run: ./scripts/ci/member-02-qa.ps1 Summarize
+      - name: Upload available offline reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: member02-offline-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/member02-offline
+          if-no-files-found: error
+          retention-days: 7
+
+  postgres:
+    if: github.ref == 'refs/heads/Member-2'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      QA_NAME: member02-postgres
+    outputs:
+      details: ${{ steps.details.outputs.details }}
+    services:
+      postgres:
+        image: postgres:17.12-bookworm@sha256:837bed18782820fe967067cb5328b02b0d9992c1be9a37ee0c9c492cfc03af3b
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          # Public synthetic value for this single, loopback-only job service.
+          POSTGRES_PASSWORD: disposable_ci_postgres
+        ports:
+          - '127.0.0.1:55432:5432'
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    steps:
+      - name: Verify exact Member-2 ref
+        run: if ($env:GITHUB_REF -cne 'refs/heads/Member-2') { throw 'Unauthorized ref.' }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Audited integration project restore
+        run: ./scripts/ci/member-02-qa.ps1 Restore -IntegrationOnly
+      - name: Release integration project build
+        run: ./scripts/ci/member-02-qa.ps1 Build -IntegrationOnly
+      - name: Verify disposable PostgreSQL and execute required M2 cases
+        env:
+          QA_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: ./scripts/ci/member-02-qa.ps1 Relational -ServiceId $env:QA_SERVICE_ID
+      - name: Publish PostgreSQL details
+        if: always()
+        id: details
+        run: ./scripts/ci/member-02-qa.ps1 Summarize
+      - name: Upload available relational reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: member02-postgres-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/member02-postgres
+          if-no-files-found: error
+          retention-days: 7
+
+  secrets:
+    if: github.ref == 'refs/heads/Member-2'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      QA_NAME: member02-secrets
+    outputs:
+      details: ${{ steps.details.outputs.details }}
+    steps:
+      - name: Verify exact Member-2 ref
+        run: if ($env:GITHUB_REF -cne 'refs/heads/Member-2') { throw 'Unauthorized ref.' }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Scan Member-2 commit ancestry and tracked source
+        run: ./scripts/ci/member-02-qa.ps1 Secrets
+      - name: Publish scan details
+        if: always()
+        id: details
+        run: ./scripts/ci/member-02-qa.ps1 Summarize
+      - name: Upload available redacted reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: member02-secrets-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/member02-secrets
+          if-no-files-found: error
+          retention-days: 7
+
+  report:
+    if: always()
+    needs: [offline, postgres, secrets]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      OFFLINE_RESULT: ${{ needs.offline.result }}
+      POSTGRES_RESULT: ${{ needs.postgres.result }}
+      SECRETS_RESULT: ${{ needs.secrets.result }}
+      OFFLINE_DETAILS: ${{ needs.offline.outputs.details }}
+      POSTGRES_DETAILS: ${{ needs.postgres.outputs.details }}
+      SECRETS_DETAILS: ${{ needs.secrets.outputs.details }}
+    steps:
+      - name: Summarize and enforce all required jobs
+        run: |
+          $allowed = $env:GITHUB_REF -ceq 'refs/heads/Member-2'
+          $results = @($env:OFFLINE_RESULT, $env:POSTGRES_RESULT, $env:SECRETS_RESULT)
+          $success = $allowed -and ($results.Where({ $_ -cne 'success' }).Count -eq 0)
+          $verdict = if ($success) { 'Passed' } else { 'Failed' }
+          $branch = if ($allowed) { 'Member-2' } else { 'Unauthorized ref' }
+          $lines = @(
+            "# Member-02 QA — $verdict"
+            ''
+            "- Branch: $branch"
+            "- Commit: $env:GITHUB_SHA"
+            "- Runner: $env:RUNNER_OS / $env:RUNNER_ARCH (ubuntu-24.04)"
+            "- Offline quality gates: $env:OFFLINE_RESULT"
+            $env:OFFLINE_DETAILS
+            "- Disposable PostgreSQL gates: $env:POSTGRES_RESULT"
+            $env:POSTGRES_DETAILS
+            "- Secret scanning: $env:SECRETS_RESULT"
+            $env:SECRETS_DETAILS
+            '- Counts are execution counts per suite. Offline skips and relational executions overlap.'
+          )
+          $lines | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'member02-summary.md') -Encoding utf8
+          $lines | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8
+          if (!$success) { throw 'Member-02 QA did not pass all required jobs.' }
+      - name: Upload consolidated summary
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: member02-summary-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/member02-summary.md
+          if-no-files-found: error
+          retention-days: 7

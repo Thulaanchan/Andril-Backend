@@ -16,7 +16,8 @@ app.Use(async (context, next) =>
     if (Andril.API.Authentication.IdentityProtectedRoutes.Contains(context.Request.Path))
         context.Response.OnStarting(() =>
         {
-            context.Response.Headers.CacheControl = "no-store";
+            if (!context.Response.Headers.CacheControl.ToString().Equals("private, no-store", StringComparison.Ordinal))
+                context.Response.Headers.CacheControl = "no-store";
             return Task.CompletedTask;
         });
     await next(context);

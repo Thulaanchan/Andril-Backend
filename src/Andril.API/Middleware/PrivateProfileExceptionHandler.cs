@@ -14,6 +14,12 @@ public sealed class PrivateProfileExceptionHandler(IProblemDetailsService proble
                 when HttpMethods.IsPut(context.Request.Method)
                     && context.Request.Path.StartsWithSegments("/api/v1/account/profiles", StringComparison.OrdinalIgnoreCase)
                 => (413, "Private profile request too large"),
+            BadHttpRequestException { StatusCode: StatusCodes.Status413PayloadTooLarge }
+                when HttpMethods.IsPost(context.Request.Method)
+                    && context.Features.Get<IExceptionHandlerFeature>()?.Endpoint?.Metadata.GetMetadata<Microsoft.AspNetCore.Mvc.Controllers.ControllerActionDescriptor>()?.ControllerTypeInfo.AsType()
+                        == typeof(Controllers.Common.ProfilePhotosController)
+                => (413, "Private photo upload too large"),
+            PhotoUploadTooLargeException => (413, "Private photo upload too large"),
             ProfileValidationException => (400, "Invalid private profile request"),
             ProfileNameConflictException => (409, "Display name unavailable"),
             PhotoDependencyException => (503, "Private photo validation unavailable"),
