@@ -130,10 +130,74 @@ public sealed class SocialCandidateEvaluationResult : IEquatable<SocialCandidate
         IEnumerable<string>? sharedLanguages = null,
         IEnumerable<string>? sharedConnectionGoals = null)
     {
-        Status = status;
+        if (!Enum.IsDefined(typeof(SocialCandidateMatchStatus), status))
+        {
+            throw new ArgumentOutOfRangeException(nameof(status), status, "Invalid candidate match status.");
+        }
 
-        ExclusionReasons = Array.AsReadOnly(exclusionReasons?.ToArray() ?? Array.Empty<SocialCandidateExclusionReason>());
-        IndeterminateReasons = Array.AsReadOnly(indeterminateReasons?.ToArray() ?? Array.Empty<SocialCandidateIndeterminateReason>());
+        var exclusionList = exclusionReasons?.ToArray() ?? Array.Empty<SocialCandidateExclusionReason>();
+        foreach (var reason in exclusionList)
+        {
+            if (!Enum.IsDefined(typeof(SocialCandidateExclusionReason), reason))
+            {
+                throw new ArgumentException($"Invalid exclusion reason value: {reason}.", nameof(exclusionReasons));
+            }
+        }
+
+        var indeterminateList = indeterminateReasons?.ToArray() ?? Array.Empty<SocialCandidateIndeterminateReason>();
+        foreach (var reason in indeterminateList)
+        {
+            if (!Enum.IsDefined(typeof(SocialCandidateIndeterminateReason), reason))
+            {
+                throw new ArgumentException($"Invalid indeterminate reason value: {reason}.", nameof(indeterminateReasons));
+            }
+        }
+
+        switch (status)
+        {
+            case SocialCandidateMatchStatus.Eligible:
+                if (exclusionList.Length > 0)
+                {
+                    throw new ArgumentException(
+                        "An eligible candidate evaluation result cannot contain exclusion reasons.",
+                        nameof(exclusionReasons));
+                }
+                if (indeterminateList.Length > 0)
+                {
+                    throw new ArgumentException(
+                        "An eligible candidate evaluation result cannot contain indeterminate reasons.",
+                        nameof(indeterminateReasons));
+                }
+                break;
+
+            case SocialCandidateMatchStatus.Excluded:
+                if (exclusionList.Length == 0)
+                {
+                    throw new ArgumentException(
+                        "An excluded candidate evaluation result must contain at least one exclusion reason.",
+                        nameof(exclusionReasons));
+                }
+                break;
+
+            case SocialCandidateMatchStatus.Indeterminate:
+                if (exclusionList.Length > 0)
+                {
+                    throw new ArgumentException(
+                        "An indeterminate candidate evaluation result cannot contain exclusion reasons.",
+                        nameof(exclusionReasons));
+                }
+                if (indeterminateList.Length == 0)
+                {
+                    throw new ArgumentException(
+                        "An indeterminate candidate evaluation result must contain at least one indeterminate reason.",
+                        nameof(indeterminateReasons));
+                }
+                break;
+        }
+
+        Status = status;
+        ExclusionReasons = Array.AsReadOnly(exclusionList);
+        IndeterminateReasons = Array.AsReadOnly(indeterminateList);
         SharedLanguages = Array.AsReadOnly(sharedLanguages?.ToArray() ?? Array.Empty<string>());
         SharedConnectionGoals = Array.AsReadOnly(sharedConnectionGoals?.ToArray() ?? Array.Empty<string>());
     }
