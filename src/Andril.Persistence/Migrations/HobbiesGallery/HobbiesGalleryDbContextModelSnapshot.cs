@@ -67,7 +67,7 @@ namespace Andril.Persistence.Migrations.HobbiesGallery
 
                     b.HasIndex("OwnerModuleProfileId", "Module", "IsDeleted", "CreatedAtUtc");
 
-                    b.ToTable("GalleryMedia");
+                    b.ToTable("GalleryMedia", "andril_hobbies");
                 });
 
             modelBuilder.Entity("Andril.Hobbies.Entities.GalleryPreferences", b =>
@@ -80,7 +80,7 @@ namespace Andril.Persistence.Migrations.HobbiesGallery
 
                     b.HasKey("OwnerModuleProfileId");
 
-                    b.ToTable("GalleryPreferences");
+                    b.ToTable("GalleryPreferences", "andril_hobbies");
                 });
 #pragma warning restore 612, 618
         }

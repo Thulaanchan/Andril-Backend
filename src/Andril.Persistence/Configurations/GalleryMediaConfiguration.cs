@@ -11,6 +11,8 @@ public sealed class GalleryMediaConfiguration
     public void Configure(
         EntityTypeBuilder<GalleryMedia> builder)
     {
+        builder.ToTable("GalleryMedia", HobbiesDatabaseOptions.Schema);
+
         // Primary key
         builder.HasKey(media => media.Id);
 

@@ -73,7 +73,7 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         .HasDatabaseName("ux_flight_point_ledger_reversed_entry")
                         .HasFilter("entry_type = 2");
 
-                    b.ToTable("flight_point_ledger", null, t =>
+                    b.ToTable("flight_point_ledger", "andril_hobbies", t =>
                         {
                             t.HasCheckConstraint("ck_flight_point_ledger_attraction_id", "attraction_id <> '00000000-0000-0000-0000-000000000000'::uuid");
 
@@ -148,7 +148,7 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                     b.HasKey("ContributionId")
                         .HasName("pk_map_contributions");
 
-                    b.ToTable("map_contributions", null, t =>
+                    b.ToTable("map_contributions", "andril_hobbies", t =>
                         {
                             t.HasCheckConstraint("ck_map_contribution_attraction_id", "attraction_id <> '00000000-0000-0000-0000-000000000000'::uuid");
 
@@ -195,7 +195,7 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                     b.HasIndex("OwnerHobbiesModuleProfileId", "AttractionId")
                         .HasDatabaseName("ix_map_capture_owner_attraction");
 
-                    b.ToTable("map_contribution_capture_sessions", null, t =>
+                    b.ToTable("map_contribution_capture_sessions", "andril_hobbies", t =>
                         {
                             t.HasCheckConstraint("ck_map_capture_attraction_id", "attraction_id <> '00000000-0000-0000-0000-000000000000'::uuid");
 
@@ -229,7 +229,7 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                     b.HasKey("AttractionId")
                         .HasName("pk_map_attractions");
 
-                    b.ToTable("map_attractions", null, t =>
+                    b.ToTable("map_attractions", "andril_hobbies", t =>
                         {
                             t.HasCheckConstraint("ck_map_attraction_id", "attraction_id <> '00000000-0000-0000-0000-000000000000'::uuid");
 

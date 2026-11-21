@@ -11,7 +11,7 @@ public sealed class MapAttractionConfiguration : IEntityTypeConfiguration<MapAtt
 {
     public void Configure(EntityTypeBuilder<MapAttraction> builder)
     {
-        builder.ToTable("map_attractions", table =>
+        builder.ToTable("map_attractions", HobbiesDatabaseOptions.Schema, table =>
         {
             table.HasCheckConstraint(
                 "ck_map_attraction_id",
