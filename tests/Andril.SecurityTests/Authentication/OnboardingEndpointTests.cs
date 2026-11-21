@@ -7,6 +7,8 @@ using Andril.Common.Accounts.Onboarding;
 using Andril.Common.Accounts.Policies;
 using Andril.Common.Accounts.Profiles;
 using Andril.Common.Accounts.StarterModules;
+using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.Routing.Patterns;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
@@ -35,7 +37,9 @@ public sealed class OnboardingEndpointTests
         var profileField = Field("privateProfileComplete");
         Assert.Contains("type: boolean", profileField);
         Assert.DoesNotContain("enum:", profileField);
-        Assert.Contains("enum: [false]", Field("onboardingComplete"));
+        var onboardingField = Field("onboardingComplete");
+        Assert.Contains("type: boolean", onboardingField);
+        Assert.DoesNotContain("enum:", onboardingField);
         Assert.Contains("enum: [false]", Field("moduleHomeAuthorized"));
         Assert.Contains("  " + Route + ":", contract);
         Assert.Contains("$ref: '#/components/schemas/OnboardingStatus'", contract);
@@ -49,7 +53,7 @@ public sealed class OnboardingEndpointTests
         Assert.Equal(new[] { "accountInitialized", "currentPoliciesAccepted", "demographicsComplete", "identityVerified", "privateProfileComplete", "starterModuleSelected" },
             root.GetProperty("progress").EnumerateObject().Select(x => x.Name).Order().ToArray());
         Assert.Equal(complete, root.GetProperty("progress").GetProperty("privateProfileComplete").GetBoolean());
-        Assert.False(root.GetProperty("onboardingComplete").GetBoolean());
+        Assert.Equal(complete, root.GetProperty("onboardingComplete").GetBoolean());
         Assert.False(root.GetProperty("moduleHomeAuthorized").GetBoolean());
     }
 
@@ -127,6 +131,7 @@ public sealed class OnboardingEndpointTests
         client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token());
         var initial = await client.GetFromJsonAsync<OnboardingStatus>(Route);
         Assert.Equal("initialize_account", initial!.NextStep);
+        Assert.False(initial.OnboardingComplete);
         store.Exists = true;
         Assert.Equal("complete_demographics", (await client.GetFromJsonAsync<OnboardingStatus>(Route))!.NextStep);
         store.Ready();
@@ -234,23 +239,45 @@ public sealed class OnboardingEndpointTests
         if (statusCode != 200)
         {
             Assert.DoesNotContain("privateProfileComplete", json);
+            Assert.DoesNotContain("onboardingComplete", json);
             return;
         }
         using var body = JsonDocument.Parse(json);
         Assert.Equal(complete, body.RootElement.GetProperty("progress").GetProperty("privateProfileComplete").GetBoolean());
-        Assert.False(body.RootElement.GetProperty("onboardingComplete").GetBoolean());
+        Assert.Equal(complete, body.RootElement.GetProperty("onboardingComplete").GetBoolean());
         Assert.False(body.RootElement.GetProperty("moduleHomeAuthorized").GetBoolean());
         if (complete)
         {
             Assert.Equal("social", body.RootElement.GetProperty("selectedModule").GetString());
+            Assert.Equal("profile_setup", body.RootElement.GetProperty("nextStep").GetString());
             Assert.Equal(JsonValueKind.Null, body.RootElement.GetProperty("blockingDependency").ValueKind);
+            var routes = app.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>();
+            Assert.DoesNotContain(routes, endpoint =>
+                endpoint.RoutePattern.PathSegments.Any(segment => segment.Parts.OfType<RoutePatternLiteralPart>()
+                    .Any(part => part.Content.Equals("social", StringComparison.OrdinalIgnoreCase)
+                        || part.Content.Equals("chat", StringComparison.OrdinalIgnoreCase))));
             // A new HTTP request scope must re-read the same persisted owner evidence.
             using var resumed = app.CreateClient();
             resumed.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token());
             var repeat = await resumed.GetFromJsonAsync<OnboardingStatus>(Route);
             Assert.True(repeat!.Progress.PrivateProfileComplete);
-            store.Policies = [];
-            Assert.False((await resumed.GetFromJsonAsync<OnboardingStatus>(Route))!.Progress.PrivateProfileComplete);
+            Assert.True(repeat.OnboardingComplete);
+            Assert.False(repeat.ModuleHomeAuthorized);
+            store.Version = "v2";
+            await AssertIncompleteAsync("review_policies");
+            store.Version = "v1";
+            store.demographics = Andril.Common.Accounts.Eligibility.AccountDemographics.Create(
+                store.Account.Id, DateOnly.FromDateTime(DateTime.UtcNow).AddYears(-17), "other", DateTimeOffset.UtcNow);
+            await AssertIncompleteAsync("age_ineligible");
+
+            async Task AssertIncompleteAsync(string nextStep)
+            {
+                var status = await resumed.GetFromJsonAsync<OnboardingStatus>(Route);
+                Assert.Equal(nextStep, status!.NextStep);
+                Assert.False(status.Progress.PrivateProfileComplete);
+                Assert.False(status.OnboardingComplete);
+                Assert.False(status.ModuleHomeAuthorized);
+            }
         }
     }
 

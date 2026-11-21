@@ -1,3 +1,5 @@
+using ModuleNames = Andril.Common.Accounts.StarterModules.StarterModules;
+
 namespace Andril.Common.Accounts.Onboarding;
 
 /// <summary>Request-scoped evidence from the successful live identity check, not JWT metadata.</summary>
@@ -20,8 +22,8 @@ public sealed record OnboardingProgress(bool IdentityVerified, bool AccountIniti
 public sealed record OnboardingStatus(string NextStep, OnboardingProgress Progress,
     string? SelectedModule = null, string? BlockingDependency = null)
 {
-    // Social private-profile completion does not approve overall onboarding or module entry.
-    public bool OnboardingComplete => false;
+    // The authorized Social completion read already verifies the current setup prerequisites.
+    public bool OnboardingComplete => SelectedModule == ModuleNames.Social && Progress.PrivateProfileComplete;
     public bool ModuleHomeAuthorized => false;
 }
 
