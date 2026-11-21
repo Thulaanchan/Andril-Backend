@@ -565,6 +565,9 @@ public sealed class MapContributionPersistenceTests
             await using (var context = CreateContext(connection))
             {
                 await context.Database.EnsureCreatedAsync();
+                context.CaptureSessions.Add(MapContributionCaptureSession.Create(
+                    Session, Owner, Attraction, SubmittedAt));
+                await context.SaveChangesAsync();
             }
             await test(connection);
         }

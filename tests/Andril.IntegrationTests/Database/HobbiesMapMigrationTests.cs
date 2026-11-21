@@ -18,13 +18,18 @@ public sealed class HobbiesMapMigrationTests
     private static readonly string[] Tables =
         ["flight_point_ledger", "map_attractions", "map_contribution_capture_sessions", "map_contributions"];
     private const string OfflineConnection = "Host=127.0.0.1;Database=andril_model_only;Username=unused";
+    private const string InitialMap = "20261121032052_InitialHobbiesMap";
+    private const string UniqueSession = "ux_map_contributions_capture_session_id";
+    private const string ScopedSession = "fk_map_contributions_capture_session_scope";
 
     [Fact]
     public void Migration_IsDiscoveredOnlyForMapAndMatchesTheSnapshotOffline()
     {
         using var map = new HobbiesMapDbContextFactory().CreateDbContext([]);
-        var id = Assert.Single(map.Database.GetMigrations());
-        Assert.EndsWith("_InitialHobbiesMap", id);
+        var ids = map.Database.GetMigrations().ToArray();
+        Assert.Equal(2, ids.Length);
+        Assert.Equal(InitialMap, ids[0]);
+        Assert.EndsWith("_AddMapSubmissionSessionUniqueness", ids[1]);
         Assert.NotNull(map.GetService<IMigrationsAssembly>().ModelSnapshot);
         Assert.False(map.Database.HasPendingModelChanges());
 
@@ -34,11 +39,15 @@ public sealed class HobbiesMapMigrationTests
         using var accounts = new AccountsDbContext(
             new DbContextOptionsBuilder<AccountsDbContext>().UseNpgsql(OfflineConnection).Options);
         Assert.NotEmpty(accounts.Database.GetMigrations());
-        Assert.DoesNotContain(id, accounts.Database.GetMigrations());
         Assert.DoesNotContain(galleryId, map.Database.GetMigrations());
         using var notifications = new NotificationsDbContext(
             new DbContextOptionsBuilder<NotificationsDbContext>().UseNpgsql(OfflineConnection).Options);
-        Assert.DoesNotContain(id, notifications.Database.GetMigrations());
+        Assert.All(ids, id =>
+        {
+            Assert.DoesNotContain(id, accounts.Database.GetMigrations());
+            Assert.DoesNotContain(id, gallery.Database.GetMigrations());
+            Assert.DoesNotContain(id, notifications.Database.GetMigrations());
+        });
     }
 
     [Fact]
@@ -46,7 +55,8 @@ public sealed class HobbiesMapMigrationTests
     {
         using var context = new HobbiesMapDbContextFactory().CreateDbContext([]);
         var assembly = context.GetService<IMigrationsAssembly>();
-        var mapping = Assert.Single(assembly.Migrations);
+        var mapping = assembly.Migrations.First();
+        Assert.Equal(InitialMap, mapping.Key);
         var migration = assembly.CreateMigration(mapping.Value, context.Database.ProviderName!);
         var creates = migration.UpOperations.OfType<CreateTableOperation>().OrderBy(table => table.Name, StringComparer.Ordinal).ToArray();
         var indexes = migration.UpOperations.OfType<CreateIndexOperation>().ToArray();
@@ -81,11 +91,7 @@ public sealed class HobbiesMapMigrationTests
         var up = migrator.GenerateScript(Migration.InitialDatabase, mapping.Key);
         var idempotent = migrator.GenerateScript(Migration.InitialDatabase, mapping.Key, MigrationsSqlGenerationOptions.Idempotent);
         var down = migrator.GenerateScript(mapping.Key, Migration.InitialDatabase);
-        var modelSql = context.Database.GenerateCreateScript();
-        var modelStatements = modelSql[modelSql.IndexOf("CREATE TABLE", StringComparison.Ordinal)..]
-            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        Assert.Equal(6, modelStatements.Length);
-        Assert.All(modelStatements, statement => Assert.Contains(statement + ";", up));
+        Assert.False(Assert.Single(creates[3].Columns, column => column.Name == "capture_session_id").IsNullable);
         Assert.DoesNotContain("DROP ", up, StringComparison.OrdinalIgnoreCase);
         const string history = "andril_hobbies.\"__EFMigrationsHistory_Map\"";
         Assert.Contains($"INSERT INTO {history}", up);
@@ -99,13 +105,128 @@ public sealed class HobbiesMapMigrationTests
         Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
     }
 
-    [MapCapturePostgresFact]
-    public Task Migration_GalleryThenMap_RollsBackIndependently() => VerifyIndependentMigrationsAsync(galleryFirst: true);
+    [Fact]
+    public void SubmissionMigration_ScriptsContainOnlyMapConstraintChanges()
+    {
+        using var map = new HobbiesMapDbContextFactory().CreateDbContext([]);
+        var target = map.Database.GetMigrations().Last();
+        var migrator = map.GetService<IMigrator>();
+        var up = migrator.GenerateScript(InitialMap, target);
+        var down = migrator.GenerateScript(target, InitialMap);
+        Assert.Contains($"CREATE UNIQUE INDEX {UniqueSession} ON andril_hobbies.map_contributions (capture_session_id)", up);
+        Assert.Contains("ADD CONSTRAINT ak_map_capture_session_scope UNIQUE (session_id, owner_hobbies_module_profile_id, attraction_id)", up);
+        Assert.Contains($"ADD CONSTRAINT {ScopedSession} FOREIGN KEY (capture_session_id, owner_hobbies_module_profile_id, attraction_id) " +
+            "REFERENCES andril_hobbies.map_contribution_capture_sessions (session_id, owner_hobbies_module_profile_id, attraction_id)", up);
+        Assert.DoesNotContain("ON DELETE CASCADE", up);
+        Assert.Contains("INSERT INTO andril_hobbies.\"__EFMigrationsHistory_Map\"", up);
+        Assert.Contains("DELETE FROM andril_hobbies.\"__EFMigrationsHistory_Map\"", down);
+        Assert.DoesNotContain("DROP TABLE", down);
+        Assert.DoesNotContain("andril_identity", up + down);
+        Assert.DoesNotContain("__EFMigrationsHistory_Gallery", up + down);
+        Assert.Equal(ConnectionState.Closed, map.Database.GetDbConnection().State);
+    }
 
     [MapCapturePostgresFact]
-    public Task Migration_MapThenGallery_RollsBackIndependently() => VerifyIndependentMigrationsAsync(galleryFirst: false);
+    public Task SubmissionMigration_ValidatesLegacyRowsAndEnforcesScope() =>
+        WithDatabaseAsync(async (connection, probe) =>
+        {
+            await using var map = new HobbiesMapDbContext(new DbContextOptionsBuilder<HobbiesMapDbContext>()
+                .UseNpgsql(connection, HobbiesDatabaseOptions.ConfigureMapHistory).Options);
+            await map.Database.MigrateAsync(InitialMap);
+            var session = Guid.NewGuid();
+            var owner = Guid.NewGuid();
+            var attraction = Guid.NewGuid();
 
-    private static async Task VerifyIndependentMigrationsAsync(bool galleryFirst)
+            Task<int> ExecuteAsync(FormattableString sql) => map.Database.ExecuteSqlInterpolatedAsync(sql);
+            Task<int> InsertAsync(Guid? captureSession, Guid contributionOwner, Guid contributionAttraction) =>
+                ExecuteAsync($"""
+                    INSERT INTO andril_hobbies.map_contributions
+                        (contribution_id, capture_session_id, owner_hobbies_module_profile_id, attraction_id,
+                         private_photo_storage_object_key, description, location_evidence, submitted_at_utc, moderation_status)
+                    VALUES ({Guid.NewGuid()}, CAST({captureSession} AS uuid), {contributionOwner}, {contributionAttraction},
+                            'private/photo', 'description', jsonb_build_object(), now(), 1)
+                    """);
+
+            await ExecuteAsync($"""
+                INSERT INTO andril_hobbies.map_contribution_capture_sessions
+                    (session_id, owner_hobbies_module_profile_id, attraction_id, started_at_utc)
+                VALUES ({session}, {owner}, {attraction}, now())
+                """);
+            var nullError = await Assert.ThrowsAsync<PostgresException>(() => InsertAsync(null, owner, attraction));
+            Assert.Equal(PostgresErrorCodes.NotNullViolation, nullError.SqlState);
+            Assert.Equal("capture_session_id", nullError.ColumnName);
+
+            foreach (var (badSession, badOwner, badAttraction, state, constraint) in new[]
+            {
+                (session, owner, attraction, PostgresErrorCodes.UniqueViolation, UniqueSession),
+                (Guid.NewGuid(), owner, attraction, PostgresErrorCodes.ForeignKeyViolation, ScopedSession),
+                (session, Guid.NewGuid(), attraction, PostgresErrorCodes.ForeignKeyViolation, ScopedSession),
+                (session, owner, Guid.NewGuid(), PostgresErrorCodes.ForeignKeyViolation, ScopedSession)
+            })
+            {
+                await InsertAsync(badSession, badOwner, badAttraction);
+                var duplicate = constraint == UniqueSession;
+                if (duplicate)
+                    await InsertAsync(session, owner, attraction);
+                var error = await Assert.ThrowsAsync<PostgresException>(() => map.Database.MigrateAsync());
+                Assert.Equal(state, error.SqlState);
+                Assert.Equal(constraint, error.ConstraintName);
+                Assert.Equal(new[] { InitialMap }, await map.Database.GetAppliedMigrationsAsync());
+                Assert.Equal(duplicate ? 2 : 1, await map.MapContributions.CountAsync());
+                await ExecuteAsync($"DELETE FROM andril_hobbies.map_contributions");
+            }
+
+            await InsertAsync(session, owner, attraction);
+            await map.Database.MigrateAsync();
+            Assert.Equal(1, await map.MapContributions.CountAsync());
+            var requiredError = await Assert.ThrowsAsync<PostgresException>(() => InsertAsync(null, owner, attraction));
+            Assert.Equal(PostgresErrorCodes.NotNullViolation, requiredError.SqlState);
+            Assert.Equal("capture_session_id", requiredError.ColumnName);
+            var duplicateError = await Assert.ThrowsAsync<PostgresException>(() => InsertAsync(session, owner, attraction));
+            Assert.Equal(PostgresErrorCodes.UniqueViolation, duplicateError.SqlState);
+            Assert.Equal(UniqueSession, duplicateError.ConstraintName);
+
+            foreach (var (badSession, badOwner, badAttraction) in new[]
+            {
+                (Guid.NewGuid(), owner, attraction),
+                (session, Guid.NewGuid(), attraction),
+                (session, owner, Guid.NewGuid())
+            })
+            {
+                await ExecuteAsync($"DELETE FROM andril_hobbies.map_contributions");
+                var error = await Assert.ThrowsAsync<PostgresException>(() => InsertAsync(badSession, badOwner, badAttraction));
+                Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, error.SqlState);
+                Assert.Equal(ScopedSession, error.ConstraintName);
+            }
+
+            await InsertAsync(session, owner, attraction);
+            var deleteError = await Assert.ThrowsAsync<PostgresException>(() => ExecuteAsync($"""
+                DELETE FROM andril_hobbies.map_contribution_capture_sessions WHERE session_id = {session}
+                """));
+            Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, deleteError.SqlState);
+            Assert.Equal(ScopedSession, deleteError.ConstraintName);
+            await using var deleteAction = new NpgsqlCommand(
+                "SELECT confdeltype::text FROM pg_constraint WHERE conname = 'fk_map_contributions_capture_session_scope'", probe);
+            Assert.Equal("a", await deleteAction.ExecuteScalarAsync());
+
+            await map.Database.MigrateAsync(InitialMap);
+            Assert.Equal(new[] { InitialMap }, await map.Database.GetAppliedMigrationsAsync());
+            Assert.Equal(1, await map.MapContributions.CountAsync());
+            await InsertAsync(session, owner, attraction);
+            await InsertAsync(Guid.NewGuid(), owner, attraction);
+            Assert.Equal(3, await map.MapContributions.CountAsync());
+            Assert.Equal(1, await map.CaptureSessions.CountAsync());
+        });
+
+    [MapCapturePostgresFact]
+    public Task Migration_GalleryThenMap_RollsBackIndependently() =>
+        WithDatabaseAsync((connection, probe) => VerifyIndependentMigrationsAsync(connection, probe, galleryFirst: true));
+
+    [MapCapturePostgresFact]
+    public Task Migration_MapThenGallery_RollsBackIndependently() =>
+        WithDatabaseAsync((connection, probe) => VerifyIndependentMigrationsAsync(connection, probe, galleryFirst: false));
+
+    private static async Task WithDatabaseAsync(Func<string, NpgsqlConnection, Task> test)
     {
         var settings = GetLocalMaintenanceSettings();
         await using var admin = new NpgsqlConnection(settings.ConnectionString);
@@ -124,51 +245,56 @@ public sealed class HobbiesMapMigrationTests
         try
         {
             settings.Database = name;
-            await using var map = new HobbiesMapDbContext(new DbContextOptionsBuilder<HobbiesMapDbContext>()
-                .UseNpgsql(settings.ConnectionString, HobbiesDatabaseOptions.ConfigureMapHistory).Options);
-            await using var gallery = new HobbiesGalleryDbContext(new DbContextOptionsBuilder<HobbiesGalleryDbContext>()
-                .UseNpgsql(settings.ConnectionString, HobbiesDatabaseOptions.ConfigureGalleryHistory).Options);
             await using var probe = new NpgsqlConnection(settings.ConnectionString);
             await probe.OpenAsync();
-            await using var setup = new NpgsqlCommand("""
-                CREATE SCHEMA andril_identity;
-                CREATE TABLE andril_identity."__EFMigrationsHistory" ("MigrationId" text PRIMARY KEY);
-                INSERT INTO andril_identity."__EFMigrationsHistory" VALUES ('accounts-sentinel');
-                CREATE TABLE public.migration_isolation_probe (id integer PRIMARY KEY);
-                INSERT INTO public.migration_isolation_probe VALUES (1);
-                """, probe);
-            await setup.ExecuteNonQueryAsync();
-
-            DbContext first = galleryFirst ? gallery : map;
-            DbContext second = galleryFirst ? map : gallery;
-            var firstId = Assert.Single(first.Database.GetMigrations());
-            var secondId = Assert.Single(second.Database.GetMigrations());
-            await first.Database.MigrateAsync();
-            await second.Database.MigrateAsync();
-            Assert.Equal(firstId, Assert.Single(await first.Database.GetAppliedMigrationsAsync()));
-            Assert.Equal(secondId, Assert.Single(await second.Database.GetAppliedMigrationsAsync()));
-
-            await first.Database.MigrateAsync(Migration.InitialDatabase);
-            Assert.Empty(await first.Database.GetAppliedMigrationsAsync());
-            Assert.Equal(secondId, Assert.Single(await second.Database.GetAppliedMigrationsAsync()));
-            await AssertTableInventoryAsync(probe, galleryPresent: !galleryFirst, mapPresent: galleryFirst);
-
-            await first.Database.MigrateAsync();
-            Assert.Equal(firstId, Assert.Single(await first.Database.GetAppliedMigrationsAsync()));
-            await second.Database.MigrateAsync(Migration.InitialDatabase);
-            Assert.Empty(await second.Database.GetAppliedMigrationsAsync());
-            Assert.Equal(firstId, Assert.Single(await first.Database.GetAppliedMigrationsAsync()));
-            await AssertTableInventoryAsync(probe, galleryPresent: galleryFirst, mapPresent: !galleryFirst);
-
-            await second.Database.MigrateAsync();
-            Assert.Equal(secondId, Assert.Single(await second.Database.GetAppliedMigrationsAsync()));
-            await AssertTableInventoryAsync(probe, galleryPresent: true, mapPresent: true);
+            await test(settings.ConnectionString, probe);
         }
         finally
         {
             await using var drop = new NpgsqlCommand($"DROP DATABASE \"{name}\"", admin);
             await drop.ExecuteNonQueryAsync();
         }
+    }
+
+    private static async Task VerifyIndependentMigrationsAsync(string connection, NpgsqlConnection probe, bool galleryFirst)
+    {
+        await using var map = new HobbiesMapDbContext(new DbContextOptionsBuilder<HobbiesMapDbContext>()
+            .UseNpgsql(connection, HobbiesDatabaseOptions.ConfigureMapHistory).Options);
+        await using var gallery = new HobbiesGalleryDbContext(new DbContextOptionsBuilder<HobbiesGalleryDbContext>()
+            .UseNpgsql(connection, HobbiesDatabaseOptions.ConfigureGalleryHistory).Options);
+        await using var setup = new NpgsqlCommand("""
+            CREATE SCHEMA andril_identity;
+            CREATE TABLE andril_identity."__EFMigrationsHistory" ("MigrationId" text PRIMARY KEY);
+            INSERT INTO andril_identity."__EFMigrationsHistory" VALUES ('accounts-sentinel');
+            CREATE TABLE public.migration_isolation_probe (id integer PRIMARY KEY);
+            INSERT INTO public.migration_isolation_probe VALUES (1);
+            """, probe);
+        await setup.ExecuteNonQueryAsync();
+
+        DbContext first = galleryFirst ? gallery : map;
+        DbContext second = galleryFirst ? map : gallery;
+        var firstIds = first.Database.GetMigrations().ToArray();
+        var secondIds = second.Database.GetMigrations().ToArray();
+        await first.Database.MigrateAsync();
+        await second.Database.MigrateAsync();
+        Assert.Equal(firstIds, await first.Database.GetAppliedMigrationsAsync());
+        Assert.Equal(secondIds, await second.Database.GetAppliedMigrationsAsync());
+
+        await first.Database.MigrateAsync(Migration.InitialDatabase);
+        Assert.Empty(await first.Database.GetAppliedMigrationsAsync());
+        Assert.Equal(secondIds, await second.Database.GetAppliedMigrationsAsync());
+        await AssertTableInventoryAsync(probe, galleryPresent: !galleryFirst, mapPresent: galleryFirst);
+
+        await first.Database.MigrateAsync();
+        Assert.Equal(firstIds, await first.Database.GetAppliedMigrationsAsync());
+        await second.Database.MigrateAsync(Migration.InitialDatabase);
+        Assert.Empty(await second.Database.GetAppliedMigrationsAsync());
+        Assert.Equal(firstIds, await first.Database.GetAppliedMigrationsAsync());
+        await AssertTableInventoryAsync(probe, galleryPresent: galleryFirst, mapPresent: !galleryFirst);
+
+        await second.Database.MigrateAsync();
+        Assert.Equal(secondIds, await second.Database.GetAppliedMigrationsAsync());
+        await AssertTableInventoryAsync(probe, galleryPresent: true, mapPresent: true);
     }
 
     private static async Task AssertTableInventoryAsync(NpgsqlConnection connection, bool galleryPresent, bool mapPresent)
