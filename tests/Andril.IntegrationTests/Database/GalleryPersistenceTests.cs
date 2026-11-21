@@ -202,7 +202,7 @@ public sealed class GalleryPersistenceTests
 
             Assert.Contains(errors, error => error is null);
             var failure = Assert.Single(errors, error => error is not null);
-            var postgres = Assert.IsType<PostgresException>(failure is DbUpdateException update ? update.InnerException : failure);
+            var postgres = RequirePostgresException(failure);
             Assert.Equal(PostgresErrorCodes.SerializationFailure, postgres.SqlState);
             Assert.Equal(2, gate.Arrivals);
             Assert.Empty(first.ChangeTracker.Entries());
@@ -499,7 +499,7 @@ public sealed class GalleryPersistenceTests
 
             Assert.Contains(errors, error => error is null);
             var failure = Assert.Single(errors, error => error is not null);
-            var postgres = Assert.IsType<PostgresException>(failure is DbUpdateException update ? update.InnerException : failure);
+            var postgres = RequirePostgresException(failure);
             Assert.Contains(postgres.SqlState, new[] { PostgresErrorCodes.SerializationFailure, PostgresErrorCodes.UniqueViolation });
             if (postgres.SqlState == PostgresErrorCodes.UniqueViolation)
                 Assert.Equal("PK_GalleryPreferences", postgres.ConstraintName);
@@ -580,6 +580,20 @@ public sealed class GalleryPersistenceTests
         if (interceptor is not null)
             options.AddInterceptors(interceptor);
         return new HobbiesGalleryDbContext(options.Options);
+    }
+
+    private static PostgresException RequirePostgresException(Exception failure)
+    {
+        var exceptionTypes = new System.Collections.Generic.List<string>();
+        for (Exception? error = failure; error is not null; error = error.InnerException)
+        {
+            if (error is PostgresException postgres)
+                return postgres;
+            exceptionTypes.Add(error.GetType().Name);
+        }
+
+        throw new Xunit.Sdk.XunitException(
+            $"Expected a PostgreSQL exception in the failure chain. Observed: {string.Join(" -> ", exceptionTypes)}.");
     }
 
     private sealed class CoverSaveGate : SaveChangesInterceptor
