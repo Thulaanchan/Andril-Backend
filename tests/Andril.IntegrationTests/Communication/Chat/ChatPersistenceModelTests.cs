@@ -225,7 +225,11 @@ public sealed class ChatPersistenceModelTests
             Assert.DoesNotContain(context.Model.GetEntityTypes(), entity => RecordNames.Contains(entity.ClrType.Name));
             Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
         }
-        Assert.DoesNotContain(PersistenceAssembly.GetTypes(), type => type.Name == "ChatDbContext");
+        var chatContext = Assert.Single(PersistenceAssembly.GetTypes(), type =>
+            typeof(DbContext).IsAssignableFrom(type) && type.Name.Contains("Chat", StringComparison.Ordinal));
+        Assert.Equal("Andril.Persistence.Repositories.Communication.ChatDbContext", chatContext.FullName);
+        Assert.True(chatContext.IsNotPublic);
+        Assert.False(chatContext.IsVisible);
     }
 
     [Fact]
@@ -234,7 +238,8 @@ public sealed class ChatPersistenceModelTests
         var services = new ServiceCollection();
         services.AddAccounts(new ConfigurationBuilder().Build());
         services.AddNotifications();
-        Assert.DoesNotContain(services, descriptor => IsCandidate(descriptor.ServiceType) || IsCandidate(descriptor.ImplementationType));
+        Assert.DoesNotContain(services, descriptor => IsCandidate(descriptor.ServiceType) || IsCandidate(descriptor.ImplementationType)
+            || IsCandidate(descriptor.ImplementationInstance?.GetType()));
     }
 
     [Fact]
@@ -385,7 +390,9 @@ public sealed class ChatPersistenceModelTests
         return string.Join(", ", properties.Select(property => identifiers.DelimitIdentifier(property.GetColumnName(store)!)));
     }
 
-    private static bool IsCandidate(Type? type) => type is not null && (RecordNames.Contains(type.Name) || type == typeof(CandidateChatContext));
+    private static bool IsCandidate(Type? type) => type is not null && (RecordNames.Contains(type.Name) || type == typeof(CandidateChatContext)
+        || type.FullName == "Andril.Persistence.Repositories.Communication.ChatDbContext"
+        || (type.IsGenericType && type.GetGenericArguments().Any(IsCandidate)));
     private static DbContextOptions<T> Options<T>() where T : DbContext => new DbContextOptionsBuilder<T>()
         .UseNpgsql(ModelConnection).AddInterceptors(new RejectConnections()).Options;
     private static IModel Model(DbContext context) => context.GetService<IDesignTimeModel>().Model;
