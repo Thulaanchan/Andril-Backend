@@ -21,7 +21,7 @@ public sealed class FlightPointsLedgerEntryConfiguration : IEntityTypeConfigurat
         const int contributionPoints = FlightPointsRewardPolicy.FirstEligibleContributionPoints;
         const int explorerPoints = FlightPointsRewardPolicy.FirstExplorerBonusPoints;
 
-        builder.ToTable("flight_point_ledger", table =>
+        builder.ToTable("flight_point_ledger", HobbiesDatabaseOptions.Schema, table =>
         {
             table.HasCheckConstraint("ck_flight_point_ledger_id", $"ledger_entry_id <> {EmptyUuid}");
             table.HasCheckConstraint("ck_flight_point_ledger_owner_id", $"owner_hobbies_module_profile_id <> {EmptyUuid}");

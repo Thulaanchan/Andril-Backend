@@ -67,7 +67,7 @@ public sealed class FlightPointsLedgerPersistenceTests
         Assert.Same(probe.Stop, error);
         Assert.NotNull(probe.Sql);
         Assert.Matches(
-            @"(?i)^SELECT COALESCE\(sum\(\w+\.points_delta::bigint\), 0\.0\)::bigint\s+FROM flight_point_ledger AS \w+\s+WHERE \w+\.owner_hobbies_module_profile_id = @\w+\s*$",
+            @"(?i)^SELECT COALESCE\(sum\(\w+\.points_delta::bigint\), 0\.0\)::bigint\s+FROM andril_hobbies\.flight_point_ledger AS \w+\s+WHERE \w+\.owner_hobbies_module_profile_id = @\w+\s*$",
             probe.Sql);
         Assert.Equal(Owner, Assert.Single(probe.Parameters).Value);
         AssertClosed(context);
@@ -106,7 +106,7 @@ public sealed class FlightPointsLedgerPersistenceTests
         Assert.NotNull(probe.Sql);
         var match = Regex.Match(probe.Sql,
             @"^SELECT f\.ledger_entry_id, f\.contribution_id, f\.attraction_id, f\.entry_type, f\.reward_type, f\.points_delta, f\.reversed_entry_id, f\.created_at_utc\s+" +
-            @"FROM flight_point_ledger AS f\s+WHERE f\.owner_hobbies_module_profile_id = @(?<owner>\w+)\s+" +
+            @"FROM andril_hobbies\.flight_point_ledger AS f\s+WHERE f\.owner_hobbies_module_profile_id = @(?<owner>\w+)\s+" +
             @"ORDER BY f\.created_at_utc DESC, f\.ledger_entry_id\s+LIMIT @(?<limit>\w+) OFFSET @(?<offset>\w+)\s*$");
         Assert.True(match.Success, probe.Sql);
         Assert.Equal(3, probe.Parameters.Count);
@@ -163,7 +163,7 @@ public sealed class FlightPointsLedgerPersistenceTests
                 () => repository.GetHistoryAsync(Owner, query, token));
             Assert.Equal(token, canceled.CancellationToken);
 
-            await context.Database.ExecuteSqlRawAsync("DROP TABLE flight_point_ledger");
+            await context.Database.ExecuteSqlRawAsync("DROP TABLE andril_hobbies.flight_point_ledger");
             var failure = await Assert.ThrowsAsync<PostgresException>(() => repository.GetHistoryAsync(Owner, query));
             Assert.Equal(PostgresErrorCodes.UndefinedTable, failure.SqlState);
         });
@@ -210,7 +210,7 @@ public sealed class FlightPointsLedgerPersistenceTests
                 () => ledger.GetNetPointsAsync(Owner, token));
             Assert.Equal(token, canceled.CancellationToken);
 
-            await context.Database.ExecuteSqlRawAsync("DROP TABLE flight_point_ledger");
+            await context.Database.ExecuteSqlRawAsync("DROP TABLE andril_hobbies.flight_point_ledger");
             var failure = await Assert.ThrowsAsync<PostgresException>(() => ledger.GetNetPointsAsync(Owner));
             Assert.Equal(PostgresErrorCodes.UndefinedTable, failure.SqlState);
         });
@@ -287,8 +287,8 @@ public sealed class FlightPointsLedgerPersistenceTests
 
         var ddl = context.Database.GenerateCreateScript();
         Assert.All(expected, name => Assert.Contains($"CONSTRAINT {name} CHECK", ddl));
-        Assert.Contains("CREATE UNIQUE INDEX " + ReversalIndex + " ON flight_point_ledger (reversed_entry_id) WHERE entry_type = 2", ddl);
-        Assert.Contains("REFERENCES flight_point_ledger (ledger_entry_id) ON DELETE RESTRICT", ddl);
+        Assert.Contains("CREATE UNIQUE INDEX " + ReversalIndex + " ON andril_hobbies.flight_point_ledger (reversed_entry_id) WHERE entry_type = 2", ddl);
+        Assert.Contains("REFERENCES andril_hobbies.flight_point_ledger (ledger_entry_id) ON DELETE RESTRICT", ddl);
         Assert.Contains("points_delta = 5", ddl);
         Assert.Contains("points_delta = 10", ddl);
         Assert.Contains("points_delta = -5", ddl);
@@ -609,7 +609,7 @@ public sealed class FlightPointsLedgerPersistenceTests
                 PostgresErrorCodes.ForeignKeyViolation, ReversalForeignKey);
             Assert.Equal(1, await InsertRowAsync(context, reversal));
             await AssertDatabaseErrorAsync(
-                () => context.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM flight_point_ledger WHERE ledger_entry_id = {FirstId}"),
+                () => context.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM andril_hobbies.flight_point_ledger WHERE ledger_entry_id = {FirstId}"),
                 PostgresErrorCodes.ForeignKeyViolation, ReversalForeignKey);
             Assert.Equal(2, await context.FlightPointsLedgerEntries.CountAsync());
         });
@@ -773,7 +773,7 @@ public sealed class FlightPointsLedgerPersistenceTests
         public override ValueTask<DbDataReader> ReaderExecutedAsync(
             DbCommand command, CommandExecutedEventData eventData, DbDataReader result, CancellationToken cancellationToken = default)
         {
-            if (command.CommandText.StartsWith("INSERT INTO flight_point_ledger", StringComparison.Ordinal))
+            if (command.CommandText.StartsWith("INSERT INTO andril_hobbies.flight_point_ledger", StringComparison.Ordinal))
                 SuccessfulInserts++;
             return ValueTask.FromResult(result);
         }
@@ -784,7 +784,7 @@ public sealed class FlightPointsLedgerPersistenceTests
 
     private static Task<int> InsertRowAsync(HobbiesMapDbContext context, LedgerRow row) =>
         context.Database.ExecuteSqlInterpolatedAsync($"""
-            INSERT INTO flight_point_ledger (ledger_entry_id, owner_hobbies_module_profile_id, contribution_id,
+            INSERT INTO andril_hobbies.flight_point_ledger (ledger_entry_id, owner_hobbies_module_profile_id, contribution_id,
                 attraction_id, entry_type, reward_type, points_delta, idempotency_key, reversed_entry_id, created_at_utc)
             VALUES ({row.Id}, {row.Profile}, {row.Submission}, {row.Place}, {row.EntryType}, {row.RewardType},
                 {row.Points}, {row.Key}, CAST({row.ReversedId} AS uuid), {CreatedAt.ToUniversalTime()})

@@ -24,7 +24,7 @@ public sealed class MapContributionConfiguration : IEntityTypeConfiguration<MapC
 
     public void Configure(EntityTypeBuilder<MapContribution> builder)
     {
-        builder.ToTable("map_contributions", table =>
+        builder.ToTable("map_contributions", HobbiesDatabaseOptions.Schema, table =>
         {
             table.HasCheckConstraint("ck_map_contribution_id", $"contribution_id <> {EmptyUuid}");
             table.HasCheckConstraint("ck_map_contribution_owner_id", $"owner_hobbies_module_profile_id <> {EmptyUuid}");

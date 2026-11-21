@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using System.Transactions;
 using Andril.Hobbies.Entities;
 using Andril.Hobbies.Interfaces;
+using Andril.Persistence.Configurations;
 using Andril.Persistence.DbContexts;
 using Andril.Persistence.Repositories.Hobbies;
 using Microsoft.EntityFrameworkCore;
@@ -64,6 +65,7 @@ public sealed class GalleryPersistenceTests
         var mapping = Assert.Single(assembly.Migrations);
         var migration = assembly.CreateMigration(mapping.Value, context.Database.ProviderName!);
         Assert.Collection(migration.UpOperations,
+            operation => Assert.Equal("andril_hobbies", Assert.IsType<EnsureSchemaOperation>(operation).Name),
             operation => Assert.Equal("GalleryMedia", Assert.IsType<CreateTableOperation>(operation).Name),
             operation => Assert.Equal("GalleryPreferences", Assert.IsType<CreateTableOperation>(operation).Name),
             operation => Assert.Equal("GalleryMedia", Assert.IsType<CreateIndexOperation>(operation).Table));
@@ -73,14 +75,23 @@ public sealed class GalleryPersistenceTests
 
         var migrator = context.GetService<IMigrator>();
         var up = migrator.GenerateScript(Migration.InitialDatabase, mapping.Key);
+        var idempotent = migrator.GenerateScript(Migration.InitialDatabase, mapping.Key, MigrationsSqlGenerationOptions.Idempotent);
         var down = migrator.GenerateScript(mapping.Key, Migration.InitialDatabase);
-        var modelStatements = context.Database.GenerateCreateScript()
+        var modelSql = context.Database.GenerateCreateScript();
+        var modelStatements = modelSql[modelSql.IndexOf("CREATE TABLE", StringComparison.Ordinal)..]
             .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
         Assert.Equal(3, modelStatements.Length);
         Assert.All(modelStatements, statement => Assert.Contains(statement + ";", up));
         Assert.DoesNotContain("DROP ", up);
-        Assert.Contains("DROP TABLE \"GalleryMedia\";", down);
-        Assert.Contains("DROP TABLE \"GalleryPreferences\";", down);
+        const string history = "andril_hobbies.\"__EFMigrationsHistory_Gallery\"";
+        Assert.Contains($"INSERT INTO {history}", up);
+        Assert.Contains($"FROM {history}", idempotent);
+        Assert.Contains($"DELETE FROM {history}", down);
+        Assert.DoesNotContain("__EFMigrationsHistory_Map", up);
+        Assert.DoesNotContain("andril_identity", idempotent);
+        Assert.Contains("DROP TABLE andril_hobbies.\"GalleryMedia\";", down);
+        Assert.Contains("DROP TABLE andril_hobbies.\"GalleryPreferences\";", down);
+        Assert.DoesNotContain("DROP SCHEMA", down);
         Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
     }
 
@@ -105,8 +116,8 @@ public sealed class GalleryPersistenceTests
             await using var probe = new NpgsqlConnection(connection);
             await probe.OpenAsync();
             await using var command = new NpgsqlCommand("""
-                SELECT to_regclass('"GalleryMedia"') IS NULL
-                   AND to_regclass('"GalleryPreferences"') IS NULL
+                SELECT to_regclass('andril_hobbies."GalleryMedia"') IS NULL
+                   AND to_regclass('andril_hobbies."GalleryPreferences"') IS NULL
                    AND EXISTS (SELECT 1 FROM migration_isolation_probe WHERE id = 1)
                 """, probe);
             Assert.Equal(true, await command.ExecuteScalarAsync());
@@ -118,6 +129,7 @@ public sealed class GalleryPersistenceTests
         using var context = CreateContext();
         var media = context.GalleryMedia.EntityType;
         Assert.Equal("GalleryMedia", media.GetTableName());
+        Assert.Equal("andril_hobbies", media.GetSchema());
         Assert.Equal(nameof(GalleryMedia.Id), Assert.Single(media.FindPrimaryKey()!.Properties).Name);
         Assert.Equal(11, media.GetProperties().Count());
         Assert.Null(media.FindProperty("PublicUrl"));
@@ -147,6 +159,7 @@ public sealed class GalleryPersistenceTests
             nameof(GalleryMedia.IsDeleted), nameof(GalleryMedia.CreatedAtUtc) }, index.Properties.Select(p => p.Name));
         var preferences = context.GalleryPreferences.EntityType;
         Assert.Equal("GalleryPreferences", preferences.GetTableName());
+        Assert.Equal("andril_hobbies", preferences.GetSchema());
         var owner = Assert.Single(preferences.FindPrimaryKey()!.Properties);
         Assert.Equal(nameof(GalleryPreferences.OwnerModuleProfileId), owner.GetColumnName());
         Assert.Equal("uuid", owner.GetColumnType());
@@ -359,7 +372,7 @@ public sealed class GalleryPersistenceTests
             await SeedAsync(connection);
             await using var writer = CreateContext(connection);
             await writer.Database.ExecuteSqlRawAsync(
-                """ALTER TABLE "GalleryPreferences" ADD CONSTRAINT ck_test_reject_cover CHECK ("CoverMediaId" IS NULL)""");
+                """ALTER TABLE andril_hobbies."GalleryPreferences" ADD CONSTRAINT ck_test_reject_cover CHECK ("CoverMediaId" IS NULL)""");
             var unrelated = await writer.GalleryMedia.SingleAsync(media => media.Id == ForeignOwner);
             var error = await Assert.ThrowsAsync<DbUpdateException>(() => Repository(writer).SetCoverAsync(Older, Owner));
             var postgres = Assert.IsType<PostgresException>(error.InnerException);
@@ -527,7 +540,7 @@ public sealed class GalleryPersistenceTests
             Assert.Empty(await context.GalleryPreferences.AsNoTracking().ToListAsync());
             Assert.Equal("Original title", (await repository.GetOwnedByIdAsync(Older, Owner))!.Title);
 
-            await context.Database.ExecuteSqlRawAsync("ALTER TABLE \"GalleryMedia\" RENAME TO gallery_media_unavailable");
+            await context.Database.ExecuteSqlRawAsync("ALTER TABLE andril_hobbies.\"GalleryMedia\" RENAME TO gallery_media_unavailable");
             var operations = new Func<Task>[]
             {
                 () => repository.GetOwnerGalleryAsync(Owner),
@@ -574,6 +587,7 @@ public sealed class GalleryPersistenceTests
     {
         var options = new DbContextOptionsBuilder<HobbiesGalleryDbContext>().UseNpgsql(connection, postgres =>
         {
+            HobbiesDatabaseOptions.ConfigureGalleryHistory(postgres);
             if (retrying)
                 postgres.EnableRetryOnFailure();
         });

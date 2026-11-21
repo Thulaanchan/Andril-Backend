@@ -11,8 +11,11 @@ namespace Andril.Persistence.Migrations.HobbiesGallery
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.EnsureSchema(name: "andril_hobbies");
+
             migrationBuilder.CreateTable(
                 name: "GalleryMedia",
+                schema: "andril_hobbies",
                 columns: table => new
                 {
                     Id = table.Column<Guid>(type: "uuid", nullable: false),
@@ -34,6 +37,7 @@ namespace Andril.Persistence.Migrations.HobbiesGallery
 
             migrationBuilder.CreateTable(
                 name: "GalleryPreferences",
+                schema: "andril_hobbies",
                 columns: table => new
                 {
                     OwnerModuleProfileId = table.Column<Guid>(type: "uuid", nullable: false),
@@ -47,6 +51,7 @@ namespace Andril.Persistence.Migrations.HobbiesGallery
             migrationBuilder.CreateIndex(
                 name: "IX_GalleryMedia_OwnerModuleProfileId_Module_IsDeleted_CreatedA~",
                 table: "GalleryMedia",
+                schema: "andril_hobbies",
                 columns: new[] { "OwnerModuleProfileId", "Module", "IsDeleted", "CreatedAtUtc" });
         }
 
@@ -54,10 +59,12 @@ namespace Andril.Persistence.Migrations.HobbiesGallery
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
-                name: "GalleryMedia");
+                name: "GalleryMedia",
+                schema: "andril_hobbies");
 
             migrationBuilder.DropTable(
-                name: "GalleryPreferences");
+                name: "GalleryPreferences",
+                schema: "andril_hobbies");
         }
     }
 }

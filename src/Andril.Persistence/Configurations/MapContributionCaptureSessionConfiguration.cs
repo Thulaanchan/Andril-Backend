@@ -17,7 +17,7 @@ public sealed class MapContributionCaptureSessionConfiguration
     {
         // Table and database-level validation constraints.
         builder.ToTable(
-            "map_contribution_capture_sessions",
+            "map_contribution_capture_sessions", HobbiesDatabaseOptions.Schema,
             table =>
             {
                 table.HasCheckConstraint(

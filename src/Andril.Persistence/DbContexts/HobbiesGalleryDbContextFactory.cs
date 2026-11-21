@@ -2,6 +2,7 @@ using System;
 using System.Data.Common;
 using System.Threading;
 using System.Threading.Tasks;
+using Andril.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Design;
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -14,7 +15,7 @@ public sealed class HobbiesGalleryDbContextFactory : IDesignTimeDbContextFactory
     {
         // Configure the provider for scaffolding and SQL generation without reading deployment settings.
         var options = new DbContextOptionsBuilder<HobbiesGalleryDbContext>()
-            .UseNpgsql("Host=127.0.0.1;Database=andril_model_only;Username=unused")
+            .UseNpgsql("Host=127.0.0.1;Database=andril_model_only;Username=unused", HobbiesDatabaseOptions.ConfigureGalleryHistory)
             .AddInterceptors(new OfflineConnectionGuard())
             .Options;
 

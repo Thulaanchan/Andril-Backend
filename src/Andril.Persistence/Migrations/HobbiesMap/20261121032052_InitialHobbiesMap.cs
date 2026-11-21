@@ -11,8 +11,11 @@ namespace Andril.Persistence.Migrations.HobbiesMap
         /// <inheritdoc />
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.EnsureSchema(name: "andril_hobbies");
+
             migrationBuilder.CreateTable(
                 name: "flight_point_ledger",
+                schema: "andril_hobbies",
                 columns: table => new
                 {
                     ledger_entry_id = table.Column<Guid>(type: "uuid", nullable: false),
@@ -51,12 +54,14 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         name: "fk_flight_point_ledger_reversed_entry",
                         column: x => x.reversed_entry_id,
                         principalTable: "flight_point_ledger",
+                        principalSchema: "andril_hobbies",
                         principalColumn: "ledger_entry_id",
                         onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.CreateTable(
                 name: "map_attractions",
+                schema: "andril_hobbies",
                 columns: table => new
                 {
                     attraction_id = table.Column<Guid>(type: "uuid", nullable: false),
@@ -75,6 +80,7 @@ namespace Andril.Persistence.Migrations.HobbiesMap
 
             migrationBuilder.CreateTable(
                 name: "map_contribution_capture_sessions",
+                schema: "andril_hobbies",
                 columns: table => new
                 {
                     session_id = table.Column<Guid>(type: "uuid", nullable: false),
@@ -94,6 +100,7 @@ namespace Andril.Persistence.Migrations.HobbiesMap
 
             migrationBuilder.CreateTable(
                 name: "map_contributions",
+                schema: "andril_hobbies",
                 columns: table => new
                 {
                     contribution_id = table.Column<Guid>(type: "uuid", nullable: false),
@@ -122,6 +129,7 @@ namespace Andril.Persistence.Migrations.HobbiesMap
             migrationBuilder.CreateIndex(
                 name: "ux_flight_point_ledger_reversed_entry",
                 table: "flight_point_ledger",
+                schema: "andril_hobbies",
                 column: "reversed_entry_id",
                 unique: true,
                 filter: "entry_type = 2");
@@ -129,6 +137,7 @@ namespace Andril.Persistence.Migrations.HobbiesMap
             migrationBuilder.CreateIndex(
                 name: "ix_map_capture_owner_attraction",
                 table: "map_contribution_capture_sessions",
+                schema: "andril_hobbies",
                 columns: new[] { "owner_hobbies_module_profile_id", "attraction_id" });
         }
 
@@ -136,16 +145,20 @@ namespace Andril.Persistence.Migrations.HobbiesMap
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
-                name: "flight_point_ledger");
+                name: "flight_point_ledger",
+                schema: "andril_hobbies");
 
             migrationBuilder.DropTable(
-                name: "map_attractions");
+                name: "map_attractions",
+                schema: "andril_hobbies");
 
             migrationBuilder.DropTable(
-                name: "map_contribution_capture_sessions");
+                name: "map_contribution_capture_sessions",
+                schema: "andril_hobbies");
 
             migrationBuilder.DropTable(
-                name: "map_contributions");
+                name: "map_contributions",
+                schema: "andril_hobbies");
         }
     }
 }

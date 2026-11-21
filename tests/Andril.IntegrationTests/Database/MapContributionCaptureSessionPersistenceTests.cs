@@ -463,7 +463,7 @@ public sealed class MapContributionCaptureSessionPersistenceTests
                 await Assert.ThrowsAsync<PostgresException>(
                     () => context.Database
                         .ExecuteSqlInterpolatedAsync(
-                            $"UPDATE map_contribution_capture_sessions SET owner_hobbies_module_profile_id = {emptyId} WHERE session_id = {SessionId}"));
+                            $"UPDATE andril_hobbies.map_contribution_capture_sessions SET owner_hobbies_module_profile_id = {emptyId} WHERE session_id = {SessionId}"));
 
             Assert.Equal(
                 PostgresErrorCodes.CheckViolation,
@@ -473,7 +473,7 @@ public sealed class MapContributionCaptureSessionPersistenceTests
                 await Assert.ThrowsAsync<PostgresException>(
                     () => context.Database
                         .ExecuteSqlInterpolatedAsync(
-                            $"UPDATE map_contribution_capture_sessions SET attraction_id = {emptyId} WHERE session_id = {SessionId}"));
+                            $"UPDATE andril_hobbies.map_contribution_capture_sessions SET attraction_id = {emptyId} WHERE session_id = {SessionId}"));
 
             Assert.Equal(
                 PostgresErrorCodes.CheckViolation,
@@ -485,7 +485,7 @@ public sealed class MapContributionCaptureSessionPersistenceTests
                 await Assert.ThrowsAsync<PostgresException>(
                     () => context.Database
                         .ExecuteSqlInterpolatedAsync(
-                            $"UPDATE map_contribution_capture_sessions SET completed_at_utc = {invalidTime} WHERE session_id = {SessionId}"));
+                            $"UPDATE andril_hobbies.map_contribution_capture_sessions SET completed_at_utc = {invalidTime} WHERE session_id = {SessionId}"));
 
             Assert.Equal(
                 PostgresErrorCodes.CheckViolation,

@@ -55,7 +55,7 @@ public sealed class MapAttractionPersistenceTests
         Assert.Same(probe.Stop, error);
         Assert.NotNull(probe.CommandText);
         Assert.Matches(
-            @"^SELECT m\.attraction_id, m\.name, m\.latitude, m\.longitude\s+FROM map_attractions AS m\s+ORDER BY m\.attraction_id\s+LIMIT @\w+ OFFSET @\w+\s*$",
+            @"^SELECT m\.attraction_id, m\.name, m\.latitude, m\.longitude\s+FROM andril_hobbies\.map_attractions AS m\s+ORDER BY m\.attraction_id\s+LIMIT @\w+ OFFSET @\w+\s*$",
             probe.CommandText);
         Assert.Equal(new[] { 17, 23 }, probe.ParameterValues!.Order());
         Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
@@ -360,7 +360,7 @@ public sealed class MapAttractionPersistenceTests
         WithDatabaseAsync(async connection =>
         {
             await using var context = CreateContext(connection);
-            await context.Database.ExecuteSqlRawAsync("DROP TABLE map_attractions");
+            await context.Database.ExecuteSqlRawAsync("DROP TABLE andril_hobbies.map_attractions");
             var repository = new MapAttractionRepository<HobbiesMapDbContext>(context);
             var attraction = CreateAttraction();
 
@@ -400,7 +400,7 @@ public sealed class MapAttractionPersistenceTests
         NpgsqlConnection connection, Guid? id, string? name, double? latitude, double? longitude)
     {
         await using var command = new NpgsqlCommand(
-            "INSERT INTO map_attractions (attraction_id, name, latitude, longitude) VALUES ($1, $2, $3, $4)",
+            "INSERT INTO andril_hobbies.map_attractions (attraction_id, name, latitude, longitude) VALUES ($1, $2, $3, $4)",
             connection);
         command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Uuid, Value = (object?)id ?? DBNull.Value });
         command.Parameters.Add(new NpgsqlParameter { NpgsqlDbType = NpgsqlDbType.Text, Value = (object?)name ?? DBNull.Value });

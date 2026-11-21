@@ -51,7 +51,7 @@ public sealed class MapContributionPersistenceTests
         // The requested owner must constrain the database read even when the contribution
         // is already tracked under a different owner.
         var predicate = Regex.Match(probe.Sql,
-            @"\bFROM map_contributions AS (?<alias>\w+)\s+WHERE \k<alias>\.contribution_id = @(?<id>\w+) AND \k<alias>\.owner_hobbies_module_profile_id = @(?<owner>\w+)\s+LIMIT 2\s*$");
+            @"\bFROM andril_hobbies\.map_contributions AS (?<alias>\w+)\s+WHERE \k<alias>\.contribution_id = @(?<id>\w+) AND \k<alias>\.owner_hobbies_module_profile_id = @(?<owner>\w+)\s+LIMIT 2\s*$");
         Assert.True(predicate.Success, probe.Sql);
         Assert.Equal(Id, probe.Parameters[predicate.Groups["id"].Value]);
         Assert.Equal(Other, probe.Parameters[predicate.Groups["owner"].Value]);
@@ -293,7 +293,7 @@ public sealed class MapContributionPersistenceTests
             await database.OpenAsync();
             await using var insert = new NpgsqlCommand(
                 """
-                INSERT INTO map_contributions (contribution_id, owner_hobbies_module_profile_id, attraction_id,
+                INSERT INTO andril_hobbies.map_contributions (contribution_id, owner_hobbies_module_profile_id, attraction_id,
                     capture_session_id, private_photo_storage_object_key, description, location_evidence,
                     submitted_at_utc, moderation_status)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
@@ -355,7 +355,7 @@ public sealed class MapContributionPersistenceTests
             await repository.AddAsync(original);
 
             Task<int> SetStatusAsync(int status) => context.Database.ExecuteSqlInterpolatedAsync(
-                $"UPDATE map_contributions SET moderation_status = {status} WHERE contribution_id = {Id}");
+                $"UPDATE andril_hobbies.map_contributions SET moderation_status = {status} WHERE contribution_id = {Id}");
 
             Assert.Equal(1, await SetStatusAsync(1));
             foreach (var unsupported in new[] { 0, -1, 2, 42, int.MinValue, int.MaxValue })
@@ -418,7 +418,7 @@ public sealed class MapContributionPersistenceTests
         WithDatabaseAsync(async connection =>
         {
             await using var context = CreateContext(connection);
-            await context.Database.ExecuteSqlRawAsync("DROP TABLE map_contributions");
+            await context.Database.ExecuteSqlRawAsync("DROP TABLE andril_hobbies.map_contributions");
             var repository = Repository(context);
             var contribution = CreateContribution();
             var write = await Assert.ThrowsAsync<DbUpdateException>(() => repository.AddAsync(contribution));
