@@ -1,11 +1,12 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Restore', 'Build', 'Offline', 'Relational', 'Secrets', 'Summarize')]
+    [ValidateSet('Restore', 'Build', 'Offline', 'ProcessorRestore', 'Processor', 'Relational', 'Secrets', 'Summarize')]
     [string]$Phase,
     [string]$OutputDirectory,
     [string]$ServiceId,
-    [switch]$IntegrationOnly
+    [switch]$IntegrationOnly,
+    [string]$ProcessorLicenseFile
 )
 
 Set-StrictMode -Version Latest
@@ -15,6 +16,7 @@ $PSNativeCommandUseErrorActionPreference = $false
 
 $repo = (Resolve-Path "$PSScriptRoot/../..").Path
 $integration = 'tests/Andril.IntegrationTests/Andril.IntegrationTests.csproj'
+$processorTests = 'tests/Andril.ProfilePhotoProcessor.Tests/Andril.ProfilePhotoProcessor.Tests.csproj'
 $buildTarget = if ($IntegrationOnly) { $integration } else { 'Andril.slnx' }
 if (!$OutputDirectory) {
     if ($env:QA_NAME -cnotin 'member02-offline', 'member02-postgres', 'member02-secrets') { throw 'Invalid QA report directory.' }
@@ -31,7 +33,7 @@ function Add-Detail([string]$Line) {
     Write-Host $Line
 }
 
-function Invoke-CheckedDotnet([string[]]$Arguments, [string]$Gate) {
+function Invoke-CheckedDotnet([string[]]$Arguments, [string]$Gate, [switch]$Audit) {
     $lines = @(& dotnet @Arguments 2>&1 | ForEach-Object { $_.ToString() })
     $code = $LASTEXITCODE
     $diagnostics = @(
@@ -61,22 +63,22 @@ function Invoke-CheckedDotnet([string[]]$Arguments, [string]$Gate) {
     Add-Detail "- $Gate $status (exit $code, $warnings distinct warnings, $errors distinct errors)."
     @("Severity and ID | Project | File and line | Advisory evidence"; $diagnostics) |
         Set-Content -LiteralPath (Join-Path $out "$Gate.txt") -Encoding utf8
-    if ($code -ne 0 -or ($Gate -eq 'NuGet audit' -and
+    if ($code -ne 0 -or ($Audit -and
         @($diagnostics.Where({ $_ -match ' (NU1900|NU1903|NU1904|NU1905) \|' })).Count)) {
         throw "$Gate failed. See the sanitized diagnostics."
     }
 }
 
-function Invoke-QaRestore {
-    $settings = @(& git ls-files '*.csproj' '*.props' '*.targets' '*.config')
+function Invoke-QaRestore([string]$Project, [string]$Gate, [string]$PackageCache) {
+    $settings = @(& git ls-files --cached --others --exclude-standard -- '*.csproj' '*.props' '*.targets' '*.config')
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect repository audit settings.' }
     $bypass = Select-String -LiteralPath $settings -Pattern 'NuGetAuditSuppress|<NuGetAudit>\s*false|<(NoWarn|WarningsNotAsErrors)>[^<]*NU190[0345]|RestoreAuditSources'
     if ($bypass) { throw 'Review repository settings that override the required NuGet audit.' }
     # Separate from the safe report directory. This package cache lives until the job ends.
-    $packages = Join-Path $env:RUNNER_TEMP 'member02-nuget-packages'
-    Invoke-CheckedDotnet @('restore', $buildTarget, '--configfile', "$PSScriptRoot/NuGet.Member02.config",
+    $packages = Join-Path $env:RUNNER_TEMP $PackageCache
+    Invoke-CheckedDotnet @('restore', $Project, '--configfile', "$PSScriptRoot/NuGet.Member02.config",
         '--packages', $packages, '--no-http-cache', '--force', '-p:NuGetAudit=true', '-p:NuGetAuditMode=all',
-        '-p:NuGetAuditLevel=low', '-warnAsError:NU1900,NU1903,NU1904,NU1905', '-clp:NoSummary') 'NuGet audit'
+        '-p:NuGetAuditLevel=low', '-warnAsError:NU1900,NU1903,NU1904,NU1905', '-clp:NoSummary') $Gate -Audit
 }
 
 function Invoke-QaTests([string]$Suite, [string]$Project, $Expected, [string]$Mode, [switch]$Coverage, [string]$Filter) {
@@ -121,7 +123,7 @@ function Invoke-QaTests([string]$Suite, [string]$Project, $Expected, [string]$Mo
         Add-Detail "- $Suite failure diagnostics unavailable. Safe report: $Suite-failures.json (suite report artifact)."
     }
     if ($exitCode -ne 0) { $errors.Add("dotnet test exited $exitCode") }
-    $coverageResult = 'collected in offline job'
+    $coverageResult = if ($Mode -eq 'Relational') { 'collected in offline job' } else { 'not requested' }
     if ($Coverage) {
         try {
             # VSTest may retain the original and a byte-identical TRX attachment copy.
@@ -166,6 +168,57 @@ function Invoke-OfflineQa($Inventory) {
     )
     Add-Detail "- Offline skip inventory covers $($Inventory.requiredM2.Count) M2 and $($Inventory.offlineOnlySkips.Count) other database methods."
     if ($failed.Count) { throw "Offline verification failed for $($failed -join ', ')." }
+}
+
+function Invoke-ProcessorQa {
+    $secret = $env:SIXLABORS_LICENSE_KEY
+    Remove-Item Env:SIXLABORS_LICENSE_KEY -ErrorAction SilentlyContinue
+    $license = $ProcessorLicenseFile
+    $materializedLicense = $null
+    $stage = 'license setup'
+    try {
+        if ($env:GITHUB_ACTIONS -eq 'true' -and $license) { throw 'CI requires the step secret.' }
+        if ($license) {
+            $license = (Get-Item -LiteralPath $license -ErrorAction Stop).FullName
+            if (!(Test-Path -LiteralPath $license -PathType Leaf)) { throw 'External license unavailable.' }
+            Assert-QaReportSeparation $repo $license
+            Assert-QaReportSeparation $out $license
+        } else {
+            if ([string]::IsNullOrWhiteSpace($secret) -or !$IsLinux) { throw 'Linux and a license secret are required.' }
+            Assert-QaReportSeparation $repo $raw
+            $ownerDirectory = [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute
+            $null = [IO.Directory]::CreateDirectory($raw, $ownerDirectory)
+            $license = Join-Path $raw 'sixlabors.lic'
+            $materializedLicense = $license
+            $fileOptions = [IO.FileStreamOptions]::new()
+            $fileOptions.Mode = 'CreateNew'
+            $fileOptions.Access = 'Write'
+            $fileOptions.UnixCreateMode = [IO.UnixFileMode]::UserRead -bor [IO.UnixFileMode]::UserWrite
+            $writer = [IO.StreamWriter]::new($license, [Text.UTF8Encoding]::new($false), $fileOptions)
+            try { $writer.Write($secret) } finally { $writer.Dispose() }
+        }
+        $secret = $null
+
+        $stage = 'licensed Release build'
+        try {
+            & dotnet build $processorTests --configuration Release --no-restore --no-incremental "-p:SixLaborsLicenseFile=$license" `
+                '-p:RunAnalyzersDuringBuild=true' '-clp:NoSummary' *> $null
+            if ($LASTEXITCODE -ne 0) { throw 'Build or license validation failed.' }
+        } finally {
+            if ($materializedLicense) { Remove-Item -LiteralPath $materializedLicense -Force }
+        }
+        Add-Detail '- Photo processor licensed Release build passed.'
+
+        $stage = 'required tests'
+        if (!(Invoke-QaTests 'photo-processor' $processorTests (Get-QaExpectedCases @()) Offline)) {
+            throw 'Test verification failed.'
+        }
+    } catch {
+        Add-Detail "- Photo processor failed during $stage."
+        throw "Photo processor QA failed during $stage. See the safe offline summary."
+    } finally {
+        $secret = $null
+    }
 }
 
 function Invoke-QaPsql([string]$Database, [string]$Sql) {
@@ -301,11 +354,13 @@ try {
             $sdk = & dotnet --version
             if ($LASTEXITCODE -ne 0) { throw 'Could not select the repository .NET SDK.' }
             Add-Detail "- SDK $sdk, net10.0, $([Runtime.InteropServices.RuntimeInformation]::OSDescription)."
-            Invoke-QaRestore
+            Invoke-QaRestore $buildTarget 'NuGet audit' 'member02-nuget-packages'
         }
         'Build' { Invoke-CheckedDotnet @('build', $buildTarget, '--configuration', 'Release', '--no-restore',
             '-p:RunAnalyzersDuringBuild=true', '-clp:NoSummary') 'Release build' }
         'Offline' { Invoke-OfflineQa $inventory }
+        'ProcessorRestore' { Invoke-QaRestore $processorTests 'Photo processor NuGet audit' 'member02-photo-nuget-packages' }
+        'Processor' { Invoke-ProcessorQa }
         'Relational' { Invoke-RelationalQa $inventory }
         'Secrets' { Invoke-GitleaksQa }
         'Summarize' {
