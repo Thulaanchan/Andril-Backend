@@ -1,7 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using System.Linq;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.Hobbies.Map.Contributions;
@@ -31,6 +34,32 @@ public sealed class MapContributionPersistenceTests
     private static readonly DateTimeOffset SubmittedAt = new(2026, 11, 17, 10, 0, 0, TimeSpan.FromHours(5.5));
     private static readonly MapContributionLocationEvidence Evidence =
         new(7.1234, 80.5678, 7.1235, 80.5679, 12.5, SubmittedAt.AddSeconds(-30), SubmittedAt.AddSeconds(-5));
+
+    [Fact]
+    public async Task FindOwned_BindsRequestedOwnerAndContributionInTheDatabasePredicateOffline()
+    {
+        var probe = new OfflineOwnerQueryProbe();
+        await using var context = CreateContext(interceptor: probe);
+        var storedContribution = CreateContribution();
+        context.Attach(storedContribution);
+
+        var failure = await Assert.ThrowsAsync<OfflineReadStopped>(
+            () => Repository(context).FindOwnedAsync(storedContribution.ContributionId, Other));
+
+        Assert.Same(probe.Stop, failure);
+        Assert.NotNull(probe.Sql);
+        // The requested owner must constrain the database read even when the contribution
+        // is already tracked under a different owner.
+        var predicate = Regex.Match(probe.Sql,
+            @"\bFROM map_contributions AS (?<alias>\w+)\s+WHERE \k<alias>\.contribution_id = @(?<id>\w+) AND \k<alias>\.owner_hobbies_module_profile_id = @(?<owner>\w+)\s+LIMIT 2\s*$");
+        Assert.True(predicate.Success, probe.Sql);
+        Assert.Equal(Id, probe.Parameters[predicate.Groups["id"].Value]);
+        Assert.Equal(Other, probe.Parameters[predicate.Groups["owner"].Value]);
+        var tracked = Assert.Single(context.ChangeTracker.Entries());
+        Assert.Same(storedContribution, tracked.Entity);
+        Assert.Equal(EntityState.Unchanged, tracked.State);
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
 
     [Fact]
     public void Model_RegistersContributionWithRequiredScalarMappingsAndNamedChecks()
@@ -444,6 +473,32 @@ public sealed class MapContributionPersistenceTests
         if (interceptor is not null)
             options.AddInterceptors(interceptor);
         return new HobbiesMapDbContext(options.Options);
+    }
+
+    private sealed class OfflineReadStopped : Exception;
+
+    private sealed class OfflineOwnerQueryProbe : DbCommandInterceptor, IDbConnectionInterceptor
+    {
+        public OfflineReadStopped Stop { get; } = new();
+        public string? Sql { get; private set; }
+        public IReadOnlyDictionary<string, object?> Parameters { get; private set; } =
+            new Dictionary<string, object?>();
+
+        public ValueTask<InterceptionResult> ConnectionOpeningAsync(
+            DbConnection connection, ConnectionEventData eventData, InterceptionResult result,
+            CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(InterceptionResult.Suppress());
+
+        public override DbCommand CommandInitialized(CommandEndEventData eventData, DbCommand result)
+        {
+            using (result)
+            {
+                Sql = result.CommandText;
+                Parameters = result.Parameters.Cast<DbParameter>()
+                    .ToDictionary(parameter => parameter.ParameterName.TrimStart('@'), parameter => parameter.Value);
+                throw Stop;
+            }
+        }
     }
 
     private sealed class OfflineSaveStopped : Exception;
