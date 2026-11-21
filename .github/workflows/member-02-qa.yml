@@ -38,6 +38,12 @@ jobs:
         run: ./scripts/ci/Test-VerifyMember02Results.ps1
       - name: Offline suites and coverage
         run: ./scripts/ci/member-02-qa.ps1 Offline
+      - name: Audited standalone photo processor restore
+        run: ./scripts/ci/member-02-qa.ps1 ProcessorRestore
+      - name: Licensed photo processor build and required tests
+        env:
+          SIXLABORS_LICENSE_KEY: ${{ secrets.SIXLABORS_LICENSE_KEY }}
+        run: ./scripts/ci/member-02-qa.ps1 Processor
       - name: Publish offline details
         if: always()
         id: details

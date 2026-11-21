@@ -81,6 +81,8 @@
     "Andril.IntegrationTests.Database.MapContributionPersistenceTests.Database_AcceptsPendingReviewAndRejectsUndefinedModerationIntegers",
     "Andril.IntegrationTests.Database.MapContributionPersistenceTests.Add_PreservesUnrelatedEntriesAndRejectsAlreadyTrackedInput",
     "Andril.IntegrationTests.Database.MapContributionPersistenceTests.Repository_PreCancelledOperationsThrowWithoutWriting",
-    "Andril.IntegrationTests.Database.MapContributionPersistenceTests.Repository_PropagatesWriteAndReadFailures"
+    "Andril.IntegrationTests.Database.MapContributionPersistenceTests.Repository_PropagatesWriteAndReadFailures",
+    "Andril.IntegrationTests.Database.GalleryPersistenceTests.Migration_AppliesAndRollsBackOnlyGalleryTables",
+    "Andril.IntegrationTests.Database.HobbiesMapMigrationTests.Migration_AppliesAndRollsBackWithoutTouchingUnrelatedData"
   ]
 }

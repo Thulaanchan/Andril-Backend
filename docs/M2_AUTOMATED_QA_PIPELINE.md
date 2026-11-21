@@ -127,3 +127,19 @@ Local diagnostic validation passed: PowerShell syntax checks on all three script
 ## First execution
 
 After owner review and M6 coordination, publish the approved QA commit on Member-2 and open its automatically triggered run. Verify the SHA, each required job, the NuGet audit, four offline Cobertura reports, all manifest-listed M2 passes including the restricted runtime case, and the four artifact groups. Record the actual outcomes before proposing repository setting changes. Once manual dispatch is registered, select Member-2 when dispatching.
+
+## Standalone profile photo processor QA
+
+The offline job requires a separate audited restore, licensed Release build and unfiltered run of the standalone processor tests. Only `Andril.ProfilePhotoProcessor` directly references ImageSharp 4.1.3. The test project uses the transitive reference. The production API still resolves the unavailable inspector.
+
+1. The owner configured the `SIXLABORS_LICENSE_KEY` Actions repository secret. Keep its complete licensed value current and valid for `Andril.ProfilePhotoProcessor`. Only the licensed build and test step receives the secret.
+2. `ProcessorRestore` restores the standalone graph with the same audited NuGet configuration and flags as the solution, with a separate job-local package cache. It does not receive the license.
+3. `Processor` removes the secret from its environment before invoking any child process. On Linux it writes the value to a temporary mode-0600 file under a mode-0700 directory outside the checkout and artifact roots. The non-incremental Release build receives only the path through `SixLaborsLicenseFile`. Build output is discarded. The file is removed in a `finally` block before tests run, with outer cleanup for the private directory. Forced runner termination relies on runner teardown.
+4. Tests run without build, restore or a filter. The existing verifier requires a nonempty, valid TRX and zero unsuccessful or skipped cases. Only sanitized test reports and safe summaries are published under the existing retention policy. A missing secret, license error, build failure or verification failure fails the offline job.
+5. Local validation can use `ProcessorRestore` with a private `RUNNER_TEMP` and `Processor -ProcessorLicenseFile <external-path>`. The script never copies or removes that local license. GitHub runs require the step secret and reject the local override.
+
+### Image processing and release boundaries
+
+The standalone normalizer handles supported still 8-bit RGB and grayscale JPEG/PNG, including alpha in PNG. It interprets untagged samples as standard sRGB, accepts consistent sRGB declarations, and rejects embedded ICC, CMYK, conflicting color declarations and unsupported bit depths. It composites over white before resizing, applies EXIF orientation, and writes a fresh 8-bit JPEG at quality 85. The JPEG has no source metadata or embedded profile and assumes standard sRGB interpretation.
+
+PNG framing and checksums and JPEG marker/scan framing are checked before decoding. ImageSharp performs pixel decoding in a restricted configuration with strict segment handling where supported. For JPEG, that setting is not a complete entropy validator, and the pinned reader can stop a damaged scan early. The normalizer rejects detected incomplete output, including non-opaque JPEG pixels, but parser regression tests do not prove rejection of all malformed codestreams. The two-slot gate and allocator limits are process-local controls. Cancellation is cooperative. Production admission, hard deadlines, OS-level worker isolation, and deployment validation remain separate prerequisites.
