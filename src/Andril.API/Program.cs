@@ -6,6 +6,7 @@ builder.Services.AddProblemDetails();
 builder.Services.AddSupabaseAuthentication(builder.Configuration);
 builder.Services.AddAccounts(builder.Configuration);
 builder.Services.AddSupabaseIdentityVerification(builder.Configuration);
+builder.Services.AddModerationReportAuthorization();
 
 var app = builder.Build();
 app.UseExceptionHandler();
