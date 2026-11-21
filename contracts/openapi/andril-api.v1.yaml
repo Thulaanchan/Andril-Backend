@@ -291,7 +291,7 @@ components:
           type: string
   responses:
     PrivatePhotoStatus:
-      description: Private validation state; automated decisions are not perfectly accurate.
+      description: Owner-scoped photo storage state without object keys, hashes, or media URLs.
       headers:
         Cache-Control:
           schema: { type: string, enum: [no-store] }
@@ -300,11 +300,12 @@ components:
           schema:
             type: object
             additionalProperties: false
-            required: [uploadId, state, reason]
+            required: [uploadId, state, reason, isCurrent]
             properties:
               uploadId: { type: string, format: uuid }
-              state: { type: string, enum: [PendingValidation, PendingReview, Rejected, Approved] }
-              reason: { type: string, enum: [None, InvalidImage, NoFace, MultipleFaces, Blurred, Pixelated, Censored, Obstructed, HeavyFilter, ReviewRequired] }
+              state: { type: string, enum: [PendingStorage, Stored, Failed] }
+              reason: { type: string, enum: [None, StorageFailure, UploadAbandoned, IntegrityFailure] }
+              isCurrent: { type: boolean }
     PrivateProfileOk:
       description: Owner-only private identity root; no completion approved.
       headers:
@@ -503,58 +504,90 @@ components:
         and top-level email_confirmed_at through the configured Auth endpoint. This
         does not establish onboarding completion, module eligibility or instant revocation.
 paths:
-  /api/v1/account/profiles/{module}/photos/{uploadId}:
+  /api/v1/account/profiles/{module}/photos/{photoId}:
     parameters:
-      - name: module
+      - { name: module, in: path, required: true, schema: { type: string, enum: [learning, hobbies, social] } }
+      - name: photoId
         in: path
         required: true
-        schema: { type: string, enum: [learning, hobbies, social] }
-      - name: uploadId
-        in: path
-        required: true
-        description: Caller-generated nonempty UUID idempotency key on POST; persisted upload ID on GET.
+        description: Client request UUID on POST. Server upload UUID on GET.
         schema: { type: string, format: uuid }
     post:
-      operationId: validatePrivateProfilePhoto
-      summary: Private photo validation boundary; production infrastructure unavailable
+      operationId: putPrivateProfilePhoto
+      summary: Upload or replace a private profile photo
       description: >-
-        Currently returns 503 after owner authorization, before reading bytes. Requires
-        approved safe decoder, size policy, face-quality validator and durable private
-        store/review queue. No external provider or thresholds are configured. Future
-        enabled workflow accepts bytes only, never client URLs or approval claims.
-        Reusing a key for different content returns 409. No public media URL is returned.
+        Requires authenticated ownership and current module eligibility. Raw input is limited to
+        5242880 bytes. Phase 02B will validate still JPEG or PNG, enforce dimensions and
+        emit a metadata-stripped JPEG. Authorized operations return 503 in Phase 02A before
+        reading the body or writing to Storage. When available, reuse the client request UUID
+        for identical bytes. The server assigns a distinct upload UUID. Reusing the request UUID
+        with different bytes or submitting an upload while another is active returns 409.
+        The previous photo stays current until replacement finalization commits.
       requestBody:
         required: true
         content:
           application/octet-stream:
-            schema: { type: string, format: binary }
+            schema: { type: string, format: binary, maxLength: 5242880 }
       responses:
-        '200':
-          $ref: '#/components/responses/PrivatePhotoStatus'
-        '400': { description: Invalid bytes or request ID; no-store ProblemDetails. }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403': { description: Owner or module prerequisites denied; no-store. }
-        '404': { description: Owned profile missing; no-store. }
-        '409': { description: Idempotency conflict; no-store. }
-        '415': { description: Use application/octet-stream; no-store. }
-        '429':
-          $ref: '#/components/responses/AccountIdentityRateLimited'
-        '503': { description: Photo infrastructure unavailable; no-store ProblemDetails. }
+        '200': { $ref: '#/components/responses/PrivatePhotoStatus' }
+        '400': { description: Invalid request or empty or invalid image. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Owner or module prerequisites denied. }
+        '404': { description: Owned profile missing. }
+        '409': { description: Scoped request conflict or active upload. }
+        '413': { description: Upload exceeds 5242880 bytes. }
+        '415': { description: Use application/octet-stream. }
+        '429': { $ref: '#/components/responses/AccountIdentityRateLimited' }
+        '503': { description: Photo processing unavailable in Phase 02A. Safe no-store ProblemDetails. }
     get:
-      operationId: getPrivatePhotoValidationStatus
-      summary: Owner-only scoped photo status; no media bytes or URLs
+      operationId: getPrivatePhotoStatus
+      summary: Read status of a scoped upload without media or URLs
+      responses:
+        '200': { $ref: '#/components/responses/PrivatePhotoStatus' }
+        '400': { description: Empty upload UUID. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Owner or module prerequisites denied. }
+        '404': { description: Profile or scoped upload missing. }
+        '429': { $ref: '#/components/responses/AccountIdentityRateLimited' }
+        '503': { description: Photo status unavailable in Phase 02A. Safe no-store ProblemDetails. }
+  /api/v1/account/profiles/{module}/photos/current:
+    parameters:
+      - { name: module, in: path, required: true, schema: { type: string, enum: [learning, hobbies, social] } }
+    get:
+      operationId: getCurrentPrivatePhotoStatus
+      summary: Read the owner's current stored photo status
+      responses:
+        '200': { $ref: '#/components/responses/PrivatePhotoStatus' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Owner or module prerequisites denied. }
+        '404': { description: No current stored photo for the owned profile. }
+        '429': { $ref: '#/components/responses/AccountIdentityRateLimited' }
+        '503': { description: Photo status unavailable in Phase 02A. Safe no-store ProblemDetails. }
+  /api/v1/account/profiles/{module}/photos/{uploadId}/content:
+    parameters:
+      - { name: module, in: path, required: true, schema: { type: string, enum: [learning, hobbies, social] } }
+      - { name: uploadId, in: path, required: true, schema: { type: string, format: uuid } }
+    get:
+      operationId: getCurrentPrivatePhotoContent
+      summary: Read the owner's current stored photo as a private JPEG
+      description: Pending, failed, superseded and out-of-scope content is unavailable.
       responses:
         '200':
-          $ref: '#/components/responses/PrivatePhotoStatus'
-        '400': { description: Invalid UUID; no-store. }
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '403': { description: Owner or module prerequisites denied; no-store. }
-        '404': { description: Profile or scoped upload missing; no-store. }
-        '429':
-          $ref: '#/components/responses/AccountIdentityRateLimited'
-        '503': { description: Private photo store unavailable; no-store ProblemDetails. }
+          description: Verified current JPEG, at most 5242880 bytes.
+          headers:
+            Cache-Control:
+              schema: { type: string, enum: ['private, no-store'] }
+            X-Content-Type-Options:
+              schema: { type: string, enum: [nosniff] }
+          content:
+            image/jpeg:
+              schema: { type: string, format: binary }
+        '400': { description: Empty upload UUID. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { description: Owner or module prerequisites denied. }
+        '404': { description: No current stored content for this scoped upload. }
+        '429': { $ref: '#/components/responses/AccountIdentityRateLimited' }
+        '503': { description: Photo content unavailable in Phase 02A. Safe no-store ProblemDetails. }
   /api/v1/account/profiles/{module}:
     put:
       operationId: updatePrivateProfileDraft

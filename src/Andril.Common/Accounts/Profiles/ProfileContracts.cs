@@ -14,6 +14,9 @@ public sealed record PrivateProfileDto(Guid ProfileId, string Module, DateTimeOf
 
 public interface IPrivateProfileRepository
 {
+    Task<T> WithAuthorizedProfileAsync<T>(Guid accountId, string module, Action<StarterModuleState> validate,
+        Func<PrivateModuleProfile, Task<T>> action, CancellationToken cancellationToken) => throw new PhotoDependencyException();
+
     // Reads and creation validate authoritative prerequisites inside the same transaction.
     Task<PrivateModuleProfile?> ReadAsync(Guid accountId, string module,
         Action<StarterModuleState> validate, CancellationToken cancellationToken = default);
@@ -25,6 +28,8 @@ public interface IPrivateProfileRepository
 
 public interface IPrivateProfileService
 {
+    Task<T> WithAuthorizedProfileAsync<T>(string module, Func<PrivateProfileDto, Task<T>> action,
+        CancellationToken cancellationToken) => throw new PhotoDependencyException();
     Task<PrivateProfileDto> GetAsync(string module, CancellationToken cancellationToken = default);
     Task<PrivateProfileDto> CreateAsync(string module, CancellationToken cancellationToken = default);
     Task<PrivateProfileDto> UpdateAsync(string module, ProfileEdit edit, CancellationToken cancellationToken = default) => throw new ProfileContractPendingException();

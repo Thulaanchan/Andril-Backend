@@ -1,5 +1,5 @@
-
 using Andril.Common.Accounts.Profiles;
+using Andril.Common.DTOs;
 using Andril.Common.Policies;
 using Xunit;
 
@@ -10,106 +10,41 @@ public sealed class ModuleProfilePhotoPolicyTests
     [Theory]
     [InlineData("learning")]
     [InlineData("hobbies")]
-    public void LearningAndHobbies_DoNotRequirePhoto(
-        string module)
+    public void OptionalModulesNeedNoPhoto(string module)
     {
-        Assert.False(
-            ModuleProfilePhotoPolicy.RequiresApprovedPhoto(module));
-
-        Assert.True(
-            ModuleProfilePhotoPolicy.MeetsPhotoRequirement(
-                module, null));
+        Assert.False(ModuleProfilePhotoPolicy.RequiresStoredPhoto(module));
+        Assert.True(ModuleProfilePhotoPolicy.MeetsPhotoRequirement(new(Guid.NewGuid(), module), null));
     }
 
     [Fact]
-    public void Social_RequiresApprovedPhoto()
+    public void SocialRequiresCurrentStoredEvidenceForTheExactProfile()
     {
-        Assert.True(
-            ModuleProfilePhotoPolicy.RequiresApprovedPhoto(
-                "social"));
-    }
-
-    [Fact]
-    public void Social_WithoutPhoto_DoesNotMeetRequirement()
-    {
-        Assert.False(
-            ModuleProfilePhotoPolicy.MeetsPhotoRequirement(
-                "social", null));
+        var scope = new PhotoScope(Guid.NewGuid(), "social");
+        var photo = new StoredProfilePhoto(new(scope, Guid.NewGuid()), PhotoState.Stored, true,
+            new string('a', 64), "image/jpeg", 1, 300, 300);
+        Assert.True(ModuleProfilePhotoPolicy.RequiresStoredPhoto(scope.Module));
+        Assert.True(ModuleProfilePhotoPolicy.MeetsPhotoRequirement(scope, photo));
+        Assert.False(ModuleProfilePhotoPolicy.MeetsPhotoRequirement(scope, null));
+        Assert.False(ModuleProfilePhotoPolicy.MeetsPhotoRequirement(scope, photo with { State = PhotoState.PendingStorage }));
+        Assert.False(ModuleProfilePhotoPolicy.MeetsPhotoRequirement(scope, photo with { State = PhotoState.Failed }));
+        Assert.False(ModuleProfilePhotoPolicy.MeetsPhotoRequirement(scope, photo with { IsCurrent = false }));
+        Assert.False(ModuleProfilePhotoPolicy.MeetsPhotoRequirement(scope, photo with { Address = new(scope, Guid.Empty) }));
+        Assert.False(ModuleProfilePhotoPolicy.MeetsPhotoRequirement(scope, photo with { Address = new(new(Guid.NewGuid(), "social"), Guid.NewGuid()) }));
+        Assert.False(ModuleProfilePhotoPolicy.MeetsPhotoRequirement(scope, photo with { Address = new(scope with { Module = "hobbies" }, Guid.NewGuid()) }));
     }
 
     [Theory]
-    [InlineData(PhotoState.PendingValidation, PhotoReason.None)]
-    [InlineData(PhotoState.PendingReview, PhotoReason.ReviewRequired)]
-    [InlineData(PhotoState.Rejected, PhotoReason.NoFace)]
-    [InlineData(PhotoState.Rejected, PhotoReason.Blurred)]
-    [InlineData(PhotoState.Rejected, PhotoReason.MultipleFaces)]
-    [InlineData(PhotoState.Approved, PhotoReason.ReviewRequired)]
-    public void Social_UnapprovedOrInvalidPhoto_DoesNotMeetRequirement(
-        PhotoState state,
-        PhotoReason reason)
-    {
-        var photo = new PrivatePhotoStatus(
-            Guid.NewGuid(),
-            state,
-            reason);
-
-        Assert.False(
-            ModuleProfilePhotoPolicy.MeetsPhotoRequirement(
-                "social", photo));
-    }
-
-    [Fact]
-    public void Social_ApprovedPhoto_MeetsPhotoRequirement()
-    {
-        var photo = new PrivatePhotoStatus(
-            Guid.NewGuid(),
-            PhotoState.Approved,
-            PhotoReason.None);
-
-        Assert.True(
-            ModuleProfilePhotoPolicy.MeetsPhotoRequirement(
-                "social", photo));
-    }
-
-    [Fact]
-    public void Social_EmptyUploadId_DoesNotMeetRequirement()
-    {
-        var photo = new PrivatePhotoStatus(
-            Guid.Empty,
-            PhotoState.Approved,
-            PhotoReason.None);
-
-        Assert.False(
-            ModuleProfilePhotoPolicy.MeetsPhotoRequirement(
-                "social", photo));
-    }
-
-    [Theory]
-    [InlineData("")]
     [InlineData("dating")]
+    [InlineData("Social")]
     [InlineData("Learning")]
-    [InlineData("social ")]
+    [InlineData("")]
+    [InlineData(null)]
     [InlineData("unknown")]
-    public void InvalidModule_IsRejected(string module)
+    [InlineData("social ")]
+    [InlineData(" learning")]
+    public void RejectsInvalidModule(string? module)
     {
-        Assert.Throws<ProfileValidationException>(
-            () => ModuleProfilePhotoPolicy.RequiresApprovedPhoto(
-                module));
-
-        Assert.Throws<ProfileValidationException>(
-            () => ModuleProfilePhotoPolicy.MeetsPhotoRequirement(
-                module, null));
-    }
-
-    [Fact]
-    public void NullModule_IsRejected()
-    {
-        Assert.Throws<ProfileValidationException>(
-            () => ModuleProfilePhotoPolicy.RequiresApprovedPhoto(
-                null!));
-
-        Assert.Throws<ProfileValidationException>(
-            () => ModuleProfilePhotoPolicy.MeetsPhotoRequirement(
-                null!, null));
+        Assert.Throws<ProfileValidationException>(() => ModuleProfilePhotoPolicy.RequiresStoredPhoto(module!));
+        Assert.Throws<ProfileValidationException>(() => ModuleProfilePhotoPolicy.MeetsPhotoRequirement(new(Guid.NewGuid(), module!), null));
     }
 }
