@@ -58,6 +58,12 @@ public sealed class QuestionnaireDefinitionCatalog
         }
     }
 
+    public static QuestionnaireDefinitionCatalog CreateProductionV1()
+    {
+        return new QuestionnaireDefinitionCatalog(
+            new[] { QuestionnaireV1Definition.Create() });
+    }
+
     public QuestionnaireDefinition? FindByVersion(
         string? version)
     {
