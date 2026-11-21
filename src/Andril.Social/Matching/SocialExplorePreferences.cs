@@ -25,12 +25,13 @@ public static class SocialGenderPreferences
     public const string All = "All";
     public const string Default = All;
 
-    public static readonly IReadOnlyList<string> AllOptions = new[]
-    {
-        Men,
-        Women,
-        All
-    };
+    public static readonly IReadOnlyList<string> AllOptions =
+        Array.AsReadOnly(new[]
+        {
+            Men,
+            Women,
+            All
+        });
 
     public static bool IsValid(string? value) =>
         string.Equals(value, Men, StringComparison.OrdinalIgnoreCase) ||
@@ -63,17 +64,18 @@ public static class SocialLanguages
     public const string German = "German";
     public const string MandarinChinese = "Mandarin Chinese";
 
-    public static readonly IReadOnlyList<string> All = new[]
-    {
-        English,
-        Tamil,
-        Hindi,
-        Arabic,
-        French,
-        Spanish,
-        German,
-        MandarinChinese
-    };
+    public static readonly IReadOnlyList<string> All =
+        Array.AsReadOnly(new[]
+        {
+            English,
+            Tamil,
+            Hindi,
+            Arabic,
+            French,
+            Spanish,
+            German,
+            MandarinChinese
+        });
 
     public static bool IsValid(string? value) =>
         All.Any(lang => string.Equals(lang, value?.Trim(), StringComparison.OrdinalIgnoreCase));
@@ -107,17 +109,18 @@ public static class SocialConnectionGoals
     public const string Companionship = "Companionship";
     public const string OpenToExplore = "Open to Explore";
 
-    public static readonly IReadOnlyList<string> All = new[]
-    {
-        SeriousRelationship,
-        LongTermPartner,
-        LifePartner,
-        Dating,
-        Friendship,
-        MeaningfulConnection,
-        Companionship,
-        OpenToExplore
-    };
+    public static readonly IReadOnlyList<string> All =
+        Array.AsReadOnly(new[]
+        {
+            SeriousRelationship,
+            LongTermPartner,
+            LifePartner,
+            Dating,
+            Friendship,
+            MeaningfulConnection,
+            Companionship,
+            OpenToExplore
+        });
 
     public static bool IsValid(string? value) =>
         All.Any(goal => string.Equals(goal, value?.Trim(), StringComparison.OrdinalIgnoreCase));
