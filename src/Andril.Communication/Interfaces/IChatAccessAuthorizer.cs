@@ -19,7 +19,10 @@ public sealed record ChatAuthorizedActor(
     Guid AccountId,
     Guid ModuleProfileId,
     ChatModule Module,
-    Guid ConversationId);
+    Guid ConversationId)
+{
+    public override string ToString() => nameof(ChatAuthorizedActor);
+}
 
 /// <summary>
 /// Backend-only authorization boundary for existing human-to-human conversations.
