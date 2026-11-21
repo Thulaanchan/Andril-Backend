@@ -153,7 +153,6 @@ public sealed class PrivateProfilePhotoPersistenceTests
         var (scope, account) = await SeedAsync(local);
         await using var db = local.Open();
         var store = new PrivateProfilePhotoStore(db);
-        var row = await store.ReserveAsync(scope, Guid.NewGuid(), Hash, Evidence, default);
         Task<int> Insert(Guid owner, string module, Guid request, bool current, string state)
         {
             var id = Guid.NewGuid();
@@ -171,10 +170,12 @@ public sealed class PrivateProfilePhotoPersistenceTests
                 """);
         }
 
+        // Probe scope and state before a reservation can introduce a competing uniqueness violation.
         Assert.Equal(PostgresErrorCodes.ForeignKeyViolation, (await Assert.ThrowsAsync<PostgresException>(
             () => Insert(scope.ProfileId, "hobbies", Guid.NewGuid(), false, "PendingStorage"))).SqlState);
         Assert.Equal(PostgresErrorCodes.CheckViolation, (await Assert.ThrowsAsync<PostgresException>(
             () => Insert(scope.ProfileId, scope.Module, Guid.NewGuid(), true, "PendingStorage"))).SqlState);
+        var row = await store.ReserveAsync(scope, Guid.NewGuid(), Hash, Evidence, default);
         const string pendingIndex = "uq_profile_photo_pending";
         Assert.Equal(pendingIndex, (await Assert.ThrowsAsync<PostgresException>(
             () => Insert(scope.ProfileId, scope.Module, Guid.NewGuid(), false, "PendingStorage"))).ConstraintName);
