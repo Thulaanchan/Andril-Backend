@@ -1,6 +1,7 @@
 using System.Data;
 using System.Data.Common;
 using System.Reflection;
+using System.Text.RegularExpressions;
 using Andril.API.Extensions;
 using Andril.Communication.Interfaces;
 using Andril.Persistence.DbContexts;
@@ -8,6 +9,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
@@ -233,6 +235,154 @@ public sealed class ChatPersistenceModelTests
         services.AddAccounts(new ConfigurationBuilder().Build());
         services.AddNotifications();
         Assert.DoesNotContain(services, descriptor => IsCandidate(descriptor.ServiceType) || IsCandidate(descriptor.ImplementationType));
+    }
+
+    [Fact]
+    public void Generated_ddl_contains_exactly_the_three_scoped_candidate_tables()
+    {
+        using var context = new CandidateChatContext();
+        var sql = GenerateDdl(context);
+        var tables = DdlTables(sql);
+        var identifiers = context.GetService<ISqlGenerationHelper>();
+        var entities = Model(context).GetEntityTypes().ToArray();
+
+        Assert.Equal(3, tables.Count);
+        Assert.Equal(new[] { "conversation_participants", "conversations", "messages" }, entities.Select(entity => entity.GetTableName()!).Order());
+        Assert.All(entities, entity => Assert.Equal("andril_chat", entity.GetSchema()));
+        Assert.Equal(entities.Select(entity => TableIdentifier(identifiers, entity)).Order(), tables.Keys.Order());
+    }
+
+    [Fact]
+    public void Generated_ddl_primary_keys_match_each_tables_candidate_identity()
+    {
+        using var context = new CandidateChatContext();
+        var tables = DdlTables(GenerateDdl(context));
+        var identifiers = context.GetService<ISqlGenerationHelper>();
+        foreach (var entity in Model(context).GetEntityTypes())
+        {
+            var body = tables[TableIdentifier(identifiers, entity)];
+            var key = entity.FindPrimaryKey()!;
+            var actual = Assert.Single(DdlLines(body), line => line.Contains(" PRIMARY KEY (", StringComparison.Ordinal));
+            Assert.Equal($"CONSTRAINT {identifiers.DelimitIdentifier(key.GetName()!)} PRIMARY KEY ({ColumnIdentifiers(identifiers, entity, key.Properties)})", actual);
+            Assert.DoesNotMatch(@"\bUNIQUE\b", body);
+        }
+    }
+
+    [Fact]
+    public void Generated_ddl_foreign_keys_preserve_scoped_principals_without_cascades()
+    {
+        using var context = new CandidateChatContext();
+        var tables = DdlTables(GenerateDdl(context));
+        var identifiers = context.GetService<ISqlGenerationHelper>();
+        foreach (var entity in Model(context).GetEntityTypes())
+        {
+            var actual = DdlLines(tables[TableIdentifier(identifiers, entity)])
+                .Where(line => line.Contains(" FOREIGN KEY (", StringComparison.Ordinal)).ToArray();
+            var foreignKeys = entity.GetForeignKeys().ToArray();
+            Assert.Equal(foreignKeys.Length, actual.Length);
+            foreach (var foreignKey in foreignKeys)
+            {
+                Assert.Equal(DeleteBehavior.NoAction, foreignKey.DeleteBehavior);
+                var constraint = identifiers.DelimitIdentifier(foreignKey.GetConstraintName()!);
+                var statement = Assert.Single(actual, line => line.StartsWith($"CONSTRAINT {constraint} FOREIGN KEY (", StringComparison.Ordinal));
+                var expected = $"CONSTRAINT {constraint} FOREIGN KEY ({ColumnIdentifiers(identifiers, entity, foreignKey.Properties)}) "
+                    + $"REFERENCES {TableIdentifier(identifiers, foreignKey.PrincipalEntityType)} "
+                    + $"({ColumnIdentifiers(identifiers, foreignKey.PrincipalEntityType, foreignKey.PrincipalKey.Properties)})";
+                // PostgreSQL's default is NO ACTION; the provider may omit that clause.
+                Assert.True(statement == expected || statement == expected + " ON DELETE NO ACTION",
+                    "Generated foreign key must match its scoped principal and preserve NO ACTION deletion.");
+            }
+        }
+    }
+
+    [Fact]
+    public void Generated_ddl_columns_preserve_candidate_types_required_fields_and_nullable_tone()
+    {
+        using var context = new CandidateChatContext();
+        var tables = DdlTables(GenerateDdl(context));
+        var identifiers = context.GetService<ISqlGenerationHelper>();
+        foreach (var entity in Model(context).GetEntityTypes())
+        {
+            var store = StoreObjectIdentifier.Table(entity.GetTableName()!, entity.GetSchema());
+            var expected = entity.GetProperties().Select(property =>
+                $"{identifiers.DelimitIdentifier(property.GetColumnName(store)!)} {property.GetColumnType()}"
+                + (property.IsNullable ? "" : " NOT NULL"));
+            var actual = DdlLines(tables[TableIdentifier(identifiers, entity)])
+                .Where(line => !line.StartsWith("CONSTRAINT ", StringComparison.Ordinal));
+            Assert.Equal(expected.Order(), actual.Order());
+        }
+    }
+
+    [Fact]
+    public void Generated_ddl_checks_remain_on_their_tables_with_canonical_modules_and_null_only_tone()
+    {
+        using var context = new CandidateChatContext();
+        var tables = DdlTables(GenerateDdl(context));
+        var identifiers = context.GetService<ISqlGenerationHelper>();
+        foreach (var entity in Model(context).GetEntityTypes())
+        {
+            var expected = entity.GetCheckConstraints().Select(check =>
+                $"CONSTRAINT {identifiers.DelimitIdentifier(check.Name!)} CHECK ({check.Sql})");
+            var actual = DdlLines(tables[TableIdentifier(identifiers, entity)])
+                .Where(line => line.Contains(" CHECK (", StringComparison.Ordinal));
+            Assert.Equal(expected.Order(), actual.Order());
+        }
+    }
+
+    [Fact]
+    public void Generated_ddl_indexes_preserve_scoped_ordering_without_retry_uniqueness()
+    {
+        using var context = new CandidateChatContext();
+        var sql = GenerateDdl(context);
+        var identifiers = context.GetService<ISqlGenerationHelper>();
+        var expected = Model(context).GetEntityTypes().SelectMany(entity => entity.GetIndexes().Select(index =>
+        {
+            Assert.False(index.IsUnique);
+            var store = StoreObjectIdentifier.Table(entity.GetTableName()!, entity.GetSchema());
+            var columns = index.Properties.Select((property, position) =>
+                identifiers.DelimitIdentifier(property.GetColumnName(store)!)
+                + (index.IsDescending is { } descending && (descending.Count == 0 || descending[position]) ? " DESC" : ""));
+            return $"CREATE INDEX {identifiers.DelimitIdentifier(index.GetDatabaseName()!)} ON {TableIdentifier(identifiers, entity)} ({string.Join(", ", columns)});";
+        }));
+        var actual = Regex.Matches(sql, @"^CREATE (?:UNIQUE )?INDEX [^\r\n]+;(?=\r?$)", RegexOptions.Multiline | RegexOptions.CultureInvariant)
+            .Select(match => match.Value).ToArray();
+        Assert.Equal(Regex.Matches(sql, @"\bCREATE\s+(?:UNIQUE\s+)?INDEX\b", RegexOptions.CultureInvariant).Count, actual.Length);
+        Assert.Equal(expected.Order(), actual.Order());
+    }
+
+    private static string GenerateDdl(CandidateChatContext context)
+    {
+        Assert.Equal("Npgsql.EntityFrameworkCore.PostgreSQL", context.Database.ProviderName);
+        try
+        {
+            // Generate text in memory only. Do not execute or export deployment SQL.
+            return context.Database.GenerateCreateScript();
+        }
+        finally
+        {
+            Assert.Equal(0, context.Connections.OpenAttempts);
+            Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+        }
+    }
+
+    private static Dictionary<string, string> DdlTables(string sql)
+    {
+        var matches = Regex.Matches(sql, @"^CREATE TABLE (?<table>[^\r\n(]+)\s*\((?<body>.*?)^\);",
+            RegexOptions.Multiline | RegexOptions.Singleline | RegexOptions.CultureInvariant);
+        Assert.Equal(Regex.Matches(sql, @"\bCREATE\s+TABLE\b", RegexOptions.CultureInvariant).Count, matches.Count);
+        return matches.ToDictionary(match => match.Groups["table"].Value.Trim(), match => match.Groups["body"].Value, StringComparer.Ordinal);
+    }
+
+    private static string[] DdlLines(string body) => body.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+        .Select(line => line.Trim().TrimEnd(',')).Where(line => line.Length != 0).ToArray();
+
+    private static string TableIdentifier(ISqlGenerationHelper identifiers, IEntityType entity) =>
+        identifiers.DelimitIdentifier(entity.GetTableName()!, entity.GetSchema());
+
+    private static string ColumnIdentifiers(ISqlGenerationHelper identifiers, IEntityType entity, IReadOnlyList<IProperty> properties)
+    {
+        var store = StoreObjectIdentifier.Table(entity.GetTableName()!, entity.GetSchema());
+        return string.Join(", ", properties.Select(property => identifiers.DelimitIdentifier(property.GetColumnName(store)!)));
     }
 
     private static bool IsCandidate(Type? type) => type is not null && (RecordNames.Contains(type.Name) || type == typeof(CandidateChatContext));
