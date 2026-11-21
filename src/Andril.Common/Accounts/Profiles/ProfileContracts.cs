@@ -1,5 +1,6 @@
 using Andril.Common.Accounts.StarterModules;
 using Andril.Common.Validators;
+using ModuleNames = Andril.Common.Accounts.StarterModules.StarterModules;
 
 namespace Andril.Common.Accounts.Profiles;
 
@@ -51,12 +52,8 @@ public static class DisplayNames
 }
 public sealed class ProfileNameConflictException : Exception { }
 
-// No injectable "isComplete" boolean or configurable bypass. An approved persisted field
-// contract must be implemented before this boundary can ever authorize module access.
-public sealed record ProfileCompletionStatus(string BlockingDependency)
-{
-    public bool IsComplete => false;
-}
+// Server-derived private-profile evidence only; this result never authorizes module access.
+public sealed record ProfileCompletionStatus(string? BlockingDependency, bool IsComplete = false);
 public interface IPrivateProfileCompletionReader
 {
     Task<ProfileCompletionStatus> ReadAsync(string module, CancellationToken cancellationToken = default);
@@ -66,8 +63,19 @@ public sealed class PrivateProfileCompletionReader(IPrivateProfileService profil
 {
     public async Task<ProfileCompletionStatus> ReadAsync(string module, CancellationToken cancellationToken = default)
     {
-        try { await profiles.GetAsync(module, cancellationToken); }
+        PrivateProfileDto profile;
+        // The existing owner-scoped read rechecks membership, opt-in, age and current policies
+        // within the profile repository transaction. Do not replace it with a raw profile lookup.
+        try { profile = await profiles.GetAsync(module, cancellationToken); }
         catch (ProfileMissingException) { return new("private_profile_missing"); }
+        if (module == ModuleNames.Social)
+        {
+            if (profile.Module != module || profile.ProfileId == Guid.Empty) throw new ProfileAccessDeniedException();
+            // AND-M2-SOC-ONB-DEC-20261121-01: optional fields do not gate completion.
+            return PrivateProfileFieldValidator.TryNormalizeDisplayName(profile.DisplayName, out var normalized)
+                && normalized == profile.DisplayName
+                ? new(null, true) : new("social_display_name");
+        }
         return new("approved_profile_contract");
     }
 }

@@ -15,6 +15,7 @@
     "Andril.IntegrationTests.Database.LanguagePreferencePersistenceTests.DatabaseEnforcesLanguageUniquenessAndAccountForeignKey",
     "Andril.IntegrationTests.Database.LanguagePreferencePersistenceTests.FailedWriteRollsBack_AndAccountsAreIsolated",
     "Andril.IntegrationTests.Database.OnboardingResumePersistenceTests.FreshContextsResumePersistedProgress_AndIsolateAccounts",
+    "Andril.IntegrationTests.Database.OnboardingResumePersistenceTests.SocialCompletionResumesFromFreshContexts_AndConcurrentNameClaimsRemainUnique",
     "Andril.IntegrationTests.Database.PrivateProfilePersistenceTests.ConcurrentNameClaimsHaveOneWinnerAndRetriesPreserveIdentity",
     "Andril.IntegrationTests.Database.PrivateProfilePersistenceTests.DisplayNameConstraintsAllowOnlyApprovedReuse",
     "Andril.IntegrationTests.Database.PrivateProfilePersistenceTests.ConcurrentRetriesPersistExactlyOneProfileAndKeepModuleOwnership",
