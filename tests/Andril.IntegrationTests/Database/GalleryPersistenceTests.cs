@@ -11,7 +11,10 @@ using Andril.Persistence.DbContexts;
 using Andril.Persistence.Repositories.Hobbies;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Microsoft.EntityFrameworkCore.Migrations.Operations;
 using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 using Xunit;
@@ -31,6 +34,83 @@ public sealed class GalleryPersistenceTests
     private static readonly Guid Missing = new("20000000-0000-4000-8000-000000000006");
     private static readonly Guid AlternateCover = new("20000000-0000-4000-8000-000000000007");
     private static readonly DateTimeOffset CreatedAt = new(2026, 11, 19, 9, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public void Migration_IsDiscoveredOnlyForGalleryAndMatchesTheCurrentModelOffline()
+    {
+        using var gallery = CreateContext(interceptor: new RejectConnectionOpen());
+        var migrationId = Assert.Single(gallery.Database.GetMigrations());
+        Assert.EndsWith("_InitialHobbiesGallery", migrationId);
+        var assembly = gallery.GetService<IMigrationsAssembly>();
+        Assert.NotNull(assembly.ModelSnapshot);
+        Assert.False(gallery.Database.HasPendingModelChanges());
+
+        using var accounts = new AccountsDbContext(
+            new DbContextOptionsBuilder<AccountsDbContext>().UseNpgsql(OfflineConnection)
+                .AddInterceptors(new RejectConnectionOpen()).Options);
+        Assert.NotEmpty(accounts.Database.GetMigrations());
+        Assert.DoesNotContain(migrationId, accounts.Database.GetMigrations());
+        using var map = new HobbiesMapDbContext(
+            new DbContextOptionsBuilder<HobbiesMapDbContext>().UseNpgsql(OfflineConnection)
+                .AddInterceptors(new RejectConnectionOpen()).Options);
+        Assert.DoesNotContain(migrationId, map.Database.GetMigrations());
+    }
+
+    [Fact]
+    public void Migration_GeneratesOnlyGallerySchemaChangesOffline()
+    {
+        using var context = CreateContext(interceptor: new RejectConnectionOpen());
+        var assembly = context.GetService<IMigrationsAssembly>();
+        var mapping = Assert.Single(assembly.Migrations);
+        var migration = assembly.CreateMigration(mapping.Value, context.Database.ProviderName!);
+        Assert.Collection(migration.UpOperations,
+            operation => Assert.Equal("GalleryMedia", Assert.IsType<CreateTableOperation>(operation).Name),
+            operation => Assert.Equal("GalleryPreferences", Assert.IsType<CreateTableOperation>(operation).Name),
+            operation => Assert.Equal("GalleryMedia", Assert.IsType<CreateIndexOperation>(operation).Table));
+        Assert.Collection(migration.DownOperations,
+            operation => Assert.Equal("GalleryMedia", Assert.IsType<DropTableOperation>(operation).Name),
+            operation => Assert.Equal("GalleryPreferences", Assert.IsType<DropTableOperation>(operation).Name));
+
+        var migrator = context.GetService<IMigrator>();
+        var up = migrator.GenerateScript(Migration.InitialDatabase, mapping.Key);
+        var down = migrator.GenerateScript(mapping.Key, Migration.InitialDatabase);
+        var modelStatements = context.Database.GenerateCreateScript()
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        Assert.Equal(3, modelStatements.Length);
+        Assert.All(modelStatements, statement => Assert.Contains(statement + ";", up));
+        Assert.DoesNotContain("DROP ", up);
+        Assert.Contains("DROP TABLE \"GalleryMedia\";", down);
+        Assert.Contains("DROP TABLE \"GalleryPreferences\";", down);
+        Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
+
+    [MapCapturePostgresFact]
+    public Task Migration_AppliesAndRollsBackOnlyGalleryTables() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await using var context = CreateContext(connection);
+            var migrationId = Assert.Single(context.Database.GetMigrations());
+            await context.Database.ExecuteSqlRawAsync("CREATE TABLE migration_isolation_probe (id integer PRIMARY KEY)");
+            await context.Database.ExecuteSqlRawAsync("INSERT INTO migration_isolation_probe VALUES (1)");
+            await context.Database.MigrateAsync(migrationId);
+            Assert.Equal(migrationId, Assert.Single(await context.Database.GetAppliedMigrationsAsync()));
+            context.GalleryMedia.Add(Media(Older, Owner, CreatedAt));
+            context.GalleryPreferences.Add(new GalleryPreferences { OwnerModuleProfileId = Owner, CoverMediaId = Older });
+            await context.SaveChangesAsync();
+            Assert.Equal(1, await context.GalleryMedia.CountAsync());
+            Assert.Equal(1, await context.GalleryPreferences.CountAsync());
+
+            await context.Database.MigrateAsync(Migration.InitialDatabase);
+            Assert.Empty(await context.Database.GetAppliedMigrationsAsync());
+            await using var probe = new NpgsqlConnection(connection);
+            await probe.OpenAsync();
+            await using var command = new NpgsqlCommand("""
+                SELECT to_regclass('"GalleryMedia"') IS NULL
+                   AND to_regclass('"GalleryPreferences"') IS NULL
+                   AND EXISTS (SELECT 1 FROM migration_isolation_probe WHERE id = 1)
+                """, probe);
+            Assert.Equal(true, await command.ExecuteScalarAsync());
+        }, initializeSchema: false);
 
     [Fact]
     public void Model_MapsGalleryColumnsPrimaryKeysAndOwnerIndexOffline()
@@ -521,6 +601,10 @@ public sealed class GalleryPersistenceTests
 
     private sealed class RejectConnectionOpen : DbConnectionInterceptor
     {
+        public override InterceptionResult ConnectionOpening(
+            DbConnection connection, ConnectionEventData eventData, InterceptionResult result) =>
+            throw new InvalidOperationException("The offline test attempted to open a database connection.");
+
         public override ValueTask<InterceptionResult> ConnectionOpeningAsync(
             DbConnection connection, ConnectionEventData eventData, InterceptionResult result,
             CancellationToken cancellationToken = default) =>
@@ -547,7 +631,7 @@ public sealed class GalleryPersistenceTests
     }
 
     // The M3 attribute is shared. Existing disposable-database helpers are private to their fixtures.
-    private static async Task WithDatabaseAsync(Func<string, Task> test)
+    private static async Task WithDatabaseAsync(Func<string, Task> test, bool initializeSchema = true)
     {
         var configured = Environment.GetEnvironmentVariable("ANDRIL_M3_TEST_POSTGRES");
         if (string.IsNullOrWhiteSpace(configured))
@@ -588,8 +672,9 @@ public sealed class GalleryPersistenceTests
         {
             settings.Database = name;
             var connection = settings.ConnectionString;
-            await using (var context = CreateContext(connection))
+            if (initializeSchema)
             {
+                await using var context = CreateContext(connection);
                 await context.Database.EnsureCreatedAsync();
             }
             await test(connection);
