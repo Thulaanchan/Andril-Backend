@@ -153,7 +153,7 @@ public sealed class PrivateProfileTests
         {
             Assert.Equal(results[0], status);
             Assert.True(status.Progress.PrivateProfileComplete);
-            Assert.False(status.OnboardingComplete);
+            Assert.True(status.OnboardingComplete);
             Assert.False(status.ModuleHomeAuthorized);
             Assert.Equal("profile_setup", status.NextStep);
             Assert.Null(status.BlockingDependency);
@@ -181,6 +181,7 @@ public sealed class PrivateProfileTests
         var status = await new OnboardingStatusService(f, f, f, f, reader).GetAsync();
         Assert.False(status.Progress.PrivateProfileComplete);
         Assert.Equal("social_display_name", status.BlockingDependency);
+        Assert.False(status.OnboardingComplete);
     }
 
     [Theory]
@@ -194,6 +195,7 @@ public sealed class PrivateProfileTests
         var status = await new OnboardingStatusService(f, f, f, f, new PrivateProfileCompletionReader(f.Service)).GetAsync();
         Assert.False(status.Progress.PrivateProfileComplete);
         Assert.Equal("approved_profile_contract", status.BlockingDependency);
+        Assert.False(status.OnboardingComplete);
     }
 
     [Theory]
@@ -211,7 +213,9 @@ public sealed class PrivateProfileTests
         f.Profile = PrivateModuleProfile.Create(f.Account.Id, "social", f.GetUtcNow());
         f.Profile.SetDraftFields(new("Social Person", null, "private"));
         var service = new OnboardingStatusService(f, f, f, f, new PrivateProfileCompletionReader(f.Service));
-        Assert.True((await service.GetAsync()).Progress.PrivateProfileComplete);
+        var complete = await service.GetAsync();
+        Assert.True(complete.Progress.PrivateProfileComplete);
+        Assert.True(complete.OnboardingComplete);
         if (fault == "membership") f.State = f.State with { Membership = null };
         if (fault == "opt-in") typeof(StarterMembership).GetProperty(nameof(StarterMembership.SocialOptInAtUtc))!.SetValue(f.State.Membership, null);
         if (fault == "underage") f.State = f.State with { Demographics = AccountDemographics.Create(f.Account.Id, new(2009, 1, 1), "other", f.GetUtcNow()) };
@@ -230,6 +234,7 @@ public sealed class PrivateProfileTests
         var service = new OnboardingStatusService(f, f, f, f, new PrivateProfileCompletionReader(f.Service));
         var missing = await service.GetAsync();
         Assert.False(missing.Progress.PrivateProfileComplete);
+        Assert.False(missing.OnboardingComplete);
         Assert.Equal("private_profile_missing", missing.BlockingDependency);
         f.FailStore = true;
         await Assert.ThrowsAsync<AccountStoreUnavailableException>(() => service.GetAsync());

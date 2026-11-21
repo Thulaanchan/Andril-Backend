@@ -11,8 +11,8 @@ info:
     and deactivation are not implemented here. Owner-only private profile identity roots
     can be created and draft name/bio fields updated. Approved Social-first private-profile
     completion is derived from authorized persisted evidence and a valid Social display name.
-    Photo processing retains its existing provider requirements. Overall onboarding and
-    module-home authorization remain blocked.
+    Approved Social starter setup can report overall onboarding completion. Photo processing
+    retains its existing provider requirements. Module-home authorization remains blocked.
     Missing or invalid credentials receive 401 with a Bearer challenge and no token
     details; authenticated users denied by an authorization policy receive 403.
     All /api/v1/account and /api/v1/onboarding operations additionally require a matching confirmed email
@@ -33,7 +33,7 @@ components:
         nextStep:
           type: string
           enum: [initialize_account, complete_demographics, age_ineligible, review_policies, select_starter, profile_setup]
-          description: Derived on every read from server records. age_ineligible blocks progression; profile_setup remains the final step even when the approved Social private profile is complete. No home-entry step is authorized.
+          description: Derived on every read from server records. age_ineligible blocks progression. profile_setup remains the final step identifier even when Social setup is complete. Check onboardingComplete to distinguish those states.
         progress:
           type: object
           additionalProperties: false
@@ -62,10 +62,10 @@ components:
           type: string
           nullable: true
           enum: [private_profile_infrastructure, private_profile_missing, social_display_name, approved_profile_contract, null]
-          description: Null for an approved complete Social private profile; social_display_name indicates a missing or invalid stored Social name. Other modules retain their existing dependencies.
+          description: Null for an approved complete Social private profile; social_display_name indicates a missing or invalid stored Social name. A null dependency does not grant module entry. Other modules retain their existing dependencies.
         onboardingComplete:
           type: boolean
-          enum: [false]
+          description: True only when the authenticated Social starter currently meets all approved setup requirements, including private-profile completion. Learning and Hobbies remain false. This flag does not grant module access.
         moduleHomeAuthorized:
           type: boolean
           enum: [false]
@@ -718,8 +718,9 @@ paths:
         Sequence is account, demographics and age, current Terms/Privacy, starter,
         private profile. Approved Social-first privateProfileComplete may be true when all
         mandatory persisted evidence exists; optional biography, photo, interests, preferences
-        and questionnaire do not gate it. The last step remains profile_setup. Overall
-        onboarding completion and home authorization are always false.
+        and questionnaire do not gate it. A completed Social setup reports onboardingComplete
+        true with nextStep profile_setup and blockingDependency null. Clients should show
+        setup complete with entry unavailable. moduleHomeAuthorized remains false.
         Reuse this endpoint after login/restart and after successful progress writes.
         Progress booleans describe stored prerequisites independently, not cumulative authorization.
         Missing policy configuration returns 503 for initialized accounts. Uninitialized
@@ -739,8 +740,8 @@ paths:
               schema:
                 $ref: '#/components/schemas/OnboardingStatus'
               examples:
-                socialPrivateProfileComplete:
-                  summary: Approved Social private profile complete; overall onboarding and module entry still blocked
+                socialOnboardingComplete:
+                  summary: Approved Social setup complete with module entry unavailable
                   value:
                     nextStep: profile_setup
                     progress:
@@ -752,7 +753,7 @@ paths:
                       privateProfileComplete: true
                     selectedModule: social
                     blockingDependency: null
-                    onboardingComplete: false
+                    onboardingComplete: true
                     moduleHomeAuthorized: false
         '401':
           description: Missing/invalid JWT or mismatched/revoked Supabase identity. Bearer challenge; no completion information.
