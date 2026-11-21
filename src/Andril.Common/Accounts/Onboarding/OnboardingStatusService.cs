@@ -48,7 +48,15 @@ public sealed class OnboardingStatusService(ICurrentUser user, IOnboardingIdenti
             dependency = "private_profile_infrastructure";
             if (profiles is not null)
             {
-                try { dependency = (await profiles.ReadAsync(membership!.Module, cancellationToken)).BlockingDependency; }
+                try
+                {
+                    var completion = await profiles.ReadAsync(membership!.Module, cancellationToken);
+                    dependency = completion.BlockingDependency;
+                    progress = progress with
+                    {
+                        PrivateProfileComplete = membership.Module == ModuleNames.Social && completion.IsComplete
+                    };
+                }
                 // A prerequisite may change between status and the authoritative profile read.
                 catch (ProfileAccessDeniedException) { throw new OnboardingDependencyException(); }
                 catch (StarterModuleAccountMissingException) { throw new OnboardingDependencyException(); }

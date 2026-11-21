@@ -14,13 +14,13 @@ public interface IOnboardingStatusService
 public sealed record OnboardingProgress(bool IdentityVerified, bool AccountInitialized,
     bool DemographicsComplete, bool CurrentPoliciesAccepted, bool StarterModuleSelected)
 {
-    public bool PrivateProfileComplete => false;
+    public bool PrivateProfileComplete { get; init; }
 }
 
 public sealed record OnboardingStatus(string NextStep, OnboardingProgress Progress,
     string? SelectedModule = null, string? BlockingDependency = null)
 {
-    // Private identity roots exist, but approved persisted completion fields are pending.
+    // Social private-profile completion does not approve overall onboarding or module entry.
     public bool OnboardingComplete => false;
     public bool ModuleHomeAuthorized => false;
 }

@@ -134,6 +134,107 @@ public sealed class PrivateProfileTests
         await Assert.ThrowsAsync<AccountStoreUnavailableException>(() => new PrivateProfileCompletionReader(f.Service).ReadAsync("learning"));
     }
 
+    [Fact]
+    public async Task SocialNameAloneCompletesPrivateProfileAcrossRepeatedConcurrentReads_WithoutGrantingAccess()
+    {
+        var f = new Fixture("social");
+        f.Profile = PrivateModuleProfile.Create(f.Account.Id, "social", f.GetUtcNow());
+        f.Profile.SetDraftFields(new("Social Person", null, "private"));
+        // No photo, interests, preferences or questionnaire service/evidence is supplied.
+        var results = await Task.WhenAll(Enumerable.Range(0, 20).Select(async _ =>
+        {
+            var reader = new PrivateProfileCompletionReader(f.Service);
+            var status = await new OnboardingStatusService(f, f, f, f, reader).GetAsync();
+            Assert.True((await reader.ReadAsync("social")).IsComplete);
+            await Assert.ThrowsAsync<ProfileContractPendingException>(() => new PrivateModuleAccess(reader).RequireAsync("social"));
+            return status;
+        }));
+        Assert.All(results, status =>
+        {
+            Assert.Equal(results[0], status);
+            Assert.True(status.Progress.PrivateProfileComplete);
+            Assert.False(status.OnboardingComplete);
+            Assert.False(status.ModuleHomeAuthorized);
+            Assert.Equal("profile_setup", status.NextStep);
+            Assert.Null(status.BlockingDependency);
+        });
+        Assert.Null(f.Profile.Bio);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("  ")]
+    [InlineData("ab")]
+    [InlineData("Admin")]
+    [InlineData("Name😀")]
+    [InlineData("bad\0name")]
+    [InlineData(" Social Person ")]
+    [InlineData("\tSocial Person\t")]
+    [InlineData("abcdefghijklmnopqrstuvwxyz12345")]
+    public async Task MissingOrInvalidHistoricalSocialNamesCannotComplete(string? name)
+    {
+        var f = new Fixture("social");
+        f.Profile = PrivateModuleProfile.Create(f.Account.Id, "social", f.GetUtcNow());
+        typeof(PrivateModuleProfile).GetProperty(nameof(PrivateModuleProfile.DisplayName))!.SetValue(f.Profile, name);
+        var reader = new PrivateProfileCompletionReader(f.Service);
+        var status = await new OnboardingStatusService(f, f, f, f, reader).GetAsync();
+        Assert.False(status.Progress.PrivateProfileComplete);
+        Assert.Equal("social_display_name", status.BlockingDependency);
+    }
+
+    [Theory]
+    [InlineData("learning")]
+    [InlineData("hobbies")]
+    public async Task OtherModuleNamesDoNotEnablePrivateCompletion(string module)
+    {
+        var f = new Fixture(module);
+        f.Profile = PrivateModuleProfile.Create(f.Account.Id, module, f.GetUtcNow());
+        f.Profile.SetDraftFields(new("Independent Name", null, "private"));
+        var status = await new OnboardingStatusService(f, f, f, f, new PrivateProfileCompletionReader(f.Service)).GetAsync();
+        Assert.False(status.Progress.PrivateProfileComplete);
+        Assert.Equal("approved_profile_contract", status.BlockingDependency);
+    }
+
+    [Theory]
+    [InlineData("membership")]
+    [InlineData("opt-in")]
+    [InlineData("underage")]
+    [InlineData("terms")]
+    [InlineData("privacy")]
+    [InlineData("outdated")]
+    [InlineData("other-account")]
+    [InlineData("other-module")]
+    public async Task SocialCompletionRechecksAuthorityEvenAfterPositiveResult(string fault)
+    {
+        var f = new Fixture("social");
+        f.Profile = PrivateModuleProfile.Create(f.Account.Id, "social", f.GetUtcNow());
+        f.Profile.SetDraftFields(new("Social Person", null, "private"));
+        var service = new OnboardingStatusService(f, f, f, f, new PrivateProfileCompletionReader(f.Service));
+        Assert.True((await service.GetAsync()).Progress.PrivateProfileComplete);
+        if (fault == "membership") f.State = f.State with { Membership = null };
+        if (fault == "opt-in") typeof(StarterMembership).GetProperty(nameof(StarterMembership.SocialOptInAtUtc))!.SetValue(f.State.Membership, null);
+        if (fault == "underage") f.State = f.State with { Demographics = AccountDemographics.Create(f.Account.Id, new(2009, 1, 1), "other", f.GetUtcNow()) };
+        if (fault == "terms") f.State = f.State with { Policies = f.State.Policies.Where(x => x.Action != PolicyActions.TermsAgreed).ToArray() };
+        if (fault == "privacy") f.State = f.State with { Policies = f.State.Policies.Where(x => x.Action != PolicyActions.PrivacyAcknowledged).ToArray() };
+        if (fault == "outdated") f.Version = "v2";
+        if (fault == "other-account") f.Profile = PrivateModuleProfile.Create(Guid.NewGuid(), "social", f.GetUtcNow());
+        if (fault == "other-module") f.Profile = PrivateModuleProfile.Create(f.Account.Id, "learning", f.GetUtcNow());
+        await Assert.ThrowsAsync<OnboardingDependencyException>(() => service.GetAsync());
+    }
+
+    [Fact]
+    public async Task SocialMissingProfileAndUnavailablePersistenceNeverReportCompletion()
+    {
+        var f = new Fixture("social");
+        var service = new OnboardingStatusService(f, f, f, f, new PrivateProfileCompletionReader(f.Service));
+        var missing = await service.GetAsync();
+        Assert.False(missing.Progress.PrivateProfileComplete);
+        Assert.Equal("private_profile_missing", missing.BlockingDependency);
+        f.FailStore = true;
+        await Assert.ThrowsAsync<AccountStoreUnavailableException>(() => service.GetAsync());
+    }
+
     private sealed class Fixture : TimeProvider, ICurrentUser, IOnboardingIdentity, IAccountRepository,
         IPrivateProfileRepository, IPolicyCatalogProvider, IStarterModuleService
     {
@@ -142,9 +243,11 @@ public sealed class PrivateProfileTests
         internal PrivateModuleProfile? Profile;
         internal bool Authenticated = true, Confirmed = true, Configured = true, FailStore;
         internal string Version = "v1";
+        private readonly string selectedModule;
         internal PrivateProfileService Service => new(this, this, this, this, this, this);
         internal Fixture(string module = "learning", int age = 18)
         {
+            selectedModule = module;
             State = new(AccountDemographics.Create(Account.Id, new(2026 - age, 1, 1), "other", GetUtcNow()),
                 [AccountPolicyRecord.Create(Account.Id, PolicyActions.TermsAgreed, "v1", GetUtcNow()),
                  AccountPolicyRecord.Create(Account.Id, PolicyActions.PrivacyAcknowledged, "v1", GetUtcNow())],
@@ -174,7 +277,7 @@ public sealed class PrivateProfileTests
         // Deliberately stale first read: the profile boundary must independently revalidate.
         public Task<StarterModuleStatus> GetAsync(CancellationToken cancellationToken = default) => Task.FromResult(new StarterModuleStatus(true, true,
             [new("learning", true, false, false), new("hobbies", true, false, false), new("social", true, true, false)],
-            new("learning", GetUtcNow(), false), "starter_selected"));
+            new(selectedModule, GetUtcNow(), selectedModule == "social"), "starter_selected"));
         public Task<StarterModuleStatus> SelectAsync(string? module, bool? socialOptIn, CancellationToken cancellationToken = default) => throw new NotSupportedException();
     }
 }
