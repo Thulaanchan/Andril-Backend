@@ -53,7 +53,76 @@ Gitleaks 8.30.1 uses a SHA-256-verified archive and scans all reachable Member-2
 
 Open **Actions → ANDRIL Member-02 QA → Summary** for the intended commit. Review the four jobs and download the available artifacts from the run page. Reports include sanitized TRX, validated coverage, audit and compiler/analyzer diagnostics, relational verification, redacted scan metadata and the consolidated summary. Retention is seven days. Raw output, parameter values and connection configuration stay outside uploaded reports. Counts are per-suite executions. The 36 M2 cases appear as offline skips and as relational executions. The 44 unrelated database cases only appear as offline skips. [Downloading workflow artifacts](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts)
 
-For a failed audit, use the diagnostic code to distinguish data access failures from package findings. For test failures, start with the suite and method ID in the TRX and reproduce through the normal harness. For relational failures, distinguish service startup or readiness from incomplete selection, schema failures and permission failures. The first published run establishes Linux compatibility, actual service behavior, account policy compatibility and hosted artifact handling.
+For a failed audit, use the diagnostic code to distinguish data access failures from package findings. For test failures, start with the suite and method ID in the TRX and the safe failure JSON described below, then reproduce through the normal harness. For relational failures, distinguish service startup or readiness from incomplete selection, schema failures and permission failures. Historical run outcomes are evidence for that commit and environment, not fresh local verification.
+
+## Safe failure diagnostics
+
+Each processed suite writes `<suite>-failures.json`; the relational artifact contains `m2-postgres-failures.json`. The existing artifact-directory upload and seven-day retention publish it without a workflow change. The job details, step summary and consolidated summary list the failed count, method names, safe classification, SQLSTATE, constraint and source location. They link the report by filename within the suite artifact. No raw test output is written to Actions logs.
+
+The version 1 envelope has `schemaVersion`, `failedCount` and `failures`. Each failed execution has these fields:
+
+| Field | Validation / unavailable behavior |
+| --- | --- |
+| `testName`, `outcome` | Definition-joined method identifier, bounded to 512 ASCII identifier characters; outcome must be a recognized VSTest outcome. Parameter display data is excluded. |
+| `duration` | Nonnegative invariant TimeSpan, at most one day; otherwise null. |
+| `exceptionType`, `innerExceptionType` | Literal trusted framework/project type allowlist. Only an explicit exception-header format and explicit inner marker are recognized; otherwise null. |
+| `assertionCategory` | Fixed categories for recognized xUnit assertion headers; otherwise null. No assertion arguments or expected/actual strings. |
+| `sqlState` | Explicit PostgreSQL exception header or SqlState field, checked against the supported SQLSTATE allowlist; otherwise null. |
+| `constraintName` | Explicit ConstraintName field or recognized PostgreSQL constraint-error header, checked against the photo constraint/index allowlist; otherwise null. |
+| `sourceFile`, `sourceLine` | Known Git-tracked C# file under src/ or tests/, no traversal or duplicate separators, positive bounded line. An absolute path is normalized only when its prefix exactly matches this checkout; arbitrary absolute/external paths are rejected. Only the relative result is published. |
+| `diagnosticCategory` | Assertion, PostgreSql, EntityFramework, KnownException, Unclassified or ExtractionUnavailable. |
+
+Missing evidence stays null. The supported SQLSTATE list is deliberately finite; unknown codes and constraints remain unavailable until explicitly reviewed. A message mentioning a type is not evidence of an inner exception unless the explicit marker is present. These are classifications extracted from an untrusted report, not independent proof of a database failure. Multiple failed executions remain independent, including theory rows sharing the same method. A passing suite has an empty failures array. An invalid/unreadable report produces `failedCount: null`, `diagnosticCategory: ReportUnavailable`, an empty failures array and a failed QA gate.
+
+TRX publication rebuilds a minimal XML document using validated method identities, outcomes, durations, generated IDs and recomputed counters. It does not copy raw XML nodes, messages, stacks, arbitrary attributes, timestamps, attachments or machine metadata. This keeps method/outcome/count compatibility with the existing verifier; sanitized theory display arguments remain omitted as before. Diagnostic extraction occurs before publication and does not modify the original document. Raw exception text never enters the sanitized TRX or JSON.
+
+XML processing prohibits DTDs and external resolution, limits file size and document characters to 32 MiB, and limits each diagnostic message and stack to 64 KiB. Oversized XML fails verification; oversized diagnostics are classified ExtractionUnavailable without changing the test outcome. Raw reports live under a random private temporary directory. Published and raw directories must have disjoint trees, checked before use. The existing finally cleanup validates the exact temporary parent and generated directory name before deletion. Never upload a raw results directory or add raw report attachments to artifact paths.
+
+Run `pwsh -NoProfile -File scripts/ci/Test-VerifyMember02Results.ps1` for existing identity/count/skip/missing-result checks, QA-DIAG-01 through QA-DIAG-20, and execution of the actual consolidated workflow gate with synthetic success, failure, cancelled, skipped and unauthorized-ref inputs. No additional packages are needed. Tests cover malicious messages, synthetic credentials, SQL parameter text, arbitrary XML attributes, unknown values, absolute/traversal paths, malformed XML, XXE, resource limits, multiple failures, sanitization round trips, extraction failure and raw/published path overlap. They use controlled temporary files and restore environment state.
+
+## Option C investigation baseline — 2026-11-21
+
+The repository was clean on Member-2 at `143228e3d3579f4c761d68ecdc58b216dc0f2178` before these diagnostic edits, with no staged/untracked work. Its preceding commit was `c4a5687`. The committed workflow exists. global.json requests SDK 10.0.400 with latestFeature roll-forward; the installed selection is 10.0.404. No branch changes or Git mutations were performed.
+
+The locally available historical `member02-postgres-1.zip` was inspected without modification. Its sanitized TRX contains 36 executions: 35 passed, one failed, zero skipped. The failure is `Andril.IntegrationTests.Database.PrivateProfilePhotoPersistenceTests.DatabaseRejectsMismatchedScopeDuplicateRequestsAndMultipleCurrentOrPendingRows`. No Output element or original exception evidence survives. A round trip through the revised sanitizer retains the failure, produces one safe failure record with unavailable exception fields, and remains rejected by the relational verifier. Those counts describe the historical artifact, not a fresh relational run.
+
+The existing LocalAccountDatabase fixture (AccountPersistenceTests.cs:124–173) checks the maintenance database postgres and a literal loopback hostname, disables pooling/error-detail inclusion, creates `andril_m2_test_<random GUID>`, applies Accounts migrations, and force-drops only that generated database, including initialization-failure cleanup. It does not accept a supplied database name for deletion. No PostgreSQL process, registered PostgreSQL service, installed PostgreSQL/Docker command, or M2 test connection was found through the bounded local checks, including unsandboxed read-only checks. The current server version, process ownership, privileges and actual disposable schema therefore could not be verified. No instance was started or initialized and no database connection was attempted.
+
+The Release integration project built with existing restored dependencies after a sandboxed attempt exited without useful diagnostics. Running the exact requested test filter with all three database opt-ins removed in the test child selected exactly one test: zero passed, one skipped, zero failed. Exit code zero is **not reproduction or a relational pass**. M3 and the role-test opt-in stayed disabled. Reproduction with PostgreSQL remains blocked until an existing disposable loopback maintenance environment can be verified. The normal focused command is:
+
+```powershell
+dotnet test tests/Andril.IntegrationTests/Andril.IntegrationTests.csproj --configuration Release --no-build --no-restore --filter "FullyQualifiedName=Andril.IntegrationTests.Database.PrivateProfilePhotoPersistenceTests.DatabaseRejectsMismatchedScopeDuplicateRequestsAndMultipleCurrentOrPendingRows"
+```
+
+Two fresh offline checks passed without skips: AccountPersistenceTests.MigrationMatchesModel_AndScriptOnlyTargetsAccountSchema and PrivateProfilePhotoPersistenceTests.MigrationIsAdditiveScopedAndMatchesSnapshot. These establish model/snapshot and generated-migration consistency, not the installed PostgreSQL catalog or runtime constraint behavior.
+
+### Source findings and pending root cause
+
+Classification: **J — root cause not yet established**. No exact failed assertion, assertion exception, EF exception, PostgreSQL exception/inner type, observed SQLSTATE or observed constraint can be recovered from the historical sanitized report or the skipped local execution.
+
+The complete failed method (PrivateProfilePhotoPersistenceTests.cs:150–195), its seed helper, photo entity, store, Accounts context, profile/photo mappings, photo migration and snapshot were inspected. A concrete candidate for later controlled verification is overlapping rejection conditions: line 156 reserves a PendingStorage row, while lines 174–175 try a second PendingStorage row for the same profile with module hobbies and expect ForeignKeyViolation (23503). The pending unique index is keyed by profile_id, so this input can also conflict with `uq_profile_photo_pending` (a 23505 uniqueness rejection). This supports a potential D/E test-data/expectation issue; it does **not** establish which assertion failed in GitHub. No conclusion about constraint evaluation order or actual SQLSTATE is asserted without execution.
+
+The probes use raw ExecuteSqlInterpolatedAsync, not SaveChanges for the deliberately invalid inserts. ReserveAsync commits its own transaction before the first probe. Thus a retained Added entity after a failed SaveChanges or an already-aborted explicit probe transaction is not demonstrated by this source. Later probes explicitly target check, pending, current and request rejection; execution is needed to establish how far the method gets.
+
+| Protection | Mapping / migration / snapshot source evidence | Live database evidence |
+| --- | --- | --- |
+| Profile/module FK | fk_profile_photo_profile_module on (profile_id, module) → private_module_profiles(id, module) | Unavailable |
+| Scoped request uniqueness | uq_profile_photo_request on (profile_id, module, request_id) | Unavailable |
+| Immutable object key uniqueness | uq_profile_photo_object unique on object_key | Unavailable |
+| One current photo | uq_profile_photo_current, profile_id, WHERE is_current | Unavailable |
+| One pending upload | uq_profile_photo_pending, profile_id, WHERE state = 'PendingStorage' | Unavailable |
+| Valid state and metadata | ck_profile_photo_state, ids, module, key, hashes, media, times, late_write | Unavailable |
+| Cleanup metadata | ck_profile_photo_cleanup and ix_profile_photo_cleanup | Unavailable |
+
+The mapping declares distinct index metadata names for current and pending indexes, while the migration/snapshot produce the intended profile_id unique indexes with separate filters. The offline consistency check passed. No evidence currently establishes a production domain, mapping or migration defect; live verification remains required.
+
+Recommended next action is to verify an existing disposable loopback PostgreSQL maintenance instance, record its version and ownership, and run this single test once with a private raw report. Inspect only that generated database's catalog and isolate the four intended scenarios if necessary. If the overlapping-violation candidate is confirmed, recommend a separately approved **test-only** correction: move the initial ReserveAsync call from line 156 to immediately after the foreign-key assertion, so that probe encounters no existing pending row. Assert SQLSTATE 23503 and the exact composite FK name, then independently arrange the pending/current/request cases so each violates only its target protection. Keep the invalid-current-PendingStorage check as a separate check-constraint probe. No correction is applied here.
+
+Alternatives are a state-valid Stored/current foreign-key probe before any photo reservation, or a dedicated seeded profile/database for each rejection case. The former changes the probe state and needs careful review of state checks; the latter provides stronger isolation but adds setup time. Merely accepting either SQLSTATE or weakening/removing the pending index would reduce the guarantee and is not recommended. If runtime evidence identifies a different failure, revise the proposed correction from that evidence. Owner approval is required before changing existing assertions, application code, mappings or migrations; the complete 36-case M2 relational regression follows the approved correction.
+
+Production registrations still use UnavailableProfilePhotos (AccountServiceCollectionExtensions.cs:26), whose IsApprovedAndConfigured is false (ProfilePhotos.cs:308). Photo processing, onboarding readiness and module authorization were not changed. No hosted service, user-data database, role, database constraint, application dependency, manifest case, workflow gate, trigger or retention setting was modified. No commit or push was performed. No fresh GitHub Actions run is claimed.
+
+Local diagnostic validation passed: PowerShell syntax checks on all three scripts, the existing verifier regression cases, all QA-DIAG-01–20 scenarios, historical sanitized-artifact round-trip rejection, and actual consolidated-gate failure/cancellation/skip/ref enforcement using synthetic inputs. Existing actionlint 1.7.12 accepted the unchanged workflow; existing Gitleaks 8.30.1 found zero findings in the four authorized changed files. Both existing tool archives were checked against official release SHA-256 lists, and each executable was checked against its verified archive before use. Raw local logs, temporary report copies and synthetic probes were cleaned up outside the repository. No new workflow execution or full relational regression was performed.
 
 ## First execution
 

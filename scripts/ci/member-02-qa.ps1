@@ -21,9 +21,10 @@ if (!$OutputDirectory) {
     $OutputDirectory = Join-Path $env:RUNNER_TEMP $env:QA_NAME
 }
 $out = [IO.Path]::GetFullPath($OutputDirectory)
+$raw = Join-Path ([IO.Path]::GetTempPath()) ("andril-qa-" + [guid]::NewGuid().ToString('N'))
+Assert-QaReportSeparation $out $raw
 $null = New-Item -ItemType Directory -Path $out -Force
 $details = Join-Path $out 'details.md'
-$raw = Join-Path ([IO.Path]::GetTempPath()) ("andril-qa-" + [guid]::NewGuid().ToString('N'))
 
 function Add-Detail([string]$Line) {
     Add-Content -LiteralPath $details -Value $Line -Encoding utf8
@@ -101,8 +102,24 @@ function Invoke-QaTests([string]$Suite, [string]$Project, $Expected, [string]$Mo
                 }
             }
         }
+        $failures = Export-QaFailureDiagnostics $report (Join-Path $out "$Suite-failures.json")
+        Add-Detail "- $Suite failed tests: $($failures.Count). Safe report: $Suite-failures.json (suite report artifact)."
+        foreach ($failure in $failures) {
+            $classification = if ($failure.exceptionType) { $failure.exceptionType } else { 'unavailable' }
+            $sqlState = if ($failure.sqlState) { $failure.sqlState } else { 'unavailable' }
+            $constraint = if ($failure.constraintName) { $failure.constraintName } else { 'unavailable' }
+            $location = if ($failure.sourceFile) { "$($failure.sourceFile):$($failure.sourceLine)" } else { 'unavailable' }
+            Add-Detail "- Failed: $($failure.testName); category: $($failure.diagnosticCategory); exception: $classification; SQLSTATE: $sqlState; constraint: $constraint; source: $location."
+        }
         Export-QaTrx $report (Join-Path $out "$Suite.trx")
-    } catch { $errors.Add("Could not verify or sanitize $Suite TRX: $($_.Exception.Message)") }
+    } catch {
+        $errors.Add("Could not verify or sanitize $Suite TRX. Diagnostic information unavailable.")
+        # Invalid reports remain a gate failure; no claims about their test inventory are possible.
+        ConvertTo-Json -InputObject ([ordered]@{ schemaVersion = 1; failedCount = $null;
+            diagnosticCategory = 'ReportUnavailable'; failures = @() }) -Depth 3 |
+            Set-Content -LiteralPath (Join-Path $out "$Suite-failures.json") -Encoding utf8
+        Add-Detail "- $Suite failure diagnostics unavailable. Safe report: $Suite-failures.json (suite report artifact)."
+    }
     if ($exitCode -ne 0) { $errors.Add("dotnet test exited $exitCode") }
     $coverageResult = 'collected in offline job'
     if ($Coverage) {
