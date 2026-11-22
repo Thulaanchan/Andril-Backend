@@ -122,8 +122,186 @@ public sealed class MapContributionSubmissionPreflightTests
     {
         var ports = new TestPorts { PhotoResult = result };
 
-        Assert.False(await ports.CheckAsync());
+        var writer = new WriterProbe();
+        Assert.Null(await PrepareAndSubmitInTestAsync(ports, ports, writer));
+        Assert.Equal(0, writer.Calls);
         Assert.Equal(new[] { "access", "capture", "attraction", "photo" }, ports.Calls);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" \t\r\n")]
+    public async Task MissingPhotoReferenceCannotProducePreparedSubmissionOrCallWriter(string? key)
+    {
+        var ports = new TestPorts();
+        var writer = new WriterProbe();
+
+        Assert.Null(await PrepareAndSubmitInTestAsync(ports, ports, writer, key));
+        Assert.Empty(ports.Calls);
+        Assert.Equal(0, writer.Calls);
+    }
+
+    [Theory]
+    [InlineData("https://example.invalid/private/photo.jpg")]
+    [InlineData("//example.invalid/private/photo.jpg")]
+    [InlineData("private\\photo.jpg")]
+    [InlineData("file:///private/photo.jpg")]
+    public async Task MalformedPrivateReferenceIsDeniedEvenWhenFakeVerifierReturnsVerified(string key)
+    {
+        var ports = new TestPorts();
+        var writer = new WriterProbe();
+
+        Assert.Null(await PrepareAndSubmitInTestAsync(ports, ports, writer, key));
+        Assert.Equal(key, ports.PhotoScope.Key);
+        Assert.Equal(0, writer.Calls);
+    }
+
+    [Theory]
+    [InlineData("matching", true)]
+    [InlineData("foreign owner", false)]
+    [InlineData("wrong attraction", false)]
+    [InlineData("wrong session", false)]
+    [InlineData("learning", false)]
+    [InlineData("social", false)]
+    [InlineData("gallery", false)]
+    public async Task SyntheticTrustedEvidenceMustMatchEveryScopeBeforePreparation(string scenario, bool expected)
+    {
+        var ports = new TestPorts();
+        var reader = new BoundTestPhotoReader(scenario);
+        var writer = new WriterProbe();
+
+        var prepared = await PrepareAndSubmitInTestAsync(ports, reader, writer);
+        Assert.Equal((OwnerId, AttractionId, SessionId, PhotoKey), reader.Request);
+        Assert.Equal(expected, prepared is not null);
+        Assert.Equal(expected ? 1 : 0, writer.Calls);
+        Assert.Equal(new[] { "access", "capture", "attraction" }, ports.Calls);
+        if (expected)
+            Assert.Equal(PhotoKey, prepared!.Contribution.PrivatePhotoStorageObjectKey);
+        else
+            Assert.Null(prepared); // No owner, media key, location or rejection detail is returned.
+    }
+
+    [Fact]
+    public async Task ProductionDenyAllReaderBlocksOtherwiseValidPreparation()
+    {
+        var ports = new TestPorts();
+        var writer = new WriterProbe();
+
+        Assert.Null(await PrepareAndSubmitInTestAsync(
+            ports, new DenyAllMapContributionPhotoEvidenceReader(), writer));
+        Assert.Equal(0, writer.Calls);
+        Assert.Equal(new[] { "access", "capture", "attraction" }, ports.Calls);
+    }
+
+    [Fact]
+    public async Task CancellationWhileFakeVerificationIsPendingDiscardsItsLateVerifiedResult()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var ports = new TestPorts();
+        var reader = new PendingTestPhotoReader();
+        var writer = new WriterProbe();
+        var attempt = PrepareAndSubmitInTestAsync(ports, reader, writer, cancellationToken: cancellation.Token);
+        try
+        {
+            await reader.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(attempt.IsCompleted);
+            Assert.Equal(cancellation.Token, reader.Token);
+            cancellation.Cancel();
+            reader.Completion.TrySetResult(MapContributionPhotoVerificationResult.Verified);
+            var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => attempt);
+            Assert.Equal(cancellation.Token, error.CancellationToken);
+            Assert.Equal(0, writer.Calls);
+        }
+        finally
+        {
+            reader.Completion.TrySetResult(MapContributionPhotoVerificationResult.Denied);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SimulatedStorageFailuresPropagateWithoutPreparedResultOrWriterCall(bool timeout)
+    {
+        Exception failure = timeout
+            ? new TimeoutException("Synthetic storage timeout.")
+            : new System.IO.IOException("Synthetic storage failure.");
+        var ports = new TestPorts { FailAt = "photo", Failure = failure };
+        var writer = new WriterProbe();
+
+        var error = await Assert.ThrowsAsync(failure.GetType(),
+            () => PrepareAndSubmitInTestAsync(ports, ports, writer));
+        Assert.Same(failure, error);
+        Assert.Equal((OwnerId, AttractionId, SessionId, PhotoKey), ports.PhotoScope);
+        Assert.Equal(0, writer.Calls);
+    }
+
+    // Test-only composition. There is no production submission orchestrator to exercise.
+    private static async Task<MapContributionSubmissionPreflight.PreparedSubmission?> PrepareAndSubmitInTestAsync(
+        TestPorts ports, IMapContributionPhotoEvidenceReader reader, WriterProbe writer,
+        string? key = PhotoKey, CancellationToken cancellationToken = default)
+    {
+        var prepared = await new MapContributionSubmissionPreflight(ports, ports, ports, reader)
+            .PrepareAsync(AttractionId, SessionId, ports.Observation, key, "Description", cancellationToken);
+        if (prepared is not null)
+            await writer.SubmitAsync(prepared, cancellationToken);
+        return prepared;
+    }
+
+    private sealed class WriterProbe : IMapContributionSubmissionWriter
+    {
+        public int Calls { get; private set; }
+
+        public Task<MapSubmissionResult> SubmitAsync(
+            MapContributionSubmissionPreflight.PreparedSubmission prepared,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls++;
+            return Task.FromResult(new MapSubmissionResult(MapSubmissionOutcome.Created, prepared.Contribution.ContributionId));
+        }
+    }
+
+    // Synthetic metadata only. This double establishes no real camera or storage provenance.
+    private sealed class BoundTestPhotoReader(string scenario) : IMapContributionPhotoEvidenceReader
+    {
+        public (Guid Owner, Guid Attraction, Guid Session, string? Key) Request { get; private set; }
+
+        public Task<MapContributionPhotoVerificationResult> VerifyAsync(
+            Guid ownerHobbiesModuleProfileId, Guid attractionId, Guid captureSessionId,
+            string? privatePhotoStorageObjectKey, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Request = (ownerHobbiesModuleProfileId, attractionId, captureSessionId, privatePhotoStorageObjectKey);
+            var evidenceOwner = scenario == "foreign owner" ? ForeignId : OwnerId;
+            var evidenceAttraction = scenario == "wrong attraction" ? ForeignId : AttractionId;
+            var evidenceSession = scenario == "wrong session" ? ForeignId : SessionId;
+            var module = scenario is "learning" or "social" ? scenario : "hobbies";
+            var source = scenario == "gallery" ? "gallery" : "map-camera";
+            var verified = Request == (evidenceOwner, evidenceAttraction, evidenceSession, PhotoKey)
+                && module == "hobbies" && source == "map-camera";
+            return Task.FromResult(verified
+                ? MapContributionPhotoVerificationResult.Verified
+                : MapContributionPhotoVerificationResult.Denied);
+        }
+    }
+
+    private sealed class PendingTestPhotoReader : IMapContributionPhotoEvidenceReader
+    {
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<MapContributionPhotoVerificationResult> Completion { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public CancellationToken Token { get; private set; }
+
+        public Task<MapContributionPhotoVerificationResult> VerifyAsync(
+            Guid ownerHobbiesModuleProfileId, Guid attractionId, Guid captureSessionId,
+            string? privatePhotoStorageObjectKey, CancellationToken cancellationToken = default)
+        {
+            Token = cancellationToken;
+            Started.TrySetResult();
+            return Completion.Task;
+        }
     }
 
     [Fact]
@@ -193,7 +371,7 @@ public sealed class MapContributionSubmissionPreflightTests
         public string? CancelAt { get; init; }
         public CancellationTokenSource? Cancellation { get; init; }
         public string? FailAt { get; init; }
-        public InvalidOperationException Failure { get; } = new("Test dependency failure.");
+        public Exception Failure { get; init; } = new InvalidOperationException("Test dependency failure.");
 
         public Task<bool> CheckAsync(CancellationToken cancellationToken = default) =>
             new MapContributionSubmissionPreflight(this, this, this, this)
