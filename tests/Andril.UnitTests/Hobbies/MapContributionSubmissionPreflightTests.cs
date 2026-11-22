@@ -221,6 +221,39 @@ public sealed class MapContributionSubmissionPreflightTests
     }
 
     [Fact]
+    public async Task VerifiedPhotoCannotAuthorizeASubstitutedObjectOnTheSamePreflightInstance()
+    {
+        var ports = new TestPorts();
+        // Synthetic object binding only. This does not establish camera or storage authenticity.
+        var reader = new BoundTestPhotoReader("matching");
+        var writer = new WriterProbe();
+        var preflight = new MapContributionSubmissionPreflight(ports, ports, ports, reader, ports.Clock);
+
+        async Task<MapContributionSubmissionPreflight.PreparedSubmission?> SubmitInTestAsync(string key)
+        {
+            var prepared = await preflight.PrepareAsync(
+                AttractionId, SessionId, ports.Observation, key, "Description");
+            if (prepared is not null)
+                await writer.SubmitAsync(prepared);
+            return prepared;
+        }
+
+        Assert.NotNull(await SubmitInTestAsync(PhotoKey));
+        Assert.Equal(1, writer.Calls);
+        const string substitutedKey = "private/another-camera-object";
+        Assert.Null(await SubmitInTestAsync(substitutedKey));
+        Assert.Equal((OwnerId, AttractionId, SessionId, substitutedKey), reader.Request);
+        Assert.Equal(2, reader.Calls);
+        Assert.Equal(1, writer.Calls);
+
+        var retry = await SubmitInTestAsync(PhotoKey);
+        Assert.NotNull(retry);
+        Assert.Equal(PhotoKey, retry.Contribution.PrivatePhotoStorageObjectKey);
+        Assert.Equal(3, reader.Calls);
+        Assert.Equal(2, writer.Calls);
+    }
+
+    [Fact]
     public async Task ProductionDenyAllReaderBlocksOtherwiseValidPreparation()
     {
         var ports = new TestPorts();
@@ -304,6 +337,7 @@ public sealed class MapContributionSubmissionPreflightTests
     // Synthetic metadata only. This double establishes no real camera or storage provenance.
     private sealed class BoundTestPhotoReader(string scenario) : IMapContributionPhotoEvidenceReader
     {
+        public int Calls { get; private set; }
         public (Guid Owner, Guid Attraction, Guid Session, string? Key) Request { get; private set; }
 
         public Task<MapContributionPhotoVerificationResult> VerifyAsync(
@@ -311,6 +345,7 @@ public sealed class MapContributionSubmissionPreflightTests
             string? privatePhotoStorageObjectKey, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            Calls++;
             Request = (ownerHobbiesModuleProfileId, attractionId, captureSessionId, privatePhotoStorageObjectKey);
             var evidenceOwner = scenario == "foreign owner" ? ForeignId : OwnerId;
             var evidenceAttraction = scenario == "wrong attraction" ? ForeignId : AttractionId;
