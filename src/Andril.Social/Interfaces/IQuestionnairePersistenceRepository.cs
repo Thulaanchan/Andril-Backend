@@ -20,34 +20,44 @@ namespace Andril.Social.Interfaces;
 /// </item>
 /// <item>
 /// <description>
-/// <b>Association vs. Authorization:</b> Profile identifiers (<c>profileId</c>) represent entity correlation keys linking
-/// questionnaire responses to a private Social profile. They are NOT proof of identity, membership, or caller authorization.
+/// <b>Association vs. Authorization:</b> A caller-supplied profile identifier (<c>profileId</c>) represents an entity
+/// correlation scope, NOT proof of authenticated identity, ownership, or permission. Caller-supplied identifiers must never
+/// be treated as trusted authorization evidence.
 /// </description>
 /// </item>
 /// <item>
 /// <description>
-/// <b>Pre-Operation Authorization:</b> Trusted authorization must be performed by authoritative application services
-/// before invoking any persistence operation. The authoritative M2 Accounts layer governs account status, active profile access,
-/// 18+ adult eligibility, and module opt-in/revocation.
+/// <b>Mandatory Trusted Authorization:</b> Before protected repository operations are invoked, the authoritative application
+/// or service layer must verify all required M2 authorization prerequisites:
+/// authenticated account identity, private Social profile ownership, active Dating module eligibility, explicit Dating opt-in,
+/// adult eligibility (18+), and any relevant restrictions or revocations.
 /// </description>
 /// </item>
 /// <item>
 /// <description>
-/// <b>Data Privacy:</b> Raw questionnaire answers, question IDs, option selections, and timestamps are strictly private.
-/// Under no circumstances may questionnaire details be leaked to other modules (Learning, Hobbies), exposed in public Explore
-/// candidate matching cards, or logged into diagnostic channels.
+/// <b>Authorization Failures and Fail-Closed Semantics:</b> Authorization Denied and Authorization Unavailable are distinct
+/// outcomes at the trusted application boundary; neither outcome authorizes persistence operations. Unavailable authorization
+/// dependencies must fail closed. Upstream authorization failures must not be conflated with or treated as ordinary missing records.
 /// </description>
 /// </item>
 /// <item>
 /// <description>
-/// <b>Profile-Scoped Isolation:</b> All operations are strictly scoped to a single Social profile. Unscoped queries, cross-profile
-/// reads, and multi-tenant bulk listings are explicitly prohibited to prevent data leakage.
+/// <b>Profile-Scoped Isolation:</b> All operations are strictly constrained to an authorized Social profile scope. Implementations
+/// must enforce profile scoping on all reads and writes to prevent cross-profile retrieval, overwrites, and data leakage.
+/// Unscoped queries and multi-tenant bulk listings are explicitly prohibited.
+/// </description>
+/// </item>
+/// <item>
+/// <description>
+/// <b>Data Privacy Safeguards:</b> Raw questionnaire responses and answers (including question IDs, option selections, and timestamps)
+/// are confidential private Social profile data. Under no circumstances may questionnaire details be leaked to other modules (Learning, Hobbies),
+/// exposed in public Dating Explore candidate cards, written to unprotected diagnostic logs, or disclosed via unauthorized endpoints.
 /// </description>
 /// </item>
 /// <item>
 /// <description>
 /// <b>Failure Safety:</b> Operation cancellation, timeouts, and persistence dependency failures must fail securely without
-/// bypassing authorization checks or partially exposing uncommitted state.
+/// bypassing authorization checks or disclosing private questionnaire information.
 /// </description>
 /// </item>
 /// <item>
@@ -60,7 +70,7 @@ namespace Andril.Social.Interfaces;
 /// <description>
 /// <b>Deferred Technical Decisions:</b> Specific database persistence mechanisms (e.g., PostgreSQL table schema, EF Core mappings),
 /// version uniqueness constraints, concurrent modification handling, questionnaire retention periods, and response replacement
-/// lifecycles remain deferred to future M2, M5, and M6 architecture review.
+/// or lifecycle policies remain deferred to future M2, M5, and M6 architecture review.
 /// </description>
 /// </item>
 /// </list>
@@ -76,24 +86,17 @@ public interface IQuestionnairePersistenceRepository
     /// <param name="cancellationToken">A token to observe for operation cancellation.</param>
     /// <returns>
     /// A task representing the asynchronous read operation. The task result contains the matching <see cref="QuestionnaireResponseEntity"/>,
-    /// or <see langword="null"/> if the record is missing, does not belong to the specified profile scope, or is inaccessible.
+    /// or <see langword="null"/> if no matching response exists within the already authorized Social profile scope.
+    /// Returning <see langword="null"/> specifically denotes that no record was found; it must not be used to represent
+    /// an authorization denial or an unavailable authorization dependency.
     /// </returns>
+    /// <remarks>
+    /// Implementations must verify that the requested response belongs strictly to <paramref name="profileId"/>,
+    /// returning <see langword="null"/> if the record does not exist or does not match the authorized profile scope.
+    /// </remarks>
     Task<QuestionnaireResponseEntity?> GetByIdAsync(
         Guid profileId,
         Guid responseId,
-        CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// Asynchronously retrieves the current internal questionnaire response associated with an authorized Social profile.
-    /// </summary>
-    /// <param name="profileId">The unique identifier of the owning Social profile scope.</param>
-    /// <param name="cancellationToken">A token to observe for operation cancellation.</param>
-    /// <returns>
-    /// A task representing the asynchronous read operation. The task result contains the current <see cref="QuestionnaireResponseEntity"/>
-    /// for the specified profile scope, or <see langword="null"/> if no response has been recorded or it is inaccessible.
-    /// </returns>
-    Task<QuestionnaireResponseEntity?> GetByProfileIdAsync(
-        Guid profileId,
         CancellationToken cancellationToken = default);
 
     /// <summary>
@@ -106,6 +109,7 @@ public interface IQuestionnairePersistenceRepository
     /// <remarks>
     /// Implementations must verify identity consistency between <paramref name="profileId"/> and <paramref name="response"/>,
     /// enforce authorized profile ownership within the persistence boundary, and prevent cross-profile overwrites.
+    /// Database transactions and uniqueness constraints are not established by this contract alone.
     /// Concrete lifecycle semantics (insert, replace, or versioned append) remain deferred to future persistence schema review.
     /// </remarks>
     Task SaveAsync(
