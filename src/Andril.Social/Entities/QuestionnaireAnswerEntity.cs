@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json.Serialization;
 
 namespace Andril.Social.Entities;
 
@@ -29,26 +30,31 @@ public sealed class QuestionnaireAnswerEntity : IEquatable<QuestionnaireAnswerEn
     /// <summary>
     /// Gets the unique identifier of this questionnaire answer.
     /// </summary>
+    [JsonIgnore]
     public Guid Id { get; private set; }
 
     /// <summary>
     /// Gets the unique identifier of the parent questionnaire response session.
     /// </summary>
+    [JsonIgnore]
     public Guid ResponseId { get; private set; }
 
     /// <summary>
     /// Gets the question identifier (preserved exactly as supplied).
     /// </summary>
+    [JsonIgnore]
     public string QuestionId { get; private set; } = null!;
 
     /// <summary>
     /// Gets the selected option identifier (preserved exactly as supplied).
     /// </summary>
+    [JsonIgnore]
     public string OptionId { get; private set; } = null!;
 
     /// <summary>
     /// Gets the explicit UTC timestamp recording when the answer was selected.
     /// </summary>
+    [JsonIgnore]
     public DateTimeOffset AnsweredAtUtc { get; private set; }
 
     /// <summary>
@@ -145,5 +151,5 @@ public sealed class QuestionnaireAnswerEntity : IEquatable<QuestionnaireAnswerEn
     /// Returns a non-sensitive diagnostic string representation concealing confidential question and option values.
     /// </summary>
     public override string ToString() =>
-        $"QuestionnaireAnswerEntity [Id={Id}, ResponseId={ResponseId}]";
+        "QuestionnaireAnswerEntity [private]";
 }
