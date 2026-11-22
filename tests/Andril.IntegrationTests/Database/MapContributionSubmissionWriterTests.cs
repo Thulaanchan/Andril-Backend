@@ -74,19 +74,23 @@ public sealed class MapContributionSubmissionWriterTests
                 var prepared = await PrepareAsync(factory);
                 var row = prepared.Contribution;
                 await using var probe = factory.CreateDbContext();
-                if (column == "missing")
-                    await probe.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM andril_hobbies.map_contribution_capture_sessions WHERE session_id = {row.CaptureSessionId}");
-                else if (column == "gps")
-                    await probe.Database.ExecuteSqlInterpolatedAsync($"UPDATE andril_hobbies.map_attractions SET latitude = 45 WHERE attraction_id = {row.AttractionId}");
-                else
+                FormattableString mutation = column switch
                 {
-                    var value = column == "completed_at_utc" ? "NULL"
-                        : column == "started_at_utc" ? "started_at_utc - interval '1 second'"
-                        : $"'{Guid.NewGuid()}'::uuid";
-                    // Identifiers and expressions come only from the fixed test cases above.
-                    await probe.Database.ExecuteSqlRawAsync(
-                        $"UPDATE andril_hobbies.map_contribution_capture_sessions SET {column} = {value} WHERE session_id = '{row.CaptureSessionId}'");
-                }
+                    "missing" =>
+                        $"DELETE FROM andril_hobbies.map_contribution_capture_sessions WHERE session_id = {row.CaptureSessionId}",
+                    "gps" =>
+                        $"UPDATE andril_hobbies.map_attractions SET latitude = 45 WHERE attraction_id = {row.AttractionId}",
+                    "owner_hobbies_module_profile_id" =>
+                        $"UPDATE andril_hobbies.map_contribution_capture_sessions SET owner_hobbies_module_profile_id = {Guid.NewGuid()} WHERE session_id = {row.CaptureSessionId}",
+                    "attraction_id" =>
+                        $"UPDATE andril_hobbies.map_contribution_capture_sessions SET attraction_id = {Guid.NewGuid()} WHERE session_id = {row.CaptureSessionId}",
+                    "completed_at_utc" =>
+                        $"UPDATE andril_hobbies.map_contribution_capture_sessions SET completed_at_utc = NULL WHERE session_id = {row.CaptureSessionId}",
+                    "started_at_utc" =>
+                        $"UPDATE andril_hobbies.map_contribution_capture_sessions SET started_at_utc = started_at_utc - interval '1 second' WHERE session_id = {row.CaptureSessionId}",
+                    _ => throw new InvalidOperationException("Unknown test mutation.")
+                };
+                await probe.Database.ExecuteSqlInterpolatedAsync(mutation);
                 var result = await new MapContributionSubmissionWriter(factory).SubmitAsync(prepared);
                 Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.Denied), result);
                 Assert.Empty(await probe.MapContributions.ToListAsync());
