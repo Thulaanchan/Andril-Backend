@@ -516,7 +516,7 @@ public sealed class MapContributionPersistenceTests
     }
 
     // Reuse the M3 opt-in attribute. The existing database lifecycle helpers are private to their fixtures.
-    private static async Task WithDatabaseAsync(Func<string, Task> test)
+    internal static async Task WithDatabaseAsync(Func<string, Task> test)
     {
         var configured = Environment.GetEnvironmentVariable("ANDRIL_M3_TEST_POSTGRES");
         if (string.IsNullOrWhiteSpace(configured))
