@@ -9,6 +9,8 @@ using System.Xml.Linq;
 using Andril.API.Authorization.Hobbies;
 using Andril.Hobbies.DTOs;
 using Andril.Hobbies.Interfaces;
+using Andril.Persistence.DbContexts;
+using Microsoft.EntityFrameworkCore;
 using Andril.SecurityTests.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.DataProtection.KeyManagement;
@@ -54,6 +56,8 @@ public sealed class GalleryStartupRouteInventoryTests(ITestOutputHelper output)
         var services = factory.Services.GetRequiredService<IServiceProviderIsService>();
         Assert.False(services.IsService(typeof(IGalleryService)));
         Assert.False(services.IsService(typeof(IGalleryPrivateMediaAccessReader)));
+        Assert.False(services.IsService(typeof(HobbiesGalleryDbContext)));
+        Assert.False(services.IsService(typeof(DbContextOptions<HobbiesGalleryDbContext>)));
         output.WriteLine($"Inspected {routes.Length} registered route endpoints, including the synthetic authentication probe.");
     }
 
