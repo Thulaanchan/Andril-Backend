@@ -1,5 +1,7 @@
 using System;
+using System.Data.Common;
 using System.Linq;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.Hobbies.Map.Contributions;
@@ -17,6 +19,204 @@ namespace Andril.IntegrationTests.Database;
 
 public sealed class MapContributionSubmissionWriterTests
 {
+    [MapCapturePostgresFact]
+    public Task NamedUniqueViolationReconcilesOnlyThePreparedOwnerAndAttraction() =>
+        MapContributionPersistenceTests.WithDatabaseAsync(async connection =>
+        {
+            foreach (var scope in new[] { "matching", "foreign owner", "wrong attraction" })
+            {
+                var factory = new Contexts(connection);
+                var prepared = await PrepareAsync(factory);
+                var original = prepared.Contribution;
+                var persistedId = Guid.NewGuid();
+                var owner = scope == "foreign owner" ? Guid.NewGuid() : original.OwnerHobbiesModuleProfileId;
+                var attraction = scope == "wrong attraction" ? Guid.NewGuid() : original.AttractionId;
+                var conflict = new RealDatabaseFailure(original, primaryKey: false);
+                var reconcileFactory = new Contexts(connection, conflict, created =>
+                {
+                    if (created != 2)
+                        return;
+                    // Simulate a committed competing record after the failed writer releases
+                    // its session lock. The reconciliation query must use a fresh context.
+                    using var seed = factory.CreateDbContext();
+                    seed.Database.ExecuteSqlInterpolated($"""
+                        UPDATE andril_hobbies.map_contribution_capture_sessions
+                        SET owner_hobbies_module_profile_id = {owner}, attraction_id = {attraction}
+                        WHERE session_id = {original.CaptureSessionId}
+                        """);
+                    seed.MapContributions.Add(Copy(original, persistedId, owner, attraction));
+                    seed.SaveChanges();
+                });
+
+                var result = await new MapContributionSubmissionWriter(reconcileFactory).SubmitAsync(prepared);
+                Assert.Equal(2, reconcileFactory.Created);
+                var error = Assert.IsType<PostgresException>(conflict.Error);
+                Assert.Equal(PostgresErrorCodes.UniqueViolation, error.SqlState);
+                Assert.Equal("andril_hobbies", error.SchemaName);
+                Assert.Equal("map_contributions", error.TableName);
+                Assert.Equal("ux_map_contributions_capture_session_id", error.ConstraintName);
+                Assert.Equal(scope == "matching"
+                    ? new MapSubmissionResult(MapSubmissionOutcome.ExistingAuthorized, persistedId)
+                    : new MapSubmissionResult(MapSubmissionOutcome.Denied), result);
+                await using var probe = factory.CreateDbContext();
+                var rows = await probe.MapContributions.AsNoTracking()
+                    .Where(row => row.CaptureSessionId == original.CaptureSessionId).ToListAsync();
+                Assert.Equal(persistedId, Assert.Single(rows).ContributionId);
+                Assert.DoesNotContain(rows, row => row.ContributionId == original.ContributionId);
+                Assert.Empty(await probe.FlightPointsLedgerEntries.ToListAsync());
+            }
+        });
+
+    [MapCapturePostgresFact]
+    public Task UnrelatedPrimaryKeyAndCheckViolationsNeverEnterReconciliation() =>
+        MapContributionPersistenceTests.WithDatabaseAsync(async connection =>
+        {
+            foreach (var primaryKey in new[] { true, false })
+            {
+                var factory = new Contexts(connection);
+                var prepared = await PrepareAsync(factory);
+                var failure = new RealDatabaseFailure(prepared.Contribution, primaryKey, check: !primaryKey);
+                var failingFactory = new Contexts(connection, failure);
+                var result = await new MapContributionSubmissionWriter(failingFactory).SubmitAsync(prepared);
+                Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.InfrastructureFailure), result);
+                Assert.Equal(1, failingFactory.Created);
+                var error = Assert.IsType<PostgresException>(failure.Error);
+                Assert.Equal(primaryKey ? PostgresErrorCodes.UniqueViolation : PostgresErrorCodes.CheckViolation, error.SqlState);
+                Assert.Equal(primaryKey ? "pk_map_contributions" : "ck_map_contribution_description", error.ConstraintName);
+                await using var probe = factory.CreateDbContext();
+                Assert.Empty(await probe.MapContributions.ToListAsync());
+                Assert.Empty(await probe.FlightPointsLedgerEntries.ToListAsync());
+            }
+        });
+
+    [MapCapturePostgresFact]
+    public Task FailedFirstWriterRollsBackWhileBlockedSecondWriterCommitsExactlyOneRow() =>
+        MapContributionPersistenceTests.WithDatabaseAsync(async connection =>
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            var token = deadline.Token;
+            var factory = new Contexts(connection);
+            var prepared = await PrepareAsync(factory);
+            var firstBarrier = new PauseAfterInsert();
+            var secondProbe = new SessionLockProbe();
+            var first = new MapContributionSubmissionWriter(new Contexts(connection, firstBarrier))
+                .SubmitAsync(prepared, token);
+            Task<MapSubmissionResult>? second = null;
+            try
+            {
+                var firstPid = await firstBarrier.Inserted.Task.WaitAsync(token);
+                await using var observer = new NpgsqlConnection(connection);
+                await observer.OpenAsync(token);
+                await using (var count = new NpgsqlCommand(
+                    "SELECT count(*) FROM andril_hobbies.map_contributions", observer))
+                    Assert.Equal(0L, await count.ExecuteScalarAsync(token));
+                second = new MapContributionSubmissionWriter(new Contexts(connection, secondProbe))
+                    .SubmitAsync(prepared, token);
+                var secondPid = await secondProbe.Attempted.Task.WaitAsync(token);
+                Assert.NotEqual(firstPid, secondPid);
+                await using var blocking = new NpgsqlCommand(
+                    "SELECT @first = ANY(pg_blocking_pids(@second))", observer);
+                blocking.Parameters.AddWithValue("first", firstPid);
+                blocking.Parameters.AddWithValue("second", secondPid);
+                while (await blocking.ExecuteScalarAsync(token) is not true)
+                {
+                    Assert.False(second.IsCompleted, "The contender must remain blocked by the first writer.");
+                    await Task.Delay(20, token);
+                }
+                Assert.False(first.IsCompleted);
+                Assert.False(second.IsCompleted);
+                firstBarrier.Release.TrySetResult();
+                Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.InfrastructureFailure), await first.WaitAsync(token));
+                Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.Created, prepared.Contribution.ContributionId),
+                    await second.WaitAsync(token));
+                await using var probe = factory.CreateDbContext();
+                var row = Assert.Single(await probe.MapContributions.ToListAsync());
+                Assert.Equal(prepared.Contribution.ContributionId, row.ContributionId);
+                Assert.Equal(MapContributionModerationStatus.PendingReview, row.ModerationStatus);
+                Assert.Empty(await probe.FlightPointsLedgerEntries.ToListAsync());
+            }
+            finally
+            {
+                firstBarrier.Release.TrySetResult();
+                await first;
+                if (second is not null)
+                    await second;
+            }
+        });
+
+    private static MapContribution Copy(MapContribution row, Guid id, Guid owner, Guid attraction) =>
+        MapContribution.Create(id, owner, attraction, row.CaptureSessionId,
+            row.PrivatePhotoStorageObjectKey, row.Description, row.LocationEvidence, row.SubmittedAtUtc);
+
+    private sealed class RealDatabaseFailure(MapContribution row, bool primaryKey, bool check = false)
+        : SaveChangesInterceptor
+    {
+        public PostgresException? Error { get; private set; }
+
+        public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default)
+        {
+            var context = eventData.Context!;
+            if (check)
+            {
+                context.Entry(row).Property(value => value.Description).CurrentValue = " ";
+                return result;
+            }
+            var capture = primaryKey ? Guid.NewGuid() : row.CaptureSessionId;
+            if (primaryKey)
+                await context.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO andril_hobbies.map_contribution_capture_sessions
+                        (session_id, owner_hobbies_module_profile_id, attraction_id, started_at_utc, completed_at_utc)
+                    SELECT {capture}, owner_hobbies_module_profile_id, attraction_id, started_at_utc, completed_at_utc
+                    FROM andril_hobbies.map_contribution_capture_sessions WHERE session_id = {row.CaptureSessionId}
+                    """, cancellationToken);
+            var id = primaryKey ? row.ContributionId : Guid.NewGuid();
+            var evidence = JsonSerializer.Serialize(row.LocationEvidence);
+            await context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO andril_hobbies.map_contributions
+                    (contribution_id, owner_hobbies_module_profile_id, attraction_id, capture_session_id,
+                     private_photo_storage_object_key, description, location_evidence, submitted_at_utc, moderation_status)
+                VALUES ({id}, {row.OwnerHobbiesModuleProfileId}, {row.AttractionId}, {capture},
+                        {row.PrivatePhotoStorageObjectKey}, {row.Description}, CAST({evidence} AS jsonb), {row.SubmittedAtUtc}, 1)
+                """, cancellationToken);
+            return result;
+        }
+
+        public override Task SaveChangesFailedAsync(DbContextErrorEventData eventData, CancellationToken cancellationToken = default)
+        {
+            Error = (eventData.Exception as DbUpdateException)?.InnerException as PostgresException;
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class PauseAfterInsert : SaveChangesInterceptor
+    {
+        public TaskCompletionSource<int> Inserted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override async ValueTask<int> SavedChangesAsync(
+            SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
+        {
+            Inserted.TrySetResult(((NpgsqlConnection)eventData.Context!.Database.GetDbConnection()).ProcessID);
+            await Release.Task.WaitAsync(cancellationToken);
+            throw new NpgsqlException("Synthetic failure after insert and before commit.");
+        }
+    }
+
+    private sealed class SessionLockProbe : DbCommandInterceptor
+    {
+        public TaskCompletionSource<int> Attempted { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+            DbCommand command, CommandEventData eventData, InterceptionResult<DbDataReader> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (command.CommandText.Contains("FOR UPDATE", StringComparison.Ordinal))
+                Attempted.TrySetResult(((NpgsqlConnection)command.Connection!).ProcessID);
+            return ValueTask.FromResult(result);
+        }
+    }
+
     [MapCapturePostgresFact]
     public Task LockedSessionCancellationAndRollbackLeaveIndependentSessionAvailable() =>
         MapContributionPersistenceTests.WithDatabaseAsync(async connection =>
@@ -158,10 +358,15 @@ public sealed class MapContributionSubmissionWriterTests
             Task.FromResult(MapContributionPhotoVerificationResult.Verified);
     }
 
-    private sealed class Contexts(string connection, IInterceptor? interceptor = null) : IDbContextFactory<HobbiesMapDbContext>
+    private sealed class Contexts(string connection, IInterceptor? interceptor = null, Action<int>? beforeCreate = null)
+        : IDbContextFactory<HobbiesMapDbContext>
     {
+        public int Created { get; private set; }
+
         public HobbiesMapDbContext CreateDbContext()
         {
+            Created++;
+            beforeCreate?.Invoke(Created);
             var options = new DbContextOptionsBuilder<HobbiesMapDbContext>()
                 .UseNpgsql(connection, HobbiesDatabaseOptions.ConfigureMapHistory);
             if (interceptor is not null)
