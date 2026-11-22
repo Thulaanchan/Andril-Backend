@@ -39,6 +39,107 @@ public sealed class FlightPointsLedgerPersistenceTests
     private static readonly DateTimeOffset CreatedAt = new(2026, 11, 19, 12, 0, 0, TimeSpan.FromHours(5.5));
 
     [Fact]
+    public async Task FindOwned_RejectsEmptyIdentifiersAndCancellationWithoutOpeningDatabase()
+    {
+        var probe = new OfflineLedgerQueryProbe();
+        await using var context = CreateContext(interceptor: probe);
+        var repository = Repository(context);
+        Assert.Null(await repository.FindOwnedAsync(Guid.Empty, Owner));
+        Assert.Null(await repository.FindOwnedAsync(FirstId, Guid.Empty));
+        var token = new CancellationToken(canceled: true);
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            repository.FindOwnedAsync(Guid.Empty, Guid.Empty, token));
+        Assert.Equal(token, error.CancellationToken);
+        Assert.Equal(0, probe.OpenAttempts);
+        Assert.Null(probe.Sql);
+        Assert.Empty(context.ChangeTracker.Entries());
+        AssertClosed(context);
+    }
+
+    [MapCapturePostgresFact]
+    public Task Append_CancellationAfterInsertsRollsBackWholeBatchAndAllowsSafeRetry() =>
+        WithDatabaseAsync(async connection =>
+        {
+            using var cancellation = new CancellationTokenSource();
+            var canceledAfterInsert = new CancelAfterLedgerInsert(cancellation);
+            var first = Grant(FirstId);
+            var second = Grant(SecondId, FlightPointsRewardType.FirstExplorer);
+            await using (var writer = CreateContext(connection, interceptor: canceledAfterInsert))
+            {
+                var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                    Repository(writer).AppendAsync([first, second], cancellation.Token));
+                Assert.Equal(cancellation.Token, error.CancellationToken);
+                Assert.Equal(2, canceledAfterInsert.InsertedRows);
+                Assert.Empty(writer.ChangeTracker.Entries());
+                Assert.Null(writer.Database.CurrentTransaction);
+            }
+            await using var retry = CreateContext(connection);
+            var repository = Repository(retry);
+            Assert.Empty(await retry.FlightPointsLedgerEntries.ToListAsync());
+            Assert.Equal(0L, await repository.GetNetPointsAsync(Owner));
+            await repository.AppendAsync([first, second]);
+            Assert.Equal(2, await retry.FlightPointsLedgerEntries.CountAsync());
+            Assert.Equal(15L, await repository.GetNetPointsAsync(Owner));
+            Assert.Empty(retry.ChangeTracker.Entries());
+        });
+
+    [MapCapturePostgresFact]
+    public Task Append_LostCommitAcknowledgementPropagatesWithoutRetryOrDuplicateRows() =>
+        WithDatabaseAsync(async connection =>
+        {
+            var lostAcknowledgement = new LoseLedgerCommitAcknowledgement();
+            var first = Grant(FirstId);
+            var second = Grant(SecondId, FlightPointsRewardType.FirstExplorer);
+            await using (var writer = CreateContext(connection, interceptor: lostAcknowledgement))
+            {
+                var failure = await Assert.ThrowsAsync<NpgsqlException>(() =>
+                    Repository(writer).AppendAsync([first, second]));
+                Assert.Same(lostAcknowledgement.Failure, failure);
+                Assert.Equal(1, lostAcknowledgement.Commits);
+                Assert.Empty(writer.ChangeTracker.Entries());
+                Assert.Null(writer.Database.CurrentTransaction);
+            }
+            await using var reader = CreateContext(connection);
+            var repository = Repository(reader);
+            AssertEntry(first, await repository.FindOwnedAsync(FirstId, Owner));
+            AssertEntry(second, await repository.FindOwnedAsync(SecondId, Owner));
+            Assert.Null(await repository.FindOwnedAsync(FirstId, OtherOwner));
+            Assert.Equal(15L, await repository.GetNetPointsAsync(Owner));
+            await AssertDatabaseErrorAsync(() => repository.AppendAsync([first, second]),
+                PostgresErrorCodes.UniqueViolation, PrimaryKey, wrapped: true);
+            Assert.Equal(2, await reader.FlightPointsLedgerEntries.CountAsync());
+            Assert.Equal(15L, await repository.GetNetPointsAsync(Owner));
+            Assert.Empty(reader.ChangeTracker.Entries());
+        });
+
+    private sealed class CancelAfterLedgerInsert(CancellationTokenSource cancellation) : SaveChangesInterceptor
+    {
+        public int InsertedRows { get; private set; }
+
+        public override ValueTask<int> SavedChangesAsync(
+            SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
+        {
+            InsertedRows = result;
+            cancellation.Cancel();
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    private sealed class LoseLedgerCommitAcknowledgement : DbTransactionInterceptor
+    {
+        public NpgsqlException Failure { get; } = new("Synthetic ledger commit acknowledgement loss.");
+        public int Commits { get; private set; }
+
+        public override Task TransactionCommittedAsync(DbTransaction transaction,
+            TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+        {
+            Commits++;
+            throw Failure;
+        }
+    }
+
+    [Fact]
     public async Task GetNetPoints_RejectsEmptyOwnerAndHonorsCancellationWithoutUsingDatabase()
     {
         var probe = new OfflineLedgerQueryProbe();
@@ -537,13 +638,13 @@ public sealed class FlightPointsLedgerPersistenceTests
             foreach (var candidate in candidates)
             {
                 var error = await Assert.ThrowsAsync<InvalidOperationException>(() => repository.AppendAsync([candidate]));
-                Assert.Contains("does not match a persisted original grant", error.Message);
+                Assert.Equal("The reversal does not match a persisted original grant.", error.Message);
                 Assert.Empty(context.ChangeTracker.Entries());
             }
 
             var repeated = await Assert.ThrowsAsync<InvalidOperationException>(
                 () => repository.AppendAsync([Reverse(ThirdId, original)]));
-            Assert.Contains("already been reversed", repeated.Message);
+            Assert.Equal("A grant in the ledger batch has already been reversed.", repeated.Message);
             Assert.Equal(2, await context.FlightPointsLedgerEntries.CountAsync());
             AssertEntry(original, await repository.FindOwnedAsync(FirstId, Owner));
             AssertEntry(existingReversal, await repository.FindOwnedAsync(SecondId, Owner));
