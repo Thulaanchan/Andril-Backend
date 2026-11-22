@@ -143,7 +143,8 @@ public sealed class LearningDbContextModelTests
     public void ExistingModuleAndKindConstraintsArePreservedWithoutInventingPolicies()
     {
         using var fixture = new OfflineContext();
-        var selections = Entity(fixture, true).GetCheckConstraints().ToDictionary(check => check.Name, check => check.Sql);
+        var selections = Entity(fixture, true).GetCheckConstraints()
+            .ToDictionary(check => Assert.IsType<string>(check.Name), check => check.Sql);
         Assert.Equal(2, selections.Count);
         Assert.Equal("module = 'learning'", selections["ck_learning_skill_selection_module"]);
         Assert.Equal("kind IN (1, 2)", selections["ck_learning_skill_selection_kind"]);
