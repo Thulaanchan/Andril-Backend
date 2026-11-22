@@ -11,8 +11,8 @@ public sealed class MapContributionSubmissionPreflightTests
     public async Task PreparedSubmissionUsesCanonicalEvidenceAndCannotBeForged()
     {
         var ports = new TestPorts();
-        var before = DateTimeOffset.UtcNow;
-        var prepared = await new MapContributionSubmissionPreflight(ports, ports, ports, ports)
+        var before = ports.Clock.GetUtcNow();
+        var prepared = await new MapContributionSubmissionPreflight(ports, ports, ports, ports, ports.Clock)
             .PrepareAsync(AttractionId, SessionId, ports.Observation, PhotoKey, "Description");
         Assert.NotNull(prepared);
         var contribution = prepared.Contribution;
@@ -23,7 +23,7 @@ public sealed class MapContributionSubmissionPreflightTests
         Assert.Equal(Start, contribution.LocationEvidence.CaptureStartedAt);
         Assert.Equal(Start.AddSeconds(10), contribution.LocationEvidence.CaptureCompletedAt);
         Assert.Equal(ports.Attraction!.Latitude, contribution.LocationEvidence.AttractionLatitude);
-        Assert.InRange(contribution.SubmittedAtUtc, before, DateTimeOffset.UtcNow);
+        Assert.Equal(before, contribution.SubmittedAtUtc);
         Assert.Throws<InvalidOperationException>(() =>
             new MapContributionSubmissionPreflight.PreparedSubmission(contribution, new object()));
     }
@@ -34,6 +34,44 @@ public sealed class MapContributionSubmissionPreflightTests
     private static readonly Guid ForeignId = Guid.NewGuid();
     private static readonly DateTimeOffset Start = new(2026, 11, 21, 0, 0, 0, TimeSpan.Zero);
     private const string PhotoKey = "private-camera-object";
+
+    [Theory]
+    [InlineData(-1L, false)]
+    [InlineData(0L, true)]
+    [InlineData(5_999_999_999L, true)]
+    [InlineData(6_000_000_000L, true)]
+    [InlineData(6_000_000_001L, false)]
+    public async Task SubmissionWindowUsesStoredCompletionAndServerClock(long elapsedTicks, bool expected)
+    {
+        var ports = new TestPorts();
+        ports.Clock.Now = Start.AddSeconds(10).AddTicks(elapsedTicks);
+        // Client-supplied timing must neither extend nor shorten eligibility.
+        ports.Observation = ports.Observation! with
+        {
+            CaptureStartedAt = ports.Clock.Now,
+            CaptureCompletedAt = ports.Clock.Now
+        };
+        var writer = new WriterProbe();
+        var prepared = await PrepareAndSubmitInTestAsync(ports, ports, writer);
+        Assert.Equal(expected, prepared is not null);
+        Assert.Equal(expected ? 1 : 0, writer.Calls);
+        if (!expected)
+            Assert.DoesNotContain("photo", ports.Calls);
+    }
+
+    [Fact]
+    public async Task ExpiryDuringPhotoVerificationDiscardsLateVerifiedEvidence()
+    {
+        var ports = new TestPorts();
+        var reader = new PendingTestPhotoReader();
+        var writer = new WriterProbe();
+        var attempt = PrepareAndSubmitInTestAsync(ports, reader, writer);
+        await reader.Started.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        ports.Clock.Now = Start.AddSeconds(10).AddMinutes(10).AddTicks(1);
+        reader.Completion.SetResult(MapContributionPhotoVerificationResult.Verified);
+        Assert.Null(await attempt);
+        Assert.Equal(0, writer.Calls);
+    }
 
     [Fact]
     public async Task AuthorizedCompleteCapture_WithTrustedTestPhoto_ReturnsOnlyDecisionWithoutWrites()
@@ -242,7 +280,7 @@ public sealed class MapContributionSubmissionPreflightTests
         TestPorts ports, IMapContributionPhotoEvidenceReader reader, WriterProbe writer,
         string? key = PhotoKey, CancellationToken cancellationToken = default)
     {
-        var prepared = await new MapContributionSubmissionPreflight(ports, ports, ports, reader)
+        var prepared = await new MapContributionSubmissionPreflight(ports, ports, ports, reader, ports.Clock)
             .PrepareAsync(AttractionId, SessionId, ports.Observation, key, "Description", cancellationToken);
         if (prepared is not null)
             await writer.SubmitAsync(prepared, cancellationToken);
@@ -359,6 +397,7 @@ public sealed class MapContributionSubmissionPreflightTests
     private sealed class TestPorts : IMapCaptureSessionAccessReader, IMapContributionCaptureSessionRepository,
         IMapAttractionRepository, IMapContributionPhotoEvidenceReader
     {
+        public TestClock Clock { get; } = new();
         public Guid? AuthorizedOwner { get; init; } = OwnerId;
         public MapContributionCaptureSession? Session { get; set; } = CreateSession();
         public MapAttraction? Attraction { get; set; } = MapAttraction.Create(AttractionId, "Canonical attraction", 0, 0);
@@ -374,7 +413,7 @@ public sealed class MapContributionSubmissionPreflightTests
         public Exception Failure { get; init; } = new InvalidOperationException("Test dependency failure.");
 
         public Task<bool> CheckAsync(CancellationToken cancellationToken = default) =>
-            new MapContributionSubmissionPreflight(this, this, this, this)
+            new MapContributionSubmissionPreflight(this, this, this, this, Clock)
                 .PassesChecksAsync(AttractionId, SessionId, Observation, PhotoKey, cancellationToken);
 
         public Task<Guid?> ResolveAuthorizedProfileIdAsync(Guid attractionId, CancellationToken cancellationToken)
@@ -428,5 +467,11 @@ public sealed class MapContributionSubmissionPreflightTests
         public Task<IReadOnlyList<MapAttractionDiscoveryItem>> DiscoverAsync(
             MapAttractionDiscoveryQuery query, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("Preflight must never query attraction discovery.");
+    }
+
+    private sealed class TestClock : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = Start.AddSeconds(10);
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 }

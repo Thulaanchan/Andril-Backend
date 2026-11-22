@@ -15,8 +15,10 @@ internal sealed class MapContributionSubmissionPreflight(
     IMapCaptureSessionAccessReader accessReader,
     IMapContributionCaptureSessionRepository captureSessions,
     IMapAttractionRepository attractions,
-    IMapContributionPhotoEvidenceReader photoEvidence)
+    IMapContributionPhotoEvidenceReader photoEvidence,
+    TimeProvider? timeProvider = null)
 {
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private static readonly object PreparationAuthority = new();
     /// <summary>
     /// Returns a decision for internal use. A positive result does not reserve the capture
@@ -70,10 +72,17 @@ internal sealed class MapContributionSubmissionPreflight(
             return null;
         }
 
+        if (!MapContributionSubmissionWindow.Allows(session, _timeProvider.GetUtcNow()))
+            return null;
+
         var photoResult = await photoEvidence.VerifyAsync(
             ownerId, attractionId, captureSessionId, privatePhotoStorageObjectKey, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         if (photoResult != MapContributionPhotoVerificationResult.Verified)
+            return null;
+
+        var submittedAt = _timeProvider.GetUtcNow();
+        if (!MapContributionSubmissionWindow.Allows(session, submittedAt))
             return null;
 
         var evidence = MapContributionEvidenceValidator.Validate(
@@ -82,7 +91,7 @@ internal sealed class MapContributionSubmissionPreflight(
         {
             return new PreparedSubmission(MapContribution.Create(Guid.NewGuid(), ownerId,
                 attractionId, captureSessionId, privatePhotoStorageObjectKey,
-                description, evidence, DateTimeOffset.UtcNow), PreparationAuthority);
+                description, evidence, submittedAt), PreparationAuthority);
         }
         catch (ArgumentException)
         {

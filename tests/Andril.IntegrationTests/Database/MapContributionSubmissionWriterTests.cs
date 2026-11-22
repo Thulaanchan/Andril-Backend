@@ -20,6 +20,119 @@ namespace Andril.IntegrationTests.Database;
 public sealed class MapContributionSubmissionWriterTests
 {
     [MapCapturePostgresFact]
+    public Task SubmissionWindowIsRecheckedAfterTheSessionLockAndBeforeCommit() =>
+        MapContributionPersistenceTests.WithDatabaseAsync(async connection =>
+        {
+            foreach (var scenario in new[] { "under", "boundary", "expired", "future", "expires during save" })
+            {
+                var factory = new Contexts(connection);
+                var prepared = await PrepareAsync(factory);
+                var completed = prepared.Contribution.LocationEvidence.CaptureCompletedAt!.Value;
+                var clock = new TestClock
+                {
+                    Now = scenario switch
+                    {
+                        "under" => completed.AddMinutes(10).AddTicks(-1),
+                        "expired" => completed.AddMinutes(10).AddTicks(1),
+                        "future" => completed.AddTicks(-1),
+                        _ => completed.AddMinutes(10)
+                    }
+                };
+                var interceptor = new AdvanceAfterInsert(clock, completed.AddMinutes(10).AddTicks(1),
+                    scenario == "expires during save");
+                var writer = new MapContributionSubmissionWriter(new Contexts(connection, interceptor), clock);
+                var result = await writer.SubmitAsync(prepared);
+                var accepted = scenario is "under" or "boundary";
+                Assert.Equal(accepted ? MapSubmissionOutcome.Created : MapSubmissionOutcome.Denied, result.Outcome);
+                Assert.Equal(scenario is "under" or "boundary" or "expires during save", interceptor.Inserted);
+                await using var probe = factory.CreateDbContext();
+                var rows = await probe.MapContributions.AsNoTracking()
+                    .Where(row => row.CaptureSessionId == prepared.Contribution.CaptureSessionId).ToListAsync();
+                if (accepted)
+                {
+                    Assert.Equal(MapContributionModerationStatus.PendingReview, Assert.Single(rows).ModerationStatus);
+                    clock.Now = completed.AddDays(1);
+                    Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.ExistingAuthorized, result.ContributionId),
+                        await writer.SubmitAsync(prepared));
+                }
+                else
+                {
+                    Assert.Empty(rows);
+                    Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.Denied), await writer.SubmitAsync(prepared));
+                }
+                Assert.Empty(await probe.FlightPointsLedgerEntries.ToListAsync());
+            }
+        });
+
+    [MapCapturePostgresFact]
+    public Task ExpiryWhileWaitingForSessionLockDeniesPreviouslyPreparedSubmission() =>
+        MapContributionPersistenceTests.WithDatabaseAsync(async connection =>
+        {
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            var token = deadline.Token;
+            var factory = new Contexts(connection);
+            var prepared = await PrepareAsync(factory);
+            var completed = prepared.Contribution.LocationEvidence.CaptureCompletedAt!.Value;
+            var clock = new TestClock { Now = completed.AddMinutes(9) };
+            await using var blocker = factory.CreateDbContext();
+            await using var transaction = await blocker.Database.BeginTransactionAsync(token);
+            await blocker.Database.ExecuteSqlInterpolatedAsync($"""
+                SELECT session_id FROM andril_hobbies.map_contribution_capture_sessions
+                WHERE session_id = {prepared.Contribution.CaptureSessionId} FOR UPDATE
+                """, token);
+            var lockProbe = new SessionLockProbe();
+            var attempt = new MapContributionSubmissionWriter(new Contexts(connection, lockProbe), clock)
+                .SubmitAsync(prepared, token);
+            var released = false;
+            try
+            {
+                var waitingPid = await lockProbe.Attempted.Task.WaitAsync(token);
+                await using var observer = new NpgsqlConnection(connection);
+                await observer.OpenAsync(token);
+                await using var blocking = new NpgsqlCommand("SELECT @blocker = ANY(pg_blocking_pids(@waiting))", observer);
+                blocking.Parameters.AddWithValue("blocker", ((NpgsqlConnection)blocker.Database.GetDbConnection()).ProcessID);
+                blocking.Parameters.AddWithValue("waiting", waitingPid);
+                while (await blocking.ExecuteScalarAsync(token) is not true)
+                {
+                    Assert.False(attempt.IsCompleted);
+                    await Task.Delay(20, token);
+                }
+                clock.Now = completed.AddMinutes(10).AddTicks(1);
+                await transaction.RollbackAsync(token);
+                released = true;
+                Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.Denied), await attempt.WaitAsync(token));
+                await using var probe = factory.CreateDbContext();
+                Assert.Empty(await probe.MapContributions.ToListAsync(token));
+                Assert.Empty(await probe.FlightPointsLedgerEntries.ToListAsync(token));
+            }
+            finally
+            {
+                if (!released)
+                    await transaction.RollbackAsync(CancellationToken.None);
+                await attempt;
+            }
+        });
+
+    private sealed class TestClock : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; }
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class AdvanceAfterInsert(TestClock clock, DateTimeOffset next, bool advance) : SaveChangesInterceptor
+    {
+        public bool Inserted { get; private set; }
+        public override ValueTask<int> SavedChangesAsync(
+            SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
+        {
+            Inserted = true;
+            if (advance)
+                clock.Now = next;
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    [MapCapturePostgresFact]
     public Task NamedUniqueViolationReconcilesOnlyThePreparedOwnerAndAttraction() =>
         MapContributionPersistenceTests.WithDatabaseAsync(async connection =>
         {
