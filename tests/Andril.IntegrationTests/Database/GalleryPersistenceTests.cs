@@ -418,6 +418,76 @@ public sealed class GalleryPersistenceTests
         });
 
     [MapCapturePostgresFact]
+    public Task SetCover_CancellationBeforeFirstCommitLeavesNoPreferenceAndCanRetry() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await SeedAsync(connection);
+            using var cancellation = new CancellationTokenSource();
+            var interceptor = new CancelCoverCommit(cancellation);
+            await using (var writer = CreateContext(connection, interceptor))
+            {
+                var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+                    Repository(writer).SetCoverAsync(Newer, Owner, cancellation.Token));
+                Assert.Equal(cancellation.Token, error.CancellationToken);
+                Assert.True(interceptor.ReachedCommit);
+                Assert.Empty(writer.ChangeTracker.Entries());
+                Assert.Null(writer.Database.CurrentTransaction);
+            }
+            await using var retry = CreateContext(connection);
+            var repository = Repository(retry);
+            Assert.Empty(await retry.GalleryPreferences.ToListAsync());
+            Assert.Null(await repository.GetCoverIdAsync(Owner));
+            Assert.True(await repository.SetCoverAsync(Newer, Owner));
+            var preference = Assert.Single(await retry.GalleryPreferences.AsNoTracking().ToListAsync());
+            Assert.Equal(Owner, preference.OwnerModuleProfileId);
+            Assert.Equal(Newer, preference.CoverMediaId);
+            Assert.Empty(retry.ChangeTracker.Entries());
+        });
+
+    [MapCapturePostgresFact]
+    public Task SetCover_LostCommitAcknowledgementPropagatesAndRepeatedSelectionHasOneEffect() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await SeedAsync(connection);
+            var interceptor = new LoseCoverCommitAcknowledgement();
+            await using (var writer = CreateContext(connection, interceptor))
+            {
+                var unrelated = await writer.GalleryMedia.SingleAsync(media => media.Id == ForeignOwner);
+                var error = await Assert.ThrowsAsync<NpgsqlException>(() =>
+                    Repository(writer).SetCoverAsync(Newer, Owner));
+                Assert.Same(interceptor.Failure, error);
+                Assert.Equal(1, interceptor.Commits);
+                Assert.Same(unrelated, Assert.Single(writer.ChangeTracker.Entries()).Entity);
+                Assert.Equal(EntityState.Unchanged, writer.Entry(unrelated).State);
+                Assert.Null(writer.Database.CurrentTransaction);
+            }
+            await using var retry = CreateContext(connection);
+            var repository = Repository(retry);
+            Assert.Equal(Newer, await repository.GetCoverIdAsync(Owner));
+            Assert.Null(await repository.GetCoverIdAsync(OtherOwner));
+            Assert.True(await repository.SetCoverAsync(Newer, Owner));
+            Assert.True(await repository.SetCoverAsync(Newer, Owner));
+            var preference = Assert.Single(await retry.GalleryPreferences.AsNoTracking().ToListAsync());
+            Assert.Equal(Owner, preference.OwnerModuleProfileId);
+            Assert.Equal(Newer, preference.CoverMediaId);
+            Assert.Empty(retry.ChangeTracker.Entries());
+            Assert.Equal(1, interceptor.Commits);
+        });
+
+    private sealed class LoseCoverCommitAcknowledgement : DbTransactionInterceptor
+    {
+        public NpgsqlException Failure { get; } = new("Synthetic Gallery commit acknowledgement loss.");
+        public int Commits { get; private set; }
+
+        public override Task TransactionCommittedAsync(DbTransaction transaction,
+            TransactionEndEventData eventData, CancellationToken cancellationToken = default)
+        {
+            Commits++;
+            throw Failure;
+        }
+    }
+
+    [MapCapturePostgresFact]
     public Task SetCover_RejectsCallerOwnedTransactionWithoutEndingIt() =>
         WithDatabaseAsync(async connection =>
         {

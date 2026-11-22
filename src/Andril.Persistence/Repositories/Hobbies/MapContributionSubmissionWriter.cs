@@ -15,8 +15,10 @@ namespace Andril.Persistence.Repositories.Hobbies;
 // Deliberately unregistered. Production photo and current authorization contracts
 // must be approved before exposing this writer through an application entry point.
 internal sealed class MapContributionSubmissionWriter(
-    IDbContextFactory<HobbiesMapDbContext> contexts) : IMapContributionSubmissionWriter
+    IDbContextFactory<HobbiesMapDbContext> contexts,
+    TimeProvider? timeProvider = null) : IMapContributionSubmissionWriter
 {
+    private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     public async Task<MapSubmissionResult> SubmitAsync(
         MapContributionSubmissionPreflight.PreparedSubmission prepared,
         CancellationToken cancellationToken = default)
@@ -54,8 +56,16 @@ internal sealed class MapContributionSubmissionWriter(
             if (existing is not null)
                 return new(MapSubmissionOutcome.ExistingAuthorized, existing.ContributionId);
 
+            if (!MapContributionSubmissionWindow.Allows(session, _timeProvider.GetUtcNow()))
+                return new(MapSubmissionOutcome.Denied);
+
             context.MapContributions.Add(contribution);
             await context.SaveChangesAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            // Recheck after database work. Returning disposes and rolls back the transaction.
+            // This is a pre-commit gate, not a guarantee of the database commit's completion time.
+            if (!MapContributionSubmissionWindow.Allows(session, _timeProvider.GetUtcNow()))
+                return new(MapSubmissionOutcome.Denied);
             committing = true;
             await transaction.CommitAsync(cancellationToken);
             return new(MapSubmissionOutcome.Created, contribution.ContributionId);
