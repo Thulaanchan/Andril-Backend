@@ -87,18 +87,9 @@ namespace Andril.Persistence.Migrations.HobbiesMap
 
                             t.HasCheckConstraint("ck_flight_point_ledger_owner_id", "owner_hobbies_module_profile_id <> '00000000-0000-0000-0000-000000000000'::uuid");
 
-                            t.HasCheckConstraint("ck_flight_point_ledger_points_delta", """
-                                (entry_type = 1 AND reward_type = 1 AND points_delta = 5)
-                                OR (entry_type = 1 AND reward_type = 2 AND points_delta = 10)
-                                OR (entry_type = 2 AND reward_type = 1 AND points_delta = -5)
-                                OR (entry_type = 2 AND reward_type = 2 AND points_delta = -10)
-                                """);
+                            t.HasCheckConstraint("ck_flight_point_ledger_points_delta", "(entry_type = 1 AND reward_type = 1 AND points_delta = 5)\r\nOR (entry_type = 1 AND reward_type = 2 AND points_delta = 10)\r\nOR (entry_type = 2 AND reward_type = 1 AND points_delta = -5)\r\nOR (entry_type = 2 AND reward_type = 2 AND points_delta = -10)");
 
-                            t.HasCheckConstraint("ck_flight_point_ledger_reversal_reference", """
-                                (entry_type = 1 AND reversed_entry_id IS NULL)
-                                OR (entry_type = 2 AND reversed_entry_id IS NOT NULL
-                                    AND reversed_entry_id <> '00000000-0000-0000-0000-000000000000'::uuid AND reversed_entry_id <> ledger_entry_id)
-                                """);
+                            t.HasCheckConstraint("ck_flight_point_ledger_reversal_reference", "(entry_type = 1 AND reversed_entry_id IS NULL)\r\nOR (entry_type = 2 AND reversed_entry_id IS NOT NULL\r\n    AND reversed_entry_id <> '00000000-0000-0000-0000-000000000000'::uuid AND reversed_entry_id <> ledger_entry_id)");
 
                             t.HasCheckConstraint("ck_flight_point_ledger_reward_type", "reward_type IN (1, 2)");
                         });
@@ -148,6 +139,12 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                     b.HasKey("ContributionId")
                         .HasName("pk_map_contributions");
 
+                    b.HasIndex("CaptureSessionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_contributions_capture_session_id");
+
+                    b.HasIndex("CaptureSessionId", "OwnerHobbiesModuleProfileId", "AttractionId");
+
                     b.ToTable("map_contributions", "andril_hobbies", t =>
                         {
                             t.HasCheckConstraint("ck_map_contribution_attraction_id", "attraction_id <> '00000000-0000-0000-0000-000000000000'::uuid");
@@ -191,6 +188,9 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         .HasColumnName("started_at_utc");
 
                     b.HasKey("SessionId");
+
+                    b.HasAlternateKey("SessionId", "OwnerHobbiesModuleProfileId", "AttractionId")
+                        .HasName("ak_map_capture_session_scope");
 
                     b.HasIndex("OwnerHobbiesModuleProfileId", "AttractionId")
                         .HasDatabaseName("ix_map_capture_owner_attraction");
@@ -248,6 +248,17 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         .HasForeignKey("ReversedEntryId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .HasConstraintName("fk_flight_point_ledger_reversed_entry");
+                });
+
+            modelBuilder.Entity("Andril.Hobbies.Map.Contributions.MapContribution", b =>
+                {
+                    b.HasOne("Andril.Hobbies.Map.Contributions.MapContributionCaptureSession", null)
+                        .WithMany()
+                        .HasForeignKey("CaptureSessionId", "OwnerHobbiesModuleProfileId", "AttractionId")
+                        .HasPrincipalKey("SessionId", "OwnerHobbiesModuleProfileId", "AttractionId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_contributions_capture_session_scope");
                 });
 #pragma warning restore 612, 618
         }

@@ -44,6 +44,13 @@ public sealed class MapContributionCaptureSessionConfiguration
         // Primary key.
         builder.HasKey(session => session.SessionId);
 
+        builder.HasAlternateKey(session => new
+        {
+            session.SessionId,
+            session.OwnerHobbiesModuleProfileId,
+            session.AttractionId
+        }).HasName("ak_map_capture_session_scope");
+
         builder.Property(session => session.SessionId)
             .HasColumnName("session_id")
             .HasColumnType("uuid")

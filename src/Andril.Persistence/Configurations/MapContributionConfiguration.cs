@@ -74,6 +74,27 @@ public sealed class MapContributionConfiguration : IEntityTypeConfiguration<MapC
             .HasColumnType("uuid")
             .IsRequired();
 
+        builder.HasIndex(contribution => contribution.CaptureSessionId)
+            .IsUnique()
+            .HasDatabaseName("ux_map_contributions_capture_session_id");
+
+        builder.HasOne<MapContributionCaptureSession>()
+            .WithMany()
+            .HasForeignKey(contribution => new
+            {
+                contribution.CaptureSessionId,
+                contribution.OwnerHobbiesModuleProfileId,
+                contribution.AttractionId
+            })
+            .HasPrincipalKey(session => new
+            {
+                session.SessionId,
+                session.OwnerHobbiesModuleProfileId,
+                session.AttractionId
+            })
+            .OnDelete(DeleteBehavior.NoAction)
+            .HasConstraintName("fk_map_contributions_capture_session_scope");
+
         builder.Property(contribution => contribution.PrivatePhotoStorageObjectKey)
             .HasColumnName("private_photo_storage_object_key")
             .HasColumnType("text")
