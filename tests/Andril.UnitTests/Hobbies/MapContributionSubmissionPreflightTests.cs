@@ -7,6 +7,27 @@ namespace Andril.UnitTests.Hobbies;
 
 public sealed class MapContributionSubmissionPreflightTests
 {
+    [Fact]
+    public async Task PreparedSubmissionUsesCanonicalEvidenceAndCannotBeForged()
+    {
+        var ports = new TestPorts();
+        var before = DateTimeOffset.UtcNow;
+        var prepared = await new MapContributionSubmissionPreflight(ports, ports, ports, ports)
+            .PrepareAsync(AttractionId, SessionId, ports.Observation, PhotoKey, "Description");
+        Assert.NotNull(prepared);
+        var contribution = prepared.Contribution;
+        Assert.NotEqual(Guid.Empty, contribution.ContributionId);
+        Assert.Equal(OwnerId, contribution.OwnerHobbiesModuleProfileId);
+        Assert.Equal(AttractionId, contribution.AttractionId);
+        Assert.Equal(SessionId, contribution.CaptureSessionId);
+        Assert.Equal(Start, contribution.LocationEvidence.CaptureStartedAt);
+        Assert.Equal(Start.AddSeconds(10), contribution.LocationEvidence.CaptureCompletedAt);
+        Assert.Equal(ports.Attraction!.Latitude, contribution.LocationEvidence.AttractionLatitude);
+        Assert.InRange(contribution.SubmittedAtUtc, before, DateTimeOffset.UtcNow);
+        Assert.Throws<InvalidOperationException>(() =>
+            new MapContributionSubmissionPreflight.PreparedSubmission(contribution, new object()));
+    }
+
     private static readonly Guid OwnerId = Guid.NewGuid();
     private static readonly Guid AttractionId = Guid.NewGuid();
     private static readonly Guid SessionId = Guid.NewGuid();

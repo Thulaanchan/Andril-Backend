@@ -3,6 +3,8 @@ using Andril.Hobbies.Map.LocationValidation;
 using Andril.Hobbies.Map.Places;
 
 [assembly: InternalsVisibleTo("Andril.UnitTests")]
+[assembly: InternalsVisibleTo("Andril.Persistence")]
+[assembly: InternalsVisibleTo("Andril.IntegrationTests")]
 
 namespace Andril.Hobbies.Map.Contributions;
 
@@ -15,6 +17,7 @@ internal sealed class MapContributionSubmissionPreflight(
     IMapAttractionRepository attractions,
     IMapContributionPhotoEvidenceReader photoEvidence)
 {
+    private static readonly object PreparationAuthority = new();
     /// <summary>
     /// Returns a decision for internal use. A positive result does not reserve the capture
     /// session or authorize publication, moderation, or rewards.
@@ -25,19 +28,30 @@ internal sealed class MapContributionSubmissionPreflight(
         MapContributionLocationEvidence? reportedLocation,
         string? privatePhotoStorageObjectKey,
         CancellationToken cancellationToken = default)
+        => await PrepareAsync(attractionId, captureSessionId, reportedLocation,
+            privatePhotoStorageObjectKey, "Preflight validation", cancellationToken) is not null;
+
+    internal async Task<PreparedSubmission?> PrepareAsync(
+        Guid attractionId,
+        Guid captureSessionId,
+        MapContributionLocationEvidence? reportedLocation,
+        string? privatePhotoStorageObjectKey,
+        string? description,
+        CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (attractionId == Guid.Empty || captureSessionId == Guid.Empty
-            || reportedLocation is null || string.IsNullOrWhiteSpace(privatePhotoStorageObjectKey))
+            || reportedLocation is null || string.IsNullOrWhiteSpace(privatePhotoStorageObjectKey)
+            || string.IsNullOrWhiteSpace(description))
         {
-            return false;
+            return null;
         }
 
         // This port resolves the current owner and checks attraction eligibility together.
         var profileId = await accessReader.ResolveAuthorizedProfileIdAsync(attractionId, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         if (profileId is not Guid ownerId || ownerId == Guid.Empty)
-            return false;
+            return null;
 
         var session = await captureSessions.FindOwnedAsync(captureSessionId, ownerId, attractionId, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
@@ -45,7 +59,7 @@ internal sealed class MapContributionSubmissionPreflight(
             || session.OwnerHobbiesModuleProfileId != ownerId || session.AttractionId != attractionId
             || session.CompletedAtUtc is null)
         {
-            return false;
+            return null;
         }
 
         var attraction = await attractions.FindByIdAsync(attractionId, cancellationToken);
@@ -53,12 +67,38 @@ internal sealed class MapContributionSubmissionPreflight(
         if (attraction is null || attraction.AttractionId != attractionId
             || !MapContributionEvidenceValidator.Validate(attraction, session, ownerId, reportedLocation).PassesChecks)
         {
-            return false;
+            return null;
         }
 
         var photoResult = await photoEvidence.VerifyAsync(
             ownerId, attractionId, captureSessionId, privatePhotoStorageObjectKey, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        return photoResult == MapContributionPhotoVerificationResult.Verified;
+        if (photoResult != MapContributionPhotoVerificationResult.Verified)
+            return null;
+
+        var evidence = MapContributionEvidenceValidator.Validate(
+            attraction, session, ownerId, reportedLocation).Evidence!;
+        try
+        {
+            return new PreparedSubmission(MapContribution.Create(Guid.NewGuid(), ownerId,
+                attractionId, captureSessionId, privatePhotoStorageObjectKey,
+                description, evidence, DateTimeOffset.UtcNow), PreparationAuthority);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    internal sealed class PreparedSubmission
+    {
+        internal PreparedSubmission(MapContribution contribution, object authority)
+        {
+            if (!ReferenceEquals(authority, PreparationAuthority))
+                throw new InvalidOperationException("Only trusted preflight may prepare a submission.");
+            Contribution = contribution;
+        }
+
+        internal MapContribution Contribution { get; }
     }
 }
