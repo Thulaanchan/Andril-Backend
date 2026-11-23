@@ -46,7 +46,8 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
     private bool created;
     private ControlledLifecycleDatabase(string admin) { this.admin = admin; }
 
-    internal static async Task<ControlledLifecycleDatabase> CreateAsync(int age = 25, bool consent = true)
+    internal static async Task<ControlledLifecycleDatabase> CreateAsync(int age = 25, bool consent = true,
+        bool failAfterDatabaseCreation = false)
     {
         var settings = new NpgsqlConnectionStringBuilder(Environment.GetEnvironmentVariable("ANDRIL_M2_TEST_POSTGRES"));
         if (settings.Host is not ("localhost" or "127.0.0.1" or "::1") || settings.Database != "postgres")
@@ -59,8 +60,12 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
             var runtimePassword = Guid.NewGuid().ToString("N");
             await fixture.Admin($"CREATE ROLE {fixture.migrationRole} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS PASSWORD '{migrationPassword}'");
             await fixture.Admin($"CREATE ROLE {fixture.runtimeRole} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS PASSWORD '{runtimePassword}'");
+            // PostgreSQL 17 requires SET membership to assign database ownership.
+            // The bootstrap already receives ADMIN from CREATE ROLE; enable only SET.
+            await fixture.Admin($"GRANT {fixture.migrationRole} TO CURRENT_USER WITH SET TRUE, INHERIT FALSE");
             await fixture.Admin($"CREATE DATABASE {fixture.name} OWNER {fixture.migrationRole}");
             fixture.created = true;
+            if (failAfterDatabaseCreation) throw new IOException("Injected disposable fixture setup failure.");
             settings.Database = fixture.name;
             settings.Username = fixture.migrationRole;
             settings.Password = migrationPassword;
@@ -107,6 +112,8 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
                     GRANT UPDATE (state, revision, state_changed_at_utc) ON andril_identity.account_module_lifecycles TO {fixture.runtimeRole};
                     """);
 #pragma warning restore EF1002
+                foreach (var table in new[] { "account_module_lifecycles", "account_module_lifecycle_receipts", "account_module_lifecycle_audit" })
+                    await fixture.Admin($"CREATE POLICY test_owner_inspection ON andril_identity.{table} TO {fixture.migrationRole} USING (true) WITH CHECK (true)", true, fixture.name);
             }
             return fixture;
         }
@@ -119,11 +126,12 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
         .UseNpgsql(MigrationConnection, o => o.MigrationsHistoryTable("__EFMigrationsHistory", "andril_identity")).Options);
     internal async Task<int> Sql(string sql)
     {
-        // Privileged inspection/fixtures only, on the random test database. Never used
-        // as the lifecycle runtime. Superuser inspection independently verifies RLS writes.
-        var settings = new NpgsqlConnectionStringBuilder(admin) { Database = name };
+        // Migration-owner inspection on the random test database. Its explicit
+        // fixture-only inspection policy is inaccessible to the runtime role.
+        var settings = new NpgsqlConnectionStringBuilder(MigrationConnection);
         await using var db = new NpgsqlConnection(settings.ConnectionString);
         await db.OpenAsync();
+        await using (var role = new NpgsqlCommand($"SET ROLE {migrationRole}", db)) await role.ExecuteNonQueryAsync();
         await using var command = new NpgsqlCommand(sql, db);
         return await command.ExecuteNonQueryAsync();
     }
@@ -131,23 +139,31 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
     {
         if (table is not ("account_module_lifecycles" or "account_module_lifecycle_receipts" or "account_module_lifecycle_audit"))
             throw new ArgumentException(nameof(table));
-        var settings = new NpgsqlConnectionStringBuilder(admin) { Database = name };
+        var settings = new NpgsqlConnectionStringBuilder(MigrationConnection);
         await using var db = new NpgsqlConnection(settings.ConnectionString);
         await db.OpenAsync();
+        await using (var role = new NpgsqlCommand($"SET ROLE {migrationRole}", db)) await role.ExecuteNonQueryAsync();
         await using var command = new NpgsqlCommand($"SELECT count(*) FROM andril_identity.{table}", db);
         return (long)(await command.ExecuteScalarAsync())!;
     }
-    private async Task Admin(string sql)
+    private async Task Admin(string sql, bool asMigration = false, string? database = null)
     {
-        await using var db = new NpgsqlConnection(admin);
+        var settings = new NpgsqlConnectionStringBuilder(database is null ? admin : MigrationConnection);
+        if (database is not null) settings.Database = database;
+        await using var db = new NpgsqlConnection(settings.ConnectionString);
         await db.OpenAsync();
+        if (asMigration)
+        {
+            await using var role = new NpgsqlCommand($"SET ROLE {migrationRole}", db);
+            await role.ExecuteNonQueryAsync();
+        }
         await using var command = new NpgsqlCommand(sql, db);
         await command.ExecuteNonQueryAsync();
     }
     public async ValueTask DisposeAsync()
     {
         NpgsqlConnection.ClearAllPools();
-        if (created) await Admin($"DROP DATABASE {name} WITH (FORCE)");
+        if (created) await Admin($"DROP DATABASE {name} WITH (FORCE)", true);
         await Admin($"DROP ROLE IF EXISTS {runtimeRole}");
         await Admin($"DROP ROLE IF EXISTS {migrationRole}");
     }

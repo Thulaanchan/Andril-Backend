@@ -291,9 +291,17 @@ public sealed class Phase3BAcceptanceTests
     public async Task QA18_RuntimeCannotDdlMutateJournalsOrAccessHistory()
     {
         await using var db = await ControlledLifecycleDatabase.CreateAsync();
+        await using var bootstrap = new NpgsqlConnection(Environment.GetEnvironmentVariable("ANDRIL_M2_TEST_POSTGRES"));
+        await bootstrap.OpenAsync();
+        await using var inventory = new NpgsqlCommand("SELECT (SELECT count(*) FROM pg_roles WHERE rolname LIKE 'm2_migrate_%' OR rolname LIKE 'm2_runtime_%') + (SELECT count(*) FROM pg_database WHERE datname LIKE 'andril_m2_test_%')", bootstrap);
+        var before = await inventory.ExecuteScalarAsync();
+        await Assert.ThrowsAsync<IOException>(() => ControlledLifecycleDatabase.CreateAsync(failAfterDatabaseCreation: true));
+        Assert.Equal(before, await inventory.ExecuteScalarAsync());
         await using var connection = new NpgsqlConnection(db.RuntimeConnection);
         await connection.OpenAsync();
         foreach (var statement in new[] { "CREATE TABLE public.forbidden(id integer)", "CREATE SCHEMA forbidden",
+            "SET ROLE " + new NpgsqlConnectionStringBuilder(db.MigrationConnection).Username,
+            "DELETE FROM andril_identity.\"__EFMigrationsHistory\"",
             "ALTER TABLE andril_identity.account_module_lifecycles DISABLE ROW LEVEL SECURITY",
             "SELECT * FROM andril_identity.\"__EFMigrationsHistory\"", "DELETE FROM andril_identity.account_module_lifecycle_receipts",
             "UPDATE andril_identity.account_module_lifecycle_audit SET revision=999",
