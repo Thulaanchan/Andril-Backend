@@ -9,15 +9,24 @@ namespace Andril.Common.Accounts.Lifecycle;
 
 internal readonly record struct ModuleMembershipScope(Guid AccountId, string Module);
 
+internal enum ModuleAuthorizationOutcome
+{
+    Unavailable,
+    Denied,
+    Satisfied
+}
+
 // Each version represents the whole authorization snapshot for this scope.
-// A trusted caller supplies current evidence. This model does not fetch or synchronize it.
+// A trusted caller supplies the source outcome and current evidence. A satisfied read
+// still requires the domain to validate the snapshot. This model does not fetch or synchronize it.
 internal sealed record ModuleActivationEvidence(
     ModuleMembershipScope Scope,
+    ModuleAuthorizationOutcome SourceOutcome,
     Account? Account,
     Guid? ConfirmedSubject,
     AccountDemographics? Demographics,
-    PolicyCatalog CurrentPolicies,
-    IReadOnlyList<AccountPolicyRecord> Receipts,
+    PolicyCatalog? CurrentPolicies,
+    IReadOnlyList<AccountPolicyRecord>? Receipts,
     bool? RestrictionsAllowActivation,
     bool? SocialOptIn,
     Guid ObservedEvidenceVersion,
@@ -71,14 +80,22 @@ internal sealed class ActiveModuleMembership : ModuleMembership
             || evidence.Scope != scope || (current is not null && current.Scope != scope))
             throw new ModuleLifecycleException(ModuleLifecycleDenial.InvalidScope);
 
-        if (evidence.ObservedEvidenceVersion == Guid.Empty || evidence.ObservedEvidenceVersion != evidence.CurrentEvidenceVersion)
+        if (evidence.SourceOutcome == ModuleAuthorizationOutcome.Denied)
+            throw new ModuleLifecycleException(ModuleLifecycleDenial.AuthorityDenied);
+
+        if (evidence.SourceOutcome != ModuleAuthorizationOutcome.Satisfied || evidence.CurrentEvidenceVersion == Guid.Empty)
+            throw new ModuleLifecycleException(ModuleLifecycleDenial.EvidenceUnavailable);
+
+        if (evidence.ObservedEvidenceVersion != evidence.CurrentEvidenceVersion)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.StaleEvidence);
 
         if (evidence.Account is not { } account || account.Id != scope.AccountId
             || account.SupabaseUserId == Guid.Empty || account.SupabaseUserId != evidence.ConfirmedSubject)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.UnconfirmedAccount);
 
-        if (evidence.RestrictionsAllowActivation != true)
+        if (evidence.RestrictionsAllowActivation is null)
+            throw new ModuleLifecycleException(ModuleLifecycleDenial.EvidenceUnavailable);
+        if (evidence.RestrictionsAllowActivation == false)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.AccountRestricted);
 
         if (scope.Module == ModuleNames.Social ? evidence.SocialOptIn != true : evidence.SocialOptIn == true)
@@ -108,12 +125,17 @@ internal sealed class ActiveModuleMembership : ModuleMembership
         if (!ageEligible)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.IneligibleAge);
 
-        if (!HasReceipt(PolicyActions.TermsAgreed, evidence.CurrentPolicies.Terms.Version)
-            || !HasReceipt(PolicyActions.PrivacyAcknowledged, evidence.CurrentPolicies.Privacy.Version))
+        if (evidence.CurrentPolicies is not { Terms: { } terms, Privacy: { } privacy } || evidence.Receipts is not { } receipts
+            || !AccountPolicyRecord.ValidVersion(terms.Version)
+            || !AccountPolicyRecord.ValidVersion(privacy.Version))
+            throw new ModuleLifecycleException(ModuleLifecycleDenial.EvidenceUnavailable);
+
+        if (!HasReceipt(PolicyActions.TermsAgreed, terms.Version)
+            || !HasReceipt(PolicyActions.PrivacyAcknowledged, privacy.Version))
             throw new ModuleLifecycleException(ModuleLifecycleDenial.MissingCurrentPolicies);
 
-        bool HasReceipt(string action, string version) => AccountPolicyRecord.ValidVersion(version)
-            && evidence.Receipts.Any(receipt => receipt.AccountId == scope.AccountId && receipt.Action == action
+        bool HasReceipt(string action, string version) =>
+            receipts.Any(receipt => receipt.AccountId == scope.AccountId && receipt.Action == action
                 && receipt.Version == version && receipt.RecordedAtUtc <= evidence.EvaluatedAtUtc);
     }
 }
@@ -121,6 +143,8 @@ internal sealed class ActiveModuleMembership : ModuleMembership
 internal enum ModuleLifecycleDenial
 {
     InvalidScope,
+    AuthorityDenied,
+    EvidenceUnavailable,
     StaleEvidence,
     UnconfirmedAccount,
     AccountRestricted,
@@ -133,4 +157,7 @@ internal enum ModuleLifecycleDenial
 internal sealed class ModuleLifecycleException(ModuleLifecycleDenial denial) : Exception
 {
     public ModuleLifecycleDenial Denial { get; } = denial;
+    public ModuleAuthorizationOutcome Outcome => Denial == ModuleLifecycleDenial.EvidenceUnavailable
+        ? ModuleAuthorizationOutcome.Unavailable
+        : ModuleAuthorizationOutcome.Denied;
 }

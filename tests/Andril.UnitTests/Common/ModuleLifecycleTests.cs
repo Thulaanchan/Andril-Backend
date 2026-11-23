@@ -66,7 +66,7 @@ public sealed class ModuleLifecycleTests
     public void BothTransitionsRequireCurrentPolicyReceipts(string action)
     {
         var evidence = EvidenceFor(ModuleNames.Social);
-        var remaining = evidence.Receipts.Where(receipt => receipt.Action != action).ToArray();
+        var remaining = evidence.Receipts!.Where(receipt => receipt.Action != action).ToArray();
         var accountId = evidence.Scope.AccountId;
 
         BothTransitionsReject(evidence with { Receipts = remaining }, ModuleLifecycleDenial.MissingCurrentPolicies);
@@ -94,12 +94,48 @@ public sealed class ModuleLifecycleTests
         BothTransitionsReject(evidence with { Account = Account.Create(Subject, Now) }, ModuleLifecycleDenial.UnconfirmedAccount);
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(null)]
-    public void BothTransitionsRequireRestrictionsToPermitActivation(bool? allowed) =>
-        BothTransitionsReject(EvidenceFor(ModuleNames.Social) with { RestrictionsAllowActivation = allowed },
+    [Fact]
+    public void BothTransitionsDenyAnAuthoritativeRestriction() =>
+        BothTransitionsReject(EvidenceFor(ModuleNames.Social) with { RestrictionsAllowActivation = false },
             ModuleLifecycleDenial.AccountRestricted);
+
+    [Fact]
+    public void MissingSourcesAreUnavailableRatherThanConfirmedDenials()
+    {
+        var evidence = EvidenceFor(ModuleNames.Social);
+        BothTransitionsReject(evidence with { RestrictionsAllowActivation = null },
+            ModuleLifecycleDenial.EvidenceUnavailable, ModuleAuthorizationOutcome.Unavailable);
+        BothTransitionsReject(evidence with { CurrentPolicies = null },
+            ModuleLifecycleDenial.EvidenceUnavailable, ModuleAuthorizationOutcome.Unavailable);
+        BothTransitionsReject(evidence with { Receipts = null },
+            ModuleLifecycleDenial.EvidenceUnavailable, ModuleAuthorizationOutcome.Unavailable);
+        var catalog = evidence.CurrentPolicies!;
+        BothTransitionsReject(evidence with { CurrentPolicies = catalog with { Terms = catalog.Terms with { Version = "" } } },
+            ModuleLifecycleDenial.EvidenceUnavailable, ModuleAuthorizationOutcome.Unavailable);
+    }
+
+    [Theory]
+    [InlineData((int)ModuleAuthorizationOutcome.Denied)]
+    [InlineData((int)ModuleAuthorizationOutcome.Unavailable)]
+    [InlineData(-1)]
+    public void OnlyASatisfiedAuthorityCanPermitNewTransitionsOrRetries(int authorityOutcome)
+    {
+        var evidence = EvidenceFor(ModuleNames.Social);
+        var initial = ActiveModuleMembership.Activate(evidence.Scope, evidence);
+        var inactive = new InactiveModuleMembership(evidence.Scope, 4);
+        var reactivated = ActiveModuleMembership.Reactivate(evidence.Scope, evidence, inactive, 4);
+        var adverse = evidence with { SourceOutcome = (ModuleAuthorizationOutcome)authorityOutcome };
+        var denied = authorityOutcome == (int)ModuleAuthorizationOutcome.Denied;
+        var reason = denied ? ModuleLifecycleDenial.AuthorityDenied : ModuleLifecycleDenial.EvidenceUnavailable;
+        var outcome = denied ? ModuleAuthorizationOutcome.Denied : ModuleAuthorizationOutcome.Unavailable;
+
+        BothTransitionsReject(adverse, reason, outcome);
+        AssertDenied(reason, () => ActiveModuleMembership.Activate(evidence.Scope, adverse, initial), outcome);
+        AssertDenied(reason, () => ActiveModuleMembership.Reactivate(evidence.Scope, adverse, reactivated, 4), outcome);
+        Assert.Equal(1, initial.Revision);
+        Assert.Equal(4, inactive.Revision);
+        Assert.Equal(5, reactivated.Revision);
+    }
 
     [Theory]
     [InlineData("")]
@@ -118,10 +154,9 @@ public sealed class ModuleLifecycleTests
     {
         var evidence = EvidenceFor(ModuleNames.Social);
         BothTransitionsReject(evidence with { CurrentEvidenceVersion = NextEvidenceVersion }, ModuleLifecycleDenial.StaleEvidence);
-        BothTransitionsReject(evidence with
-        {
-            ObservedEvidenceVersion = Guid.Empty, CurrentEvidenceVersion = Guid.Empty
-        }, ModuleLifecycleDenial.StaleEvidence);
+        BothTransitionsReject(evidence with { ObservedEvidenceVersion = Guid.Empty }, ModuleLifecycleDenial.StaleEvidence);
+        BothTransitionsReject(evidence with { CurrentEvidenceVersion = Guid.Empty },
+            ModuleLifecycleDenial.EvidenceUnavailable, ModuleAuthorizationOutcome.Unavailable);
     }
 
     [Fact]
@@ -187,6 +222,10 @@ public sealed class ModuleLifecycleTests
     {
         var evidence = EvidenceFor(ModuleNames.Social);
         var inactive = new InactiveModuleMembership(evidence.Scope, 4);
+        var profile = PrivateModuleProfile.Create(evidence.Scope.AccountId, evidence.Scope.Module, Now.AddDays(-1));
+        profile.SetDraftFields(new("Retained Name", "Private draft", "private"));
+        var originalProfile = (profile.Id, profile.AccountId, profile.Module, profile.CreatedAtUtc,
+            profile.DisplayName, profile.CanonicalDisplayName, profile.Bio, profile.Visibility);
 
         var active = ActiveModuleMembership.Reactivate(evidence.Scope, evidence, inactive, 4);
 
@@ -196,6 +235,11 @@ public sealed class ModuleLifecycleTests
         Assert.Same(active, ActiveModuleMembership.Reactivate(evidence.Scope, evidence, active, 4));
         AssertDenied(ModuleLifecycleDenial.MissingCurrentPolicies,
             () => ActiveModuleMembership.Reactivate(evidence.Scope, evidence with { Receipts = [] }, active, 4));
+        AssertDenied(ModuleLifecycleDenial.InvalidOptIn,
+            () => ActiveModuleMembership.Reactivate(evidence.Scope, evidence with { SocialOptIn = false }, active, 4));
+        Assert.Equal(originalProfile, (profile.Id, profile.AccountId, profile.Module, profile.CreatedAtUtc,
+            profile.DisplayName, profile.CanonicalDisplayName, profile.Bio, profile.Visibility));
+        Assert.Equal(5, active.Revision);
     }
 
     [Fact]
@@ -245,7 +289,7 @@ public sealed class ModuleLifecycleTests
         var account = Account.Create(subject ?? Subject, Now);
         var scope = new ModuleMembershipScope(account.Id, module);
         var document = new PolicyDocument("current", "https://example.test", "en");
-        return new(scope, account, account.SupabaseUserId,
+        return new(scope, ModuleAuthorizationOutcome.Satisfied, account, account.SupabaseUserId,
             AccountDemographics.Create(account.Id, DateOnly.FromDateTime(Now.UtcDateTime).AddYears(-age), "other", Now),
             new(document, document, document),
             [
@@ -256,17 +300,23 @@ public sealed class ModuleLifecycleTests
             EvidenceVersion, EvidenceVersion, Now);
     }
 
-    private static void BothTransitionsReject(ModuleActivationEvidence evidence, ModuleLifecycleDenial denial)
+    private static void BothTransitionsReject(ModuleActivationEvidence evidence, ModuleLifecycleDenial denial,
+        ModuleAuthorizationOutcome outcome = ModuleAuthorizationOutcome.Denied)
     {
         var inactive = new InactiveModuleMembership(evidence.Scope, 2);
-        AssertDenied(denial, () => ActiveModuleMembership.Activate(evidence.Scope, evidence));
-        AssertDenied(denial, () => ActiveModuleMembership.Reactivate(evidence.Scope, evidence, inactive, 2));
+        AssertDenied(denial, () => ActiveModuleMembership.Activate(evidence.Scope, evidence), outcome);
+        AssertDenied(denial, () => ActiveModuleMembership.Reactivate(evidence.Scope, evidence, inactive, 2), outcome);
         Assert.Equal(evidence.Scope, inactive.Scope);
         Assert.Equal(2, inactive.Revision);
     }
 
-    private static void AssertDenied(ModuleLifecycleDenial denial, Func<ActiveModuleMembership> transition) =>
-        Assert.Equal(denial, Assert.Throws<ModuleLifecycleException>(() => { _ = transition(); }).Denial);
+    private static void AssertDenied(ModuleLifecycleDenial denial, Func<ActiveModuleMembership> transition,
+        ModuleAuthorizationOutcome outcome = ModuleAuthorizationOutcome.Denied)
+    {
+        var exception = Assert.Throws<ModuleLifecycleException>(() => { _ = transition(); });
+        Assert.Equal(denial, exception.Denial);
+        Assert.Equal(outcome, exception.Outcome);
+    }
 
     private sealed class CompletedProfileReader : IPrivateProfileCompletionReader
     {
