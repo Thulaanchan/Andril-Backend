@@ -168,4 +168,141 @@ public sealed class ChatPrototypeApiTests
         Assert.Equal(6, accounts.Count);
         Assert.Equal(6, profiles.Count);
     }
+
+    [Trait("Step", "08B-3")]
+    [Fact]
+    public async Task Adversarial_Queued_authorized_denied_and_invalid_posts_append_only_unique_authorized_messages()
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        host.Scenario.BeforeAppend = async token =>
+        {
+            if (Interlocked.Increment(ref calls) == 1)
+            {
+                entered.TrySetResult();
+                await release.Task.WaitAsync(token);
+            }
+        };
+        var first = host.Client.PostAsJsonAsync(Target() + "/messages", new ChatPrototypeSubmitDto("first"));
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(first.IsCompleted);
+            var queued = Enumerable.Range(0, 6).Select(i => host.Client.PostAsJsonAsync(
+                Target(conversation: i % 2 == 0 ? ChatPrototypeTestHost.Conversation : ChatPrototypeScenario.Hidden) + "/messages",
+                new ChatPrototypeSubmitDto($"queued-{i}"))).ToArray();
+            var invalid = host.Client.PostAsJsonAsync(Target() + "/messages", new ChatPrototypeSubmitDto(" "));
+            release.TrySetResult();
+            var accepted = new List<ChatPrototypeMessageDto> { await Read<ChatPrototypeMessageDto>(await first, HttpStatusCode.Created) };
+            for (var i = 0; i < queued.Length; i++)
+            {
+                using var response = await queued[i];
+                if (i % 2 == 0) accepted.Add(await Read<ChatPrototypeMessageDto>(response, HttpStatusCode.Created));
+                else Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            }
+            using var rejected = await invalid;
+            Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+            Assert.Equal(4, accepted.Count);
+            Assert.Equal(4, accepted.Select(message => message.MessageId).Distinct().Count());
+            Assert.All(accepted, message => Assert.True(message.IsOwnMessage));
+            Assert.Equal(7, host.Scenario.MessageCount);
+            var history = await Read<ChatPrototypePage<ChatPrototypeMessageDto>>(await host.Client.GetAsync(Target() + "/messages?pageSize=16"));
+            Assert.Equal(7, history.Items.Count);
+            Assert.All(accepted, message => Assert.Contains(history.Items, stored => stored.MessageId == message.MessageId));
+            Assert.DoesNotContain(history.Items, message => message.Text is "queued-1" or "queued-3" or "queued-5" or " ");
+        }
+        finally { release.TrySetResult(); }
+    }
+
+    [Trait("Step", "08B-3")]
+    [Fact]
+    public async Task Adversarial_Concurrent_history_snapshots_and_cursor_navigation_survive_authorized_appends()
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        var initial = await Read<ChatPrototypePage<ChatPrototypeMessageDto>>(await host.Client.GetAsync(Target() + "/messages?pageSize=1"));
+        Assert.NotNull(initial.NextCursor);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        host.Scenario.BeforeAppend = async token =>
+        {
+            if (Interlocked.Increment(ref calls) == 1) { entered.TrySetResult(); await release.Task.WaitAsync(token); }
+        };
+        var first = host.Client.PostAsJsonAsync(Target() + "/messages", new ChatPrototypeSubmitDto("during-read-0"));
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var reads = Enumerable.Range(0, 4).Select(_ => host.Client.GetAsync(Target() + "/messages?pageSize=16")).ToArray();
+            var writes = Enumerable.Range(1, 3).Select(i => host.Client.PostAsJsonAsync(Target() + "/messages", new ChatPrototypeSubmitDto($"during-read-{i}"))).ToArray();
+            release.TrySetResult();
+            var posted = new List<ChatPrototypeMessageDto> { await Read<ChatPrototypeMessageDto>(await first, HttpStatusCode.Created) };
+            foreach (var write in writes) posted.Add(await Read<ChatPrototypeMessageDto>(await write, HttpStatusCode.Created));
+            foreach (var read in reads)
+            {
+                var snapshot = await Read<ChatPrototypePage<ChatPrototypeMessageDto>>(await read);
+                Assert.InRange(snapshot.Items.Count, 4, 7); // Every read is queued behind the first authorized append.
+                Assert.Equal(snapshot.Items.Count, snapshot.Items.Select(message => message.MessageId).Distinct().Count());
+                Assert.Equal(snapshot.Items.OrderByDescending(message => message.CreatedAtUtc).ThenByDescending(message => message.MessageId).Select(message => message.MessageId), snapshot.Items.Select(message => message.MessageId));
+            }
+            var cursor = initial.NextCursor;
+            var continuation = new List<ChatPrototypeMessageDto>();
+            for (var page = 0; cursor is not null && page < 8; page++)
+            {
+                var next = await Read<ChatPrototypePage<ChatPrototypeMessageDto>>(await host.Client.GetAsync(Target() + "/messages?pageSize=1&cursor=" + cursor));
+                continuation.AddRange(next.Items);
+                cursor = next.NextCursor;
+            }
+            Assert.Null(cursor);
+            Assert.InRange(continuation.Count, 2, 6);
+            Assert.Equal(continuation.Count, continuation.Select(message => message.MessageId).Distinct().Count());
+            Assert.Contains(continuation, message => message.Text == "synthetic-2");
+            Assert.Contains(continuation, message => message.Text == "synthetic-1");
+            Assert.DoesNotContain(continuation, message => message.MessageId == initial.Items[0].MessageId);
+            // Keyset navigation is not a snapshot/delivery guarantee for insertions newer than
+            // an earlier cursor. Check the contract without assuming a wall-clock year.
+            var boundary = initial.Items[0];
+            foreach (var message in posted)
+                if (message.CreatedAtUtc < boundary.CreatedAtUtc || (message.CreatedAtUtc == boundary.CreatedAtUtc && message.MessageId.CompareTo(boundary.MessageId) < 0))
+                    Assert.Contains(continuation, stored => stored.MessageId == message.MessageId);
+            var final = await Read<ChatPrototypePage<ChatPrototypeMessageDto>>(await host.Client.GetAsync(Target() + "/messages?pageSize=16"));
+            Assert.Equal(7, final.Items.Count);
+            Assert.All(posted, message => Assert.Contains(final.Items, stored => stored.MessageId == message.MessageId));
+            Assert.Equal(7, host.Scenario.MessageCount);
+        }
+        finally { release.TrySetResult(); }
+    }
+
+    [Trait("Step", "08B-3")]
+    [Fact]
+    public async Task Adversarial_Separate_hosts_make_independent_concurrent_progress_while_one_is_paused()
+    {
+        await using var paused = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Learning);
+        await using var active = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Hobbies);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        paused.Scenario.BeforeAppend = async token => { entered.TrySetResult(); await release.Task.WaitAsync(token); };
+        var waiting = paused.Client.PostAsJsonAsync(Target("learning") + "/messages", new ChatPrototypeSubmitDto("learning only"));
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var activeWrites = await Task.WhenAll(Enumerable.Range(0, 3).Select(i => active.Client.PostAsJsonAsync(Target("hobbies") + "/messages", new ChatPrototypeSubmitDto($"hobbies only {i}"))));
+            var messages = new List<ChatPrototypeMessageDto>();
+            foreach (var response in activeWrites) messages.Add(await Read<ChatPrototypeMessageDto>(response, HttpStatusCode.Created));
+            Assert.False(waiting.IsCompleted);
+            Assert.Equal(3, paused.Scenario.MessageCount);
+            Assert.Equal(6, active.Scenario.MessageCount);
+            release.TrySetResult();
+            messages.Add(await Read<ChatPrototypeMessageDto>(await waiting, HttpStatusCode.Created));
+            Assert.Equal(4, messages.Select(message => message.MessageId).Distinct().Count());
+            var learning = await Read<ChatPrototypePage<ChatPrototypeMessageDto>>(await paused.Client.GetAsync(Target("learning") + "/messages?pageSize=16"));
+            var hobbies = await Read<ChatPrototypePage<ChatPrototypeMessageDto>>(await active.Client.GetAsync(Target("hobbies") + "/messages?pageSize=16"));
+            Assert.DoesNotContain(learning.Items, message => message.Text.StartsWith("hobbies only", StringComparison.Ordinal));
+            Assert.DoesNotContain(hobbies.Items, message => message.Text == "learning only");
+            Assert.All(learning.Items, message => Assert.Equal("learning", message.Module));
+            Assert.All(hobbies.Items, message => Assert.Equal("hobbies", message.Module));
+        }
+        finally { release.TrySetResult(); }
+    }
 }

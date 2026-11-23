@@ -50,6 +50,13 @@ internal sealed class ChatPrototypeApplicationService(ChatPrototypeScenario scen
             var conversation = scenario.Find(id);
             var actor = await authorizer.AuthorizeConversationAsync(module, id, cancellation);
             if (conversation is null || actor is null) { await Error(context, 404); return; }
+            if (operation is "detail" or "history")
+            {
+                // Recheck at the local read-projection boundary, just as writes recheck before append.
+                // This does not make independent M2/M5 reads or database transactions atomic.
+                var projectedActor = await authorizer.AuthorizeConversationAsync(module, id, cancellation);
+                if (projectedActor != actor) { await Error(context, 404); return; }
+            }
             if (operation == "detail") { await context.Response.WriteAsJsonAsync(Conversation(conversation), cancellation); return; }
             if (operation == "history") { await History(context, module, id, actor); return; }
             ChatPrototypeSubmitDto? input;
@@ -85,6 +92,11 @@ internal sealed class ChatPrototypeApplicationService(ChatPrototypeScenario scen
             var actor = await authorizer.AuthorizeConversationAsync(module, candidate.ConversationId, context.RequestAborted);
             if (actor is not null) visible.Add((candidate, actor));
         }
+        // Eligibility may have changed while other candidates were being inspected. Recheck
+        // each visible candidate before projection/pagination, without inventing a new policy.
+        foreach (var item in visible.ToArray())
+            if (await authorizer.AuthorizeConversationAsync(module, item.Conversation.ConversationId, context.RequestAborted) != item.Actor)
+                visible.Remove(item);
         // Filter all finite candidates before pagination. No counts or offsets of hidden records are exposed.
         var remaining = visible.Where(item => cursor is null || item.Conversation.ConversationId.CompareTo(cursor.Position) > 0).ToArray();
         var page = remaining.Take(size).ToArray();
