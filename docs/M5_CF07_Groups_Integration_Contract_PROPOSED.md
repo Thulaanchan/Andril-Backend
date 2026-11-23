@@ -3,7 +3,7 @@
 
 > **STATUS: PROPOSAL / NOT IMPLEMENTED**  
 > **Author:** M5 (Thulaanchan — Shared Groups & Social Backend Lead)  
-> **Document Version:** 1.0.0-PROPOSED  
+> **Document Version:** 1.1.0-PROPOSED  
 > **Target Release:** ANDRIL v1.0  
 > **Compliance:** BRD v2.4-R1 §07.1, §06.1, §01.2; CF-01, CF-06, CF-07, CF-11, CF-12  
 > **Cross-Member Dependencies:** M1 (Learning), M2 (Identity/Entitlements), M3 (Hobbies), M4 (Communication), M6 (Moderation/Security)
@@ -21,7 +21,16 @@ This document outlines the **architectural, API, and relational database contrac
    - `learning` $\rightarrow$ `GroupKind.Classroom` (M1 integration)
    - `hobbies` $\rightarrow$ `GroupKind.Club` (M3 integration)
    - `social` $\rightarrow$ `GroupKind.Zone` (M5 integration)
-4. **Approval Prerequisites:** Activation of any endpoint or schema defined herein strictly requires signed reviews from M2 (identity & entitlements), M3 (Hobbies Club experience), M4 (group messaging), and M6 (security review).
+4. **Discrepancies with Existing C# Domain Entities (Explicitly Highlighted):**
+   - **`GroupEntry`:** The merged domain entity (`src/Andril.Groups/Entities/GroupEntry.cs`) contains strictly `Id`, `Scope`, and `Name`. Proposed properties such as `Description`, `CreatorProfileId`, `IsDiscoverable`, `IsDeleted`, `CurrentMemberCount`, and `Tier` are proposed future extensions not yet modeled in code.
+   - **`GroupMembership`:** The merged domain entity (`src/Andril.Groups/Memberships/GroupMembership.cs`) contains strictly `GroupId`, `Scope`, and `MemberProfileId`. It contains **no role property**, and its XML docs state: *"Does not grant access permissions, manage role hierarchies, or authenticate callers."* Roles (`Leader`, `Admin`, `Member`) are proposed, not implemented.
+   - **`GroupJoinRequest`:** The merged domain entity (`src/Andril.Groups/JoinRequests/GroupJoinRequest.cs`) contains strictly `GroupId`, `Scope`, `RequestingProfileId`, and `RequestedAtUtc`. It contains **no status property**, and its XML docs state: *"Does not grant access permissions, manage request lifecycle approval/rejection states, or authenticate callers."* Status lifecycle transitions (`Pending`, `Approved`, `Rejected`, `Expired`) are proposed, not implemented.
+5. **Pending Decisions from BRD v2.4-R1:**
+   - **P-06:** Zone roles, joining and non-Club quotas remain **PENDING**.
+   - **P-07:** Group inactivity and restoration rules remain **PENDING**.
+   - Group discoverability defaults are **NOT assumed to be public by default**; discoverability requires explicit caller configuration.
+   - Ownership semantics: No automatic owner role is assumed without explicit future authorization modeling.
+6. **Approval Prerequisites:** Activation of any endpoint or schema defined herein strictly requires signed reviews from M2 (identity & entitlements), M3 (Hobbies Club experience), M4 (group messaging), and M6 (security review).
 
 ---
 
@@ -34,6 +43,7 @@ This document outlines the **architectural, API, and relational database contrac
 - **Club Admission Capacity:**
   - **Free Tier Club:** Strictly capped at **50 members**.
   - **Premium Tier Club:** Strictly capped at **100 members**.
+- **Entitlement Verification:** Quota and capacity tier verification strictly requires authoritative M2 Premium entitlement verification.
 - **Premium Expiry / Downgrade Policy:**
   - Existing members are retained (no eviction).
   - New admissions are blocked if the club's current membership count meets or exceeds the Free limit (50).
@@ -41,7 +51,7 @@ This document outlines the **architectural, API, and relational database contrac
 ### 2.2 Learning Classrooms & Social Zones Isolation
 - **Non-Generalization Rule:** Hobbies Club creation quotas and membership limits **must NOT be generalized** to Learning Classrooms or Social Zones.
 - **Classroom Limits:** Configured under M1 pedagogical rules (pending M1 specification).
-- **Social Zone Limits:** Roles, quotas, and retention remain PENDING product/BRD approval (no invented Zone role hierarchies or retention policies).
+- **Social Zone Limits:** Zone roles, joining rules, quotas, and retention remain PENDING under Decision P-06 and Decision P-07.
 
 ---
 
@@ -53,7 +63,7 @@ The table below summarizes the 10 proposed operations for group lifecycle manage
 |---|---|---|---|---|---|---|
 | 1 | Group Creation | `POST` | `/api/v1/{module}/groups` | Scoped (`Classroom`/`Club`/`Zone`) | M5 / Caller Module | PROPOSED |
 | 2 | Owner Group Retrieval | `GET` | `/api/v1/{module}/groups/{groupId}` | Scoped | M5 | PROPOSED |
-| 3 | Authorized Discovery | `GET` | `/api/v1/{module}/groups` | Scoped (Public/Discoverable) | M5 | PROPOSED |
+| 3 | Authorized Discovery | `GET` | `/api/v1/{module}/groups` | Scoped (Discoverable) | M5 | PROPOSED |
 | 4 | Group Configuration | `PATCH` | `/api/v1/{module}/groups/{groupId}` | Scoped | M5 | PROPOSED |
 | 5 | Join Request Creation | `POST` | `/api/v1/{module}/groups/{groupId}/join-requests` | Scoped | M5 | PROPOSED |
 | 6 | Join Request Status | `GET` | `/api/v1/{module}/groups/{groupId}/join-requests/{requestId}` | Scoped | M5 | PROPOSED |
@@ -75,13 +85,14 @@ The table below summarizes the 10 proposed operations for group lifecycle manage
 - **Group Kind & Scope:** Exactly matches `{module}` (`learning:Classroom`, `hobbies:Club`, `social:Zone`).
 - **Preconditions:**
   - Caller profile active.
-  - For `hobbies`: Verified against `HobbiesClubCreationQuotaPolicy` (Free: $\le 5$, Premium: unlimited).
+  - For `hobbies`: Verified against `HobbiesClubCreationQuotaPolicy` (Free: $\le 5$, Premium: unlimited via M2 entitlement check).
+  - Groups are **NOT discoverable by default**; caller must explicitly set `isDiscoverable: true`.
 - **Request DTO:**
   ```json
   {
     "name": "Robotics Enthusiasts",
     "description": "Weekly robotics building club.",
-    "isDiscoverable": true
+    "isDiscoverable": false
   }
   ```
 - **Response DTO (`201 Created`):**
@@ -98,7 +109,7 @@ The table below summarizes the 10 proposed operations for group lifecycle manage
   - `401 Unauthorized`: Missing or invalid token.
   - `403 Forbidden`: Creation quota reached or profile inactive.
   - `400 Bad Request`: Incompatible scope or invalid name.
-- **Database Transaction:** Atomic insert into `groups` table and initial `group_memberships` (owner/leader role).
+- **Proposed Database Transaction:** Atomic insert into `groups` table and initial `group_memberships` (with proposed creator/leader role).
 
 #### Op 2: Owner-Scoped Group Retrieval
 - **Requirement ID:** CF-07.2
@@ -115,7 +126,7 @@ The table below summarizes the 10 proposed operations for group lifecycle manage
     "name": "Robotics Enthusiasts",
     "memberCount": 24,
     "capacity": 50,
-    "role": "Leader"
+    "role": "Member"
   }
   ```
 - **Errors:** `404 Not Found` (conceals group existence if caller has no visibility).
@@ -131,7 +142,7 @@ The table below summarizes the 10 proposed operations for group lifecycle manage
 - **Requirement ID:** CF-07.3
 - **Owner:** M5
 - **HTTP Method & Path:** `PATCH /api/v1/{module}/groups/{groupId}`
-- **Authorization:** Caller must hold `Leader` or `Admin` role in `groupId`.
+- **Authorization:** Caller must hold an authorized administrative role (proposed `Leader` or `Admin`).
 - **Request DTO:**
   ```json
   {
@@ -139,7 +150,7 @@ The table below summarizes the 10 proposed operations for group lifecycle manage
     "isDiscoverable": false
   }
   ```
-- **Errors:** `403 Forbidden` if caller is regular member; `404 Not Found` if group nonexistent.
+- **Errors:** `403 Forbidden` if caller lacks required role; `404 Not Found` if group nonexistent.
 
 #### Op 5: Join Request Creation
 - **Requirement ID:** CF-07.4
@@ -164,13 +175,13 @@ The table below summarizes the 10 proposed operations for group lifecycle manage
 - **Owner:** M5
 - **HTTP Method & Path:** `GET /api/v1/{module}/groups/{groupId}/join-requests/{requestId}`
 - **Authorization:** Requesting profile owner or group administrator.
-- **Response DTO (`200 OK`):** Privacy-safe status projection (`Pending`, `Approved`, `Rejected`, `Expired`).
+- **Response DTO (`200 OK`):** Privacy-safe status projection (`Pending`, `Approved`, `Rejected`, `Expired` — proposed lifecycle).
 
 #### Op 7: Admission Approval / Rejection Decision
 - **Requirement ID:** CF-07.6
 - **Owner:** M5
 - **HTTP Method & Path:** `POST /api/v1/{module}/groups/{groupId}/join-requests/{requestId}/decision`
-- **Authorization:** Group leader/admin.
+- **Authorization:** Group leader/admin (proposed role hierarchy).
 - **Preconditions:**
   - Hard capacity check enforced **atomically within database transaction**.
   - Downgraded clubs with $\ge 50$ members fail admission.
@@ -180,12 +191,12 @@ The table below summarizes the 10 proposed operations for group lifecycle manage
     "decision": "Approve"
   }
   ```
-- **Database Transaction:**
+- **Proposed Database Transaction (Serializable Isolation):**
   ```sql
   BEGIN TRANSACTION ISOLATION LEVEL SERIALIZABLE;
   -- 1. Lock group record
   SELECT current_member_count, tier FROM groups WHERE group_id = :groupId FOR UPDATE;
-  -- 2. Verify capacity
+  -- 2. Verify capacity against tier
   -- 3. Insert membership
   INSERT INTO group_memberships (group_id, module, profile_id, role, joined_at_utc) ...
   -- 4. Increment count
@@ -204,7 +215,7 @@ The table below summarizes the 10 proposed operations for group lifecycle manage
 - **Requirement ID:** CF-07.8
 - **Owner:** M5
 - **HTTP Method & Path:** `POST /api/v1/{module}/groups/{groupId}/leave`
-- **Preconditions:** Sole leader cannot leave without transferring leadership.
+- **Preconditions:** Sole leader cannot leave without transferring leadership (proposed policy).
 - **Database Transaction:** Delete from `group_memberships`, decrement `current_member_count`.
 
 #### Op 10: Group Closure / Soft Deletion
@@ -213,15 +224,17 @@ The table below summarizes the 10 proposed operations for group lifecycle manage
 - **HTTP Method & Path:** `DELETE /api/v1/{module}/groups/{groupId}`
 - **Authorization:** Group Creator or authorized M6 Moderation Administrator.
 - **Lifecycle Action:** Mark `is_deleted = true`, deactivate memberships, emit M4 cleanup event.
+- **Inactivity Note:** Automatic group inactivity detection, archival, and restoration rules remain PENDING under Decision P-07.
 
 ---
 
-## 4. Proposed Database Schema (PROPOSED)
+## 4. Proposed Database Schema (PROPOSED / UNAPPROVED)
 
-All physical table definitions below are marked **PROPOSED** pending final M2/M6 schema review.
+> [!WARNING]
+> All physical table definitions below are marked **PROPOSED AND UNAPPROVED** pending final M2/M6 schema review. No database migration is authorized by this document.
 
 ```sql
--- PROPOSED: Core Groups Table
+-- PROPOSED / UNAPPROVED: Core Groups Table
 CREATE TABLE IF NOT EXISTS groups (
     group_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     module VARCHAR(32) NOT NULL, -- 'learning', 'hobbies', 'social'
@@ -229,7 +242,7 @@ CREATE TABLE IF NOT EXISTS groups (
     name VARCHAR(128) NOT NULL,
     description TEXT NULL,
     creator_profile_id UUID NOT NULL,
-    is_discoverable BOOLEAN NOT NULL DEFAULT TRUE,
+    is_discoverable BOOLEAN NOT NULL DEFAULT FALSE,
     is_deleted BOOLEAN NOT NULL DEFAULT FALSE,
     current_member_count INT NOT NULL DEFAULT 1,
     tier VARCHAR(16) NOT NULL DEFAULT 'Free', -- 'Free' or 'Premium'
@@ -242,31 +255,31 @@ CREATE TABLE IF NOT EXISTS groups (
     )
 );
 
--- PROPOSED: Group Memberships Table
+-- PROPOSED / UNAPPROVED: Group Memberships Table
 CREATE TABLE IF NOT EXISTS group_memberships (
     group_id UUID NOT NULL REFERENCES groups(group_id) ON DELETE CASCADE,
     module VARCHAR(32) NOT NULL,
     profile_id UUID NOT NULL,
-    role VARCHAR(32) NOT NULL DEFAULT 'Member', -- 'Leader', 'Admin', 'Member'
+    role VARCHAR(32) NOT NULL DEFAULT 'Member', -- 'Leader', 'Admin', 'Member' (proposed)
     joined_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (group_id, profile_id),
     CONSTRAINT chk_membership_module CHECK (module IN ('learning', 'hobbies', 'social'))
 );
 
--- PROPOSED: Group Join Requests Table
+-- PROPOSED / UNAPPROVED: Group Join Requests Table
 CREATE TABLE IF NOT EXISTS group_join_requests (
     request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     group_id UUID NOT NULL REFERENCES groups(group_id) ON DELETE CASCADE,
     module VARCHAR(32) NOT NULL,
     requesting_profile_id UUID NOT NULL,
-    status VARCHAR(32) NOT NULL DEFAULT 'Pending', -- 'Pending', 'Approved', 'Rejected', 'Expired'
+    status VARCHAR(32) NOT NULL DEFAULT 'Pending', -- 'Pending', 'Approved', 'Rejected', 'Expired' (proposed)
     requested_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     reviewed_at_utc TIMESTAMPTZ NULL,
     reviewed_by_profile_id UUID NULL,
     CONSTRAINT uq_pending_join_request UNIQUE (group_id, requesting_profile_id, status)
 );
 
--- PROPOSED: Indexes for Fast Scoped Queries
+-- PROPOSED / UNAPPROVED: Indexes for Fast Scoped Queries
 CREATE INDEX IF NOT EXISTS idx_groups_module_discoverable 
     ON groups(module, is_discoverable) WHERE is_deleted = FALSE;
 CREATE INDEX IF NOT EXISTS idx_group_memberships_profile 
