@@ -31,9 +31,9 @@ public sealed class LearningPreferences
     /// <summary>
     /// Replace selections together after complete validation; rejected updates preserve all state.
     /// Repetition means the same opaque identity in a single collection, not text equivalence.
-    /// Teaching/learning overlap is UNSUPPORTED pending product approval, not a business rule
-    /// that a person cannot teach and learn the same skill. No successful overlapping update
-    /// is exposed until that decision exists. Interest and skill identities are separate domains.
+    /// ANDRIL-M5-LRN-PRODUCT-20261122-01 permits the same skill in Teaching and Learning.
+    /// Each collection still requires distinct nonempty identities and remains independent.
+    /// Interest and skill identities are separate domains; Skill Exchange terms are unaffected.
     /// </summary>
     public void UpdateSelections(IEnumerable<Guid> interests, IEnumerable<Guid> teachingSkills,
         IEnumerable<Guid> learningSkills)
@@ -41,8 +41,6 @@ public sealed class LearningPreferences
         var nextInterests = Snapshot(interests, nameof(interests));
         var nextTeaching = Snapshot(teachingSkills, nameof(teachingSkills));
         var nextLearning = Snapshot(learningSkills, nameof(learningSkills));
-        if (nextTeaching.Intersect(nextLearning).Any())
-            throw new NotSupportedException("Teaching and learning skill overlap requires an approved policy.");
 
         Interests = nextInterests;
         TeachingSkills = nextTeaching;
