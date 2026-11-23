@@ -320,15 +320,59 @@ public sealed class SocialInterestWritePreflightSecurityTests
     }
 
     [Fact]
-    public void ResultSerialization_ConcealsConfidentialIdentities()
+    public void ResultSerialization_ConcealsConfidentialIdentitiesAndInternalStatus()
     {
         var result = SocialInterestWritePreflightResult.Success();
 
         var json = JsonSerializer.Serialize(result);
 
-        Assert.Contains("\"IsEligible\":true", json);
+        Assert.Equal("{\"IsEligible\":true}", json);
         Assert.DoesNotContain(ActorId.ToString(), json);
         Assert.DoesNotContain(CandidateId.ToString(), json);
+        Assert.DoesNotContain("Status", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("DiscoveryResult", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Theory]
+    [InlineData(SocialInterestWritePreflightStatus.BlockedByActor)]
+    [InlineData(SocialInterestWritePreflightStatus.BlockedByCandidate)]
+    [InlineData(SocialInterestWritePreflightStatus.CandidateHidden)]
+    [InlineData(SocialInterestWritePreflightStatus.ActorUnderage)]
+    [InlineData(SocialInterestWritePreflightStatus.CandidateUnderage)]
+    [InlineData(SocialInterestWritePreflightStatus.ActorNotOptedIn)]
+    [InlineData(SocialInterestWritePreflightStatus.CandidateNotOptedIn)]
+    [InlineData(SocialInterestWritePreflightStatus.MissingEvidence)]
+    [InlineData(SocialInterestWritePreflightStatus.PairMismatch)]
+    public void ResultSerialization_IneligibleStatuses_ConcealsSensitiveExclusionDetails(SocialInterestWritePreflightStatus status)
+    {
+        var failedResult = SocialInterestWritePreflightResult.Fail(status);
+
+        var json = JsonSerializer.Serialize(failedResult);
+
+        Assert.Equal("{\"IsEligible\":false}", json);
+        Assert.DoesNotContain(status.ToString(), json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Status", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("DiscoveryResult", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Blocked", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Underage", json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void InternalAccess_PreservesDetailedStatusAndDiscoveryResult()
+    {
+        var pairKey = CreatePair();
+        var interest = CreateInterest(pairKey);
+        var actor = CreateValidActor();
+        var candidateBlocked = CreateValidCandidate(isBlockedByCaller: true);
+
+        var result = SocialInterestWritePreflightPolicy.Evaluate(pairKey, interest, actor, candidateBlocked);
+
+        // Internal C# consumers retain full status and evidence access
+        Assert.False(result.IsEligible);
+        Assert.Equal(SocialInterestWritePreflightStatus.BlockedByActor, result.Status);
+        Assert.NotNull(result.DiscoveryResult);
+        Assert.False(result.DiscoveryResult.IsEligible);
+        Assert.True(result.DiscoveryResult.Reasons.HasFlag(SocialDiscoveryIneligibilityReason.BlockedByCaller));
     }
 
     #endregion
