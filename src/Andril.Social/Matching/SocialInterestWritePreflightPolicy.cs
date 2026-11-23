@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json.Serialization;
 
 namespace Andril.Social.Matching;
 
@@ -71,11 +72,13 @@ public sealed class SocialInterestWritePreflightResult : IEquatable<SocialIntere
     /// <summary>
     /// Gets the status outcome of the interest write preflight evaluation.
     /// </summary>
+    [JsonIgnore]
     public SocialInterestWritePreflightStatus Status { get; }
 
     /// <summary>
     /// Gets the underlying discovery eligibility evaluation result, if evaluated.
     /// </summary>
+    [JsonIgnore]
     public SocialDiscoveryEligibilityResult? DiscoveryResult { get; }
 
     /// <summary>
