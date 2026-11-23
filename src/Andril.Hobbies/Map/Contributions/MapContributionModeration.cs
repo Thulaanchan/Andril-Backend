@@ -68,8 +68,9 @@ internal sealed class MapContributionModerationSnapshot
 /// <summary>Internal, unmapped offline moderation domain; not registered for production use.</summary>
 /// <remarks>
 /// The trusted application must separately authorize each evaluation, including retries.
-/// Serialization and replay receipts exist only within this instance, not across processes,
-/// reconstructed instances or database transactions. No media, publication, audit persistence
+/// Serialization is instance-local. Replay evidence survives reconstruction only when a trusted
+/// caller supplies the original complete snapshot; this class provides no durable storage.
+/// No media, publication, audit persistence
 /// or reward operations occur here. The existing contribution and its EF status remain unchanged.
 /// </remarks>
 internal sealed class MapContributionModeration
@@ -87,6 +88,52 @@ internal sealed class MapContributionModeration
             throw new InvalidOperationException("Only a pending contribution can begin offline review.");
         return new(new(contribution.ContributionId, contribution.OwnerHobbiesModuleProfileId,
             contribution.AttractionId, contribution.CaptureSessionId, revision, null));
+    }
+
+    /// <summary>
+    /// Restores consistent offline evidence supplied by a trusted authoritative caller.
+    /// A null acceptedAction explicitly means PendingReview; otherwise the original receipt
+    /// must establish that action and the preceding revision. Never bind client input here:
+    /// consistency checks establish neither authorization nor proof of database persistence.
+    /// The contribution supplies identity only; its persisted PendingReview status is unchanged.
+    /// </summary>
+    internal static MapContributionModeration Restore(MapContribution contribution,
+        MapContributionModerationSnapshot snapshot, MapContributionReviewAction? acceptedAction)
+    {
+        ArgumentNullException.ThrowIfNull(contribution);
+        ArgumentNullException.ThrowIfNull(snapshot);
+        ArgumentOutOfRangeException.ThrowIfNegative(snapshot.Revision);
+        if (acceptedAction is not (null or MapContributionReviewAction.Approve or MapContributionReviewAction.Reject))
+            throw new ArgumentOutOfRangeException(nameof(acceptedAction));
+        if (snapshot.ContributionId != contribution.ContributionId
+            || snapshot.OwnerHobbiesModuleProfileId != contribution.OwnerHobbiesModuleProfileId
+            || snapshot.AttractionId != contribution.AttractionId
+            || snapshot.CaptureSessionId != contribution.CaptureSessionId)
+            throw new InvalidOperationException("The moderation evidence does not match this contribution scope.");
+
+        MapContributionReviewDecision? decision = null;
+        if (acceptedAction is null)
+        {
+            if (snapshot.Decision is not null)
+                throw new InvalidOperationException("Pending review cannot contain accepted decision evidence.");
+        }
+        else
+        {
+            var receipt = snapshot.Decision
+                ?? throw new InvalidOperationException("Accepted review requires complete decision evidence.");
+            ArgumentNullException.ThrowIfNull(receipt.Request);
+            var request = receipt.Request;
+            if (request.ContributionId != contribution.ContributionId || request.Action != acceptedAction)
+                throw new InvalidOperationException("The accepted decision does not match the review state.");
+            if (receipt.DecidedAtUtc == default)
+                throw new ArgumentOutOfRangeException(nameof(snapshot), "An original acceptance timestamp is required.");
+            if (snapshot.Revision != checked(request.ExpectedRevision + 1))
+                throw new ArgumentException("The accepted revision must follow the original request revision.", nameof(snapshot));
+            decision = new(request, receipt.DecidedAtUtc);
+        }
+
+        return new(new(contribution.ContributionId, contribution.OwnerHobbiesModuleProfileId,
+            contribution.AttractionId, contribution.CaptureSessionId, snapshot.Revision, decision));
     }
 
     internal MapContributionModerationSnapshot Snapshot
