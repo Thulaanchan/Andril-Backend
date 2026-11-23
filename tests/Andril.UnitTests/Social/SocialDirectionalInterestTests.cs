@@ -151,16 +151,52 @@ public sealed class SocialDirectionalInterestTests
         Assert.DoesNotContain(ValidUtcTime.ToString(), diagnostic);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Serialization_SystemTextJson_ConcealsPrivateIdentifiersAndDecisions(bool isPositive)
+    {
+        var pairKey = new SocialProfilePairKey(ProfileA, ProfileB);
+        var interest = new SocialDirectionalInterest(pairKey, ProfileA, isPositive, ValidUtcTime);
+
+        var json = JsonSerializer.Serialize(interest);
+
+        Assert.Equal("{}", json);
+        Assert.DoesNotContain(ProfileA.ToString(), json);
+        Assert.DoesNotContain(ProfileB.ToString(), json);
+        Assert.DoesNotContain(ValidUtcTime.ToString("o"), json);
+        Assert.DoesNotContain("IsPositive", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("PairKey", json, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
-    public void Serialization_SystemTextJson_ConcealsPrivateIdentifiers()
+    public void InternalAccess_PositiveAndNegativeDecisions_RemainDistinguishable()
+    {
+        var pairKey = new SocialProfilePairKey(ProfileA, ProfileB);
+        var like = new SocialDirectionalInterest(pairKey, ProfileA, true, ValidUtcTime);
+        var pass = new SocialDirectionalInterest(pairKey, ProfileA, false, ValidUtcTime);
+
+        // Internal C# consumers retain full legitimate access
+        Assert.True(like.IsPositive);
+        Assert.False(pass.IsPositive);
+        Assert.Equal(pairKey, like.PairKey);
+        Assert.Equal(ProfileA, like.ActingProfileId);
+        Assert.Equal(ProfileB, like.TargetProfileId);
+        Assert.Equal(ValidUtcTime, like.RecordedAtUtc);
+
+        Assert.NotEqual(like, pass);
+    }
+
+    [Fact]
+    public void SecurityBoundary_ModelHasNoCommunicationOrMatchAuthority()
     {
         var pairKey = new SocialProfilePairKey(ProfileA, ProfileB);
         var interest = new SocialDirectionalInterest(pairKey, ProfileA, true, ValidUtcTime);
 
-        var json = JsonSerializer.Serialize(interest);
-
-        Assert.DoesNotContain(ProfileA.ToString(), json);
-        Assert.DoesNotContain(ProfileB.ToString(), json);
-        Assert.DoesNotContain(ValidUtcTime.ToString("o"), json);
+        // Confirm diagnostic string reveals no sensitive data or unauthorized communication grants
+        var diagnostic = interest.ToString();
+        Assert.Equal("SocialDirectionalInterest [private]", diagnostic);
+        Assert.DoesNotContain("Chat", diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Token", diagnostic, StringComparison.OrdinalIgnoreCase);
     }
 }
