@@ -574,4 +574,267 @@ public sealed class ChatPrototypeSecurityTests
         using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
         Assert.Equal(new[] { "code", "title", "status" }, json.RootElement.EnumerateObject().Select(property => property.Name));
     }
+
+    [Trait("Step", "08B-3")]
+    [Theory]
+    [InlineData("detail")]
+    [InlineData("history")]
+    [InlineData("list")]
+    public async Task Adversarial_Revocation_observed_after_evidence_snapshot_prevents_read_projection(string operation)
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        var revoked = false;
+        host.Evidence.Transform = evidence =>
+        {
+            // The list first examines its hidden/nonparticipant candidate. Revoke while the
+            // first visible candidate's original evidence is returning, before DTO projection.
+            if (host.Evidence.Reads == (operation == "list" ? 2 : 1))
+            {
+                host.Evidence.Transform = item => item;
+                host.Evidence.Block();
+                revoked = true;
+            }
+            return evidence;
+        };
+        var path = operation == "list" ? ChatPrototypeApiTests.Root() + "?pageSize=1"
+            : ChatPrototypeApiTests.Target() + (operation == "history" ? "/messages?pageSize=1" : "");
+        using var response = await host.Client.GetAsync(path);
+        Assert.True(revoked);
+        if (operation == "list")
+        {
+            var page = await ChatPrototypeApiTests.Read<ChatPrototypePage<ChatPrototypeConversationDto>>(response);
+            Assert.Empty(page.Items);
+            Assert.Null(page.NextCursor);
+        }
+        else await HttpError(response, HttpStatusCode.NotFound);
+        Assert.Equal(3, host.Scenario.MessageCount);
+    }
+
+    [Trait("Step", "08B-3")]
+    [Theory]
+    [InlineData(1, "hobbies")]
+    [InlineData(2, "social")]
+    [InlineData(3, "learning")]
+    public async Task Adversarial_Each_actor_cannot_cross_into_the_next_private_module(int actor, string foreign)
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync((SyntheticActor)actor);
+        foreach (var path in new[] { ChatPrototypeApiTests.Root(foreign) + "?pageSize=1", ChatPrototypeApiTests.Target(foreign), ChatPrototypeApiTests.Target(foreign) + "/messages?pageSize=1" })
+            await HttpError(await host.Client.GetAsync(path), HttpStatusCode.NotFound);
+        await HttpError(await host.Client.PostAsJsonAsync(ChatPrototypeApiTests.Target(foreign) + "/messages", new ChatPrototypeSubmitDto("denied")), HttpStatusCode.NotFound);
+        Assert.Equal(3, host.Scenario.MessageCount);
+    }
+
+    [Trait("Step", "08B-3")]
+    [Theory]
+    [InlineData("IsProfileActive", null)]
+    [InlineData("IsProfileActive", false)]
+    [InlineData("IsModuleCommunicationEligible", null)]
+    [InlineData("IsModuleCommunicationEligible", false)]
+    [InlineData("IsCurrent", null)]
+    [InlineData("IsCurrent", false)]
+    public async Task Adversarial_Unavailable_or_inactive_profile_evidence_fails_closed_over_HTTP(string flag, bool? value)
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        host.Evidence.SetFlag(flag, value);
+        await HttpError(await host.Client.GetAsync(ChatPrototypeApiTests.Target()), HttpStatusCode.NotFound);
+        await HttpError(await host.Client.PostAsJsonAsync(ChatPrototypeApiTests.Target() + "/messages", new ChatPrototypeSubmitDto("denied")), HttpStatusCode.NotFound);
+        var page = await ChatPrototypeApiTests.Read<ChatPrototypePage<ChatPrototypeConversationDto>>(await host.Client.GetAsync(ChatPrototypeApiTests.Root() + "?pageSize=1"));
+        Assert.Empty(page.Items);
+        Assert.Null(page.NextCursor);
+        Assert.Equal(3, host.Scenario.MessageCount);
+    }
+
+    [Trait("Step", "08B-3")]
+    [Theory]
+    [InlineData(1, "learning")]
+    [InlineData(2, "hobbies")]
+    [InlineData(3, "social")]
+    public async Task Adversarial_Subject_query_cookies_and_proxy_headers_cannot_select_an_actor(int actor, string module)
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync((SyntheticActor)actor);
+        var fake = Guid.Parse("39000000-0000-4000-8000-000000000099");
+        host.Client.DefaultRequestHeaders.Add("X-Subject-Id", fake.ToString());
+        host.Client.DefaultRequestHeaders.Add("X-Forwarded-User", fake.ToString());
+        host.Client.DefaultRequestHeaders.Add("X-Actor", "administrator");
+        host.Client.DefaultRequestHeaders.Add("Cookie", "sub=" + fake);
+        using var response = await host.Client.PostAsJsonAsync(ChatPrototypeApiTests.Target(module) + "/messages?subject=" + fake + "&accountId=" + fake + "&module=social&actor=administrator", new ChatPrototypeSubmitDto("fixed identity"));
+        var dto = await ChatPrototypeApiTests.Read<ChatPrototypeMessageDto>(response, HttpStatusCode.Created);
+        Assert.True(dto.IsOwnMessage);
+        Assert.Equal(module, dto.Module);
+        var stored = Assert.Single(host.Scenario.History(dto.ConversationId), message => message.MessageId == dto.MessageId);
+        Assert.Equal(host.Identity!.Account, stored.Sender.AccountId);
+        Assert.Equal(host.Identity.Profile, stored.Sender.ModuleProfileId);
+        Assert.NotEqual(fake, stored.Sender.AccountId);
+    }
+
+    [Trait("Step", "08B-3")]
+    [Theory]
+    [InlineData("{\"text\":true}")]
+    [InlineData("{\"text\":[]}")]
+    [InlineData("{\"text\":{}}")]
+    [InlineData("{\"text\":\"valid\",\"moodTone\":false}")]
+    [InlineData("{\"text\":\"valid\",\"moodTone\":0}")]
+    [InlineData("{\"text\":\"valid\",\"moodTone\":[]}")]
+    [InlineData("{\"text\":\"valid\",\"moodTone\":{}}")]
+    public async Task Adversarial_Wrong_JSON_types_are_safe_400s_without_state_changes(string json)
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        await HttpError(await host.Client.PostAsync(ChatPrototypeApiTests.Target() + "/messages", new StringContent(json, Encoding.UTF8, "application/json")), HttpStatusCode.BadRequest);
+        Assert.Equal(3, host.Scenario.MessageCount);
+    }
+
+    [Trait("Step", "08B-3")]
+    [Theory]
+    [InlineData("not-a-guid")]
+    [InlineData("00000000-0000-0000-0000-000000000000")]
+    public async Task Adversarial_Invalid_conversation_identifiers_do_not_reveal_or_append(string id)
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        var path = ChatPrototypeApiTests.Root() + "/" + id;
+        await HttpError(await host.Client.GetAsync(path), HttpStatusCode.NotFound);
+        await HttpError(await host.Client.GetAsync(path + "/messages?pageSize=1"), HttpStatusCode.NotFound);
+        await HttpError(await host.Client.PostAsJsonAsync(path + "/messages", new ChatPrototypeSubmitDto("denied")), HttpStatusCode.NotFound);
+        Assert.Equal(3, host.Scenario.MessageCount);
+    }
+
+    [Trait("Step", "08B-3")]
+    [Theory]
+    [InlineData("PUT")]
+    [InlineData("PATCH")]
+    [InlineData("DELETE")]
+    [InlineData("OPTIONS")]
+    public async Task Adversarial_Unsupported_methods_have_empty_no_store_405s(string method)
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        foreach (var path in new[] { ChatPrototypeApiTests.Root(), ChatPrototypeApiTests.Target(), ChatPrototypeApiTests.Target() + "/messages" })
+        {
+            using var request = new HttpRequestMessage(new HttpMethod(method), path);
+            using var response = await host.Client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.MethodNotAllowed, response.StatusCode);
+            Assert.True(response.Headers.CacheControl?.NoStore);
+            Assert.Empty(await response.Content.ReadAsStringAsync());
+        }
+        Assert.Equal(3, host.Scenario.MessageCount);
+    }
+
+    [Trait("Step", "08B-3")]
+    [Fact]
+    public async Task Adversarial_List_cursor_is_rejected_by_other_hosts_accounts_and_modules()
+    {
+        await using var owner = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        await using var otherHost = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        await using var otherAccount = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Hobbies);
+        var first = await ChatPrototypeApiTests.Read<ChatPrototypePage<ChatPrototypeConversationDto>>(await owner.Client.GetAsync(ChatPrototypeApiTests.Root() + "?pageSize=1"));
+        Assert.NotNull(first.NextCursor);
+        await HttpError(await otherHost.Client.GetAsync(ChatPrototypeApiTests.Root() + "?pageSize=1&cursor=" + first.NextCursor), HttpStatusCode.BadRequest);
+        await HttpError(await otherAccount.Client.GetAsync(ChatPrototypeApiTests.Root("hobbies") + "?pageSize=1&cursor=" + first.NextCursor), HttpStatusCode.BadRequest);
+        await HttpError(await owner.Client.GetAsync(ChatPrototypeApiTests.Root("learning") + "?pageSize=1&cursor=" + first.NextCursor), HttpStatusCode.NotFound);
+        Assert.Equal(3, owner.Scenario.MessageCount);
+        Assert.Equal(3, otherHost.Scenario.MessageCount);
+        Assert.Equal(3, otherAccount.Scenario.MessageCount);
+    }
+
+    [Trait("Step", "08B-3")]
+    [Theory]
+    [InlineData("block")]
+    [InlineData("unmatch")]
+    [InlineData("eligibility")]
+    public async Task Adversarial_List_cursor_rechecks_revocation_and_discloses_no_hidden_count(string change)
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        var first = await ChatPrototypeApiTests.Read<ChatPrototypePage<ChatPrototypeConversationDto>>(await host.Client.GetAsync(ChatPrototypeApiTests.Root() + "?pageSize=1"));
+        Assert.NotNull(first.NextCursor);
+        if (change == "block") host.Evidence.Block();
+        if (change == "unmatch") host.Evidence.Unmatch();
+        if (change == "eligibility") host.Evidence.RevokeEligibility();
+        using var response = await host.Client.GetAsync(ChatPrototypeApiTests.Root() + "?pageSize=1&cursor=" + first.NextCursor);
+        var page = await ChatPrototypeApiTests.Read<ChatPrototypePage<ChatPrototypeConversationDto>>(response);
+        Assert.Empty(page.Items);
+        Assert.Null(page.NextCursor);
+        using var raw = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(new[] { "items", "nextCursor" }, raw.RootElement.EnumerateObject().Select(property => property.Name));
+    }
+
+    [Trait("Step", "08B-3")]
+    [Fact]
+    public async Task Adversarial_Disposed_host_cursors_cannot_be_replayed_in_replacement_fixture()
+    {
+        var old = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        string? listCursor;
+        string? historyCursor;
+        try
+        {
+            listCursor = (await ChatPrototypeApiTests.Read<ChatPrototypePage<ChatPrototypeConversationDto>>(await old.Client.GetAsync(ChatPrototypeApiTests.Root() + "?pageSize=1"))).NextCursor;
+            historyCursor = (await ChatPrototypeApiTests.Read<ChatPrototypePage<ChatPrototypeMessageDto>>(await old.Client.GetAsync(ChatPrototypeApiTests.Target() + "/messages?pageSize=1"))).NextCursor;
+            Assert.Equal(2, old.Scenario.CursorCount);
+        }
+        finally { await old.DisposeAsync(); }
+        Assert.True(old.Scenario.IsDisposed);
+        Assert.Equal(0, old.Scenario.CursorCount);
+        Assert.Equal(0, old.Scenario.MessageCount);
+        await Assert.ThrowsAsync<ObjectDisposedException>(() => old.Client.GetAsync(ChatPrototypeApiTests.Root() + "?pageSize=1&cursor=" + listCursor));
+        await using var fresh = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        await HttpError(await fresh.Client.GetAsync(ChatPrototypeApiTests.Root() + "?pageSize=1&cursor=" + listCursor), HttpStatusCode.BadRequest);
+        await HttpError(await fresh.Client.GetAsync(ChatPrototypeApiTests.Target() + "/messages?pageSize=1&cursor=" + historyCursor), HttpStatusCode.BadRequest);
+    }
+
+    [Trait("Step", "08B-3")]
+    [Theory]
+    [InlineData(1)]
+    [InlineData(16)]
+    public async Task Adversarial_Page_size_safeguard_accepts_its_explicit_test_boundaries(int size)
+    {
+        Assert.Equal(16, ChatPrototypeScenario.PagingSafeguard); // Scenario safeguard, never a production limit.
+        await using var host = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        var list = await ChatPrototypeApiTests.Read<ChatPrototypePage<ChatPrototypeConversationDto>>(await host.Client.GetAsync(ChatPrototypeApiTests.Root() + "?pageSize=" + size));
+        var history = await ChatPrototypeApiTests.Read<ChatPrototypePage<ChatPrototypeMessageDto>>(await host.Client.GetAsync(ChatPrototypeApiTests.Target() + "/messages?pageSize=" + size));
+        Assert.Equal(Math.Min(size, 2), list.Items.Count);
+        Assert.Equal(Math.Min(size, 3), history.Items.Count);
+    }
+
+    [Trait("Step", "08B-3")]
+    [Fact]
+    public async Task Adversarial_Cancellation_while_evidence_reader_is_pending_does_not_append()
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        using var release = new ManualResetEventSlim();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var exited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.Evidence.Transform = evidence =>
+        {
+            entered.TrySetResult();
+            try
+            {
+                if (!release.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("synthetic_barrier_deadline");
+                return evidence;
+            }
+            finally { exited.TrySetResult(); }
+        };
+        using var cancellation = new CancellationTokenSource();
+        var pending = host.Client.PostAsJsonAsync(ChatPrototypeApiTests.Target() + "/messages", new ChatPrototypeSubmitDto("cancelled"), cancellation.Token);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            cancellation.Cancel();
+            release.Set();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending);
+        }
+        finally { release.Set(); }
+        await exited.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(3, host.Scenario.MessageCount);
+    }
+
+    [Trait("Step", "08B-3")]
+    [Fact]
+    public async Task Adversarial_Pre_append_dependency_exception_is_sanitized_without_writing()
+    {
+        await using var host = await ChatPrototypeTestHost.StartAsync(SyntheticActor.Social);
+        host.Scenario.BeforeAppend = _ => throw new InvalidOperationException("private_credential_and_stack_" + host.Identity!.Profile);
+        using var response = await host.Client.PostAsJsonAsync(ChatPrototypeApiTests.Target() + "/messages", new ChatPrototypeSubmitDto("no append"));
+        await HttpError(response, HttpStatusCode.InternalServerError);
+        var body = await response.Content.ReadAsStringAsync();
+        foreach (var secret in new[] { "private_credential", "System.", "Exception", host.Identity!.Profile.ToString(), host.Identity.Account.ToString() })
+            Assert.DoesNotContain(secret, body, StringComparison.Ordinal);
+        Assert.Equal(3, host.Scenario.MessageCount);
+    }
 }
