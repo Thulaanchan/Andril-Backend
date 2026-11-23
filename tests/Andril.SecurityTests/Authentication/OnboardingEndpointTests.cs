@@ -281,6 +281,77 @@ public sealed class OnboardingEndpointTests
         }
     }
 
+    [Theory]
+    [InlineData("learning")]
+    [InlineData("hobbies")]
+    public async Task ModuleProfileAbsenceIncompleteSetupAndUnavailableLookupRemainDistinct(string module)
+    {
+        const string displayName = "Synthetic Draft";
+        var store = new Store { Exists = true };
+        store.Ready(module);
+        using var factory = new AuthenticationFactory(identityHandler: new IdentityHandler());
+        using var app = factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
+        {
+            services.AddSingleton<IAccountRepository>(store);
+            services.AddSingleton<IStarterModuleRepository>(store);
+            services.AddSingleton<IPrivateProfileRepository>(store);
+            services.AddSingleton<IPolicyCatalogProvider>(store);
+        }));
+        using var client = app.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token());
+
+        await AssertIncompleteAsync("private_profile_missing");
+
+        var now = DateTimeOffset.UtcNow;
+        var ownedProfile = PrivateModuleProfile.Create(store.Account.Id, module, now);
+        ownedProfile.SetDraftFields(new(displayName, null, "private"));
+        store.Profile = ownedProfile;
+        await AssertIncompleteAsync("approved_profile_contract");
+
+        store.FailProfile = true;
+        await AssertUnavailableAsync("Account service unavailable");
+        store.FailProfile = false;
+
+        store.Profile = PrivateModuleProfile.Create(store.Account.Id, "social", now);
+        store.Profile.SetDraftFields(new(displayName, null, "private"));
+        await AssertUnavailableAsync("Onboarding status unavailable");
+
+        store.Profile = null;
+        await AssertIncompleteAsync("private_profile_missing");
+
+        async Task AssertIncompleteAsync(string blocker)
+        {
+            using var response = await client.GetAsync(Route);
+            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.True(response.Headers.CacheControl?.NoStore);
+            var json = await response.Content.ReadAsStringAsync();
+            Assert.DoesNotContain(displayName, json);
+            Assert.DoesNotContain(store.Account.Id.ToString(), json);
+            if (store.Profile is { } profile) Assert.DoesNotContain(profile.Id.ToString(), json);
+            var status = await response.Content.ReadFromJsonAsync<OnboardingStatus>();
+            Assert.NotNull(status);
+            Assert.Equal(module, status.SelectedModule);
+            Assert.Equal("profile_setup", status.NextStep);
+            Assert.Equal(blocker, status.BlockingDependency);
+            Assert.False(status.Progress.PrivateProfileComplete);
+            Assert.False(status.OnboardingComplete);
+            Assert.False(status.ModuleHomeAuthorized);
+        }
+
+        async Task AssertUnavailableAsync(string title)
+        {
+            using var response = await client.GetAsync(Route);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+            Assert.True(response.Headers.CacheControl?.NoStore);
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var root = body.RootElement;
+            Assert.Equal(title, root.GetProperty("title").GetString());
+            Assert.False(root.TryGetProperty("progress", out _));
+            Assert.False(root.TryGetProperty("selectedModule", out _));
+            Assert.False(root.TryGetProperty("moduleHomeAuthorized", out _));
+        }
+    }
+
     private sealed class Store : IAccountRepository, IStarterModuleRepository, IPolicyCatalogProvider, IPrivateProfileRepository
     {
         internal readonly Account Account = Account.Create(AuthenticationFactory.Subject, DateTimeOffset.UtcNow);
