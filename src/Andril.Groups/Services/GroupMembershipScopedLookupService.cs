@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.Groups.Entities;
@@ -15,24 +16,33 @@ namespace Andril.Groups.Services;
 /// <para>
 /// <b>Security and Privacy Boundaries:</b><br />
 /// A successful or present membership result represents validated persistence state only.
+/// All properties are annotated with <see cref="JsonIgnoreAttribute"/> to prevent accidental
+/// transport serialization of private membership existence, group or profile identifiers, module scope,
+/// internal membership entities, or validation status. Serialization attributes are a defense-in-depth
+/// safeguard and do NOT replace authoritative backend authorization.
 /// It does NOT authenticate caller sessions, prove caller identity ownership, or grant access permissions.
 /// </para>
 /// </remarks>
 public sealed class GroupMembershipLookupResult : IEquatable<GroupMembershipLookupResult>
 {
     /// <summary>Gets the validated group membership, or <see langword="null"/> if absent or rejected.</summary>
+    [JsonIgnore]
     public GroupMembership? Membership { get; }
 
     /// <summary>Gets the scope validation outcome.</summary>
+    [JsonIgnore]
     public GroupMembershipReadScopeValidation Validation { get; }
 
     /// <summary>Gets the scope validation status.</summary>
+    [JsonIgnore]
     public GroupMembershipReadScopeStatus Status => Validation.Status;
 
     /// <summary>Gets a value indicating whether the lookup result is structurally valid (valid membership or valid absent state).</summary>
+    [JsonIgnore]
     public bool IsValid => Validation.IsValid;
 
     /// <summary>Gets a value indicating whether an active membership was verified within scope.</summary>
+    [JsonIgnore]
     public bool HasMembership => Validation.HasMembership && Membership is not null;
 
     private GroupMembershipLookupResult(GroupMembership? membership, GroupMembershipReadScopeValidation validation)
