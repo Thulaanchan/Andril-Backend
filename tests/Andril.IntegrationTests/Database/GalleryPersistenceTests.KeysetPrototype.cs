@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Text.Json;
 using Andril.Hobbies.Entities;
 using Andril.Persistence.DbContexts;
+using Andril.Persistence.Repositories.Hobbies;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Npgsql;
@@ -14,6 +15,7 @@ namespace Andril.IntegrationTests.Database;
 public sealed partial class GalleryPersistenceTests
 {
     private readonly ITestOutputHelper _keysetOutput;
+    private bool _exerciseRepositoryKeyset;
     public GalleryPersistenceTests(ITestOutputHelper output) => _keysetOutput = output;
 
     [MapCapturePostgresFact]
@@ -285,9 +287,22 @@ public sealed partial class GalleryPersistenceTests
         return query.OrderByDescending(row => row.CreatedAtUtc).ThenBy(row => row.Id).Take(checked(limit + 1));
     }
 
-    private static async Task<KeysetPage> ReadKeysetAsync(HobbiesGalleryDbContext context, Guid authorizedOwnerId,
+    private async Task<KeysetPage> ReadKeysetAsync(HobbiesGalleryDbContext context, Guid authorizedOwnerId,
         int limit, KeysetPosition? after = null, CancellationToken token = default)
     {
+        if (_exerciseRepositoryKeyset)
+        {
+            var page = await new GalleryRepository<HobbiesGalleryDbContext>(context).GetOwnerGalleryPageAsync(
+                authorizedOwnerId, limit, trustedTestOnlyMaximum: 3,
+                after is null ? null : new GalleryPagePosition(authorizedOwnerId, "Hobbies", after.Timestamp, after.Id), token);
+            if (page.Next is not null)
+            {
+                Assert.Equal(authorizedOwnerId, page.Next.OwnerModuleProfileId);
+                Assert.Equal("Hobbies", page.Next.Module);
+            }
+            return new(page.Items, page.Next is null ? null : new(page.Next.Timestamp, page.Next.Id),
+                page.Items.Count + (page.Next is null ? 0 : 1));
+        }
         token.ThrowIfCancellationRequested();
         var fetched = await KeysetQuery(context, authorizedOwnerId, limit, after).ToListAsync(token);
         token.ThrowIfCancellationRequested();
@@ -296,7 +311,7 @@ public sealed partial class GalleryPersistenceTests
         return new(Array.AsReadOnly(items), next, fetched.Count);
     }
 
-    private static async Task<IReadOnlyList<Guid>> TraverseKeysetAsync(HobbiesGalleryDbContext context,
+    private async Task<IReadOnlyList<Guid>> TraverseKeysetAsync(HobbiesGalleryDbContext context,
         Guid owner, int limit, KeysetPosition? after = null)
     {
         var result = new List<Guid>();
