@@ -520,7 +520,7 @@ public sealed class MapContributionModerationPersistencePrototypeTests
         }
     }
 
-    private const string Schema = """
+    internal const string Schema = """
         CREATE SCHEMA m3_moderation_prototype;
         CREATE TABLE m3_moderation_prototype.contributions (
             contribution_id uuid PRIMARY KEY CHECK (contribution_id <> '00000000-0000-0000-0000-000000000000'),
@@ -569,7 +569,7 @@ public sealed class MapContributionModerationPersistencePrototypeTests
 
     // Same loopback/maintenance guard as the existing M3 fixtures, but no EnsureCreated/Migrate:
     // only the experimental schema is created. No credentials are logged or stored in this file.
-    private static async Task WithDatabase(Func<string, Task> test)
+    internal static async Task WithDatabase(Func<string, Task> test)
     {
         var settings = new NpgsqlConnectionStringBuilder(Environment.GetEnvironmentVariable("ANDRIL_M3_TEST_POSTGRES")
             ?? throw new InvalidOperationException("Disposable PostgreSQL is not configured."));
