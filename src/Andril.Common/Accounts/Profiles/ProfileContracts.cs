@@ -90,7 +90,9 @@ public sealed class PrivateModuleAccess(IPrivateProfileCompletionReader completi
     public async Task RequireAsync(string module, CancellationToken cancellationToken = default)
     {
         await completion.ReadAsync(module, cancellationToken);
-        // No approved completion/privacy contract exists, so no module home may be authorized.
+        // Social completion can be derived from approved persisted prerequisites.
+        // Learning and Hobbies still require authoritative module-owned evidence.
+        // Protected Home entry requires a separate authorization contract.
         throw new ProfileContractPendingException();
     }
 }
