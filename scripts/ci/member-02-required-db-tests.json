@@ -51,6 +51,8 @@
     "Andril.IntegrationTests.Database.FlightPointsLedgerPersistenceTests.Append_ConcurrentReversalsReachFilteredUniqueIndexAndKeepOriginal",
     "Andril.IntegrationTests.Database.FlightPointsLedgerPersistenceTests.Database_RejectsInvalidLedgerRowsAndProtectsForeignKey",
     "Andril.IntegrationTests.Database.FlightPointsLedgerPersistenceTests.Append_RejectsCallerTransactionAndKeepsUnrelatedTrackedEntryAfterSuccess",
+    "Andril.IntegrationTests.Database.FlightPointsLedgerPersistenceTests.Append_CancellationAfterInsertsRollsBackWholeBatchAndAllowsSafeRetry",
+    "Andril.IntegrationTests.Database.FlightPointsLedgerPersistenceTests.Append_LostCommitAcknowledgementPropagatesWithoutRetryOrDuplicateRows",
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.SetCover_ConcurrentReplacementPropagatesSerializationFailureWithoutRetrying",
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.SetCover_RejectsUnrelatedWritesAndCanProceedOnceContextIsClean",
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.SetCover_FailedInsertLeavesNoPendingPreferenceForLaterWrites",
@@ -61,6 +63,8 @@
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.Repository_SetsAndReplacesCoverAndSuppressesStaleDeletedSelection",
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.Repository_ConcurrentFirstCoverSelectionLeavesExactlyOneOwnedPreference",
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.Repository_PropagatesCancellationAndDatabaseFailures",
+    "Andril.IntegrationTests.Database.GalleryPersistenceTests.SetCover_CancellationBeforeFirstCommitLeavesNoPreferenceAndCanRetry",
+    "Andril.IntegrationTests.Database.GalleryPersistenceTests.SetCover_LostCommitAcknowledgementPropagatesAndRepeatedSelectionHasOneEffect",
     "Andril.IntegrationTests.Database.MapAttractionPersistenceTests.Discover_PagesStableCanonicalRecordsAndLeavesTrackedStateUntouched",
     "Andril.IntegrationTests.Database.MapAttractionPersistenceTests.AddAndFind_RoundTripsImmutableValuesWithoutTracking",
     "Andril.IntegrationTests.Database.MapAttractionPersistenceTests.Add_DuplicateKeyPropagatesFailureAndLeavesOriginalUnchanged",
@@ -83,7 +87,18 @@
     "Andril.IntegrationTests.Database.MapContributionPersistenceTests.Add_PreservesUnrelatedEntriesAndRejectsAlreadyTrackedInput",
     "Andril.IntegrationTests.Database.MapContributionPersistenceTests.Repository_PreCancelledOperationsThrowWithoutWriting",
     "Andril.IntegrationTests.Database.MapContributionPersistenceTests.Repository_PropagatesWriteAndReadFailures",
+    "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.ChangedSessionScopeTimingOrCanonicalCoordinatesDenyWithoutWriting",
+    "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.ExpiryWhileWaitingForSessionLockDeniesPreviouslyPreparedSubmission",
+    "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.FailedFirstWriterRollsBackWhileBlockedSecondWriterCommitsExactlyOneRow",
+    "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.FailedInsertRollsBackAndCommitAcknowledgementLossIsUnknown",
+    "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.LockedSessionCancellationAndRollbackLeaveIndependentSessionAvailable",
+    "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.NamedUniqueViolationReconcilesOnlyThePreparedOwnerAndAttraction",
+    "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.ParallelRequestsAndRetriesReturnOnlyTheAuthorizedExistingRecord",
+    "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.SubmissionWindowIsRecheckedAfterTheSessionLockAndBeforeCommit",
+    "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.UnrelatedPrimaryKeyAndCheckViolationsNeverEnterReconciliation",
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.Migration_AppliesAndRollsBackOnlyGalleryTables",
-    "Andril.IntegrationTests.Database.HobbiesMapMigrationTests.Migration_AppliesAndRollsBackWithoutTouchingUnrelatedData"
+    "Andril.IntegrationTests.Database.HobbiesMapMigrationTests.Migration_GalleryThenMap_RollsBackIndependently",
+    "Andril.IntegrationTests.Database.HobbiesMapMigrationTests.Migration_MapThenGallery_RollsBackIndependently",
+    "Andril.IntegrationTests.Database.HobbiesMapMigrationTests.SubmissionMigration_ValidatesLegacyRowsAndEnforcesScope"
   ]
 }

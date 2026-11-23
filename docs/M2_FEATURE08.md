@@ -19,11 +19,11 @@ No new table, migration, package, secret or configuration setting is introduced.
 | `age_ineligible` | Under 16, or the previously selected module is no longer age-eligible. No module-home authorization. |
 | `review_policies` | Current Terms agreement or Privacy acknowledgment is missing/outdated. |
 | `select_starter` | Eligible account has current receipts but no starter membership. Existing Social selection still requires explicit opt-in and age 18+. |
-| `profile_setup` | Starter prerequisites exist, but private profile completion cannot yet be established. |
+| `profile_setup` | Read `progress.privateProfileComplete`, `onboardingComplete` and `blockingDependency` to distinguish pending setup from completed Social setup with Home entry unavailable. |
 | 429 | Shared account/onboarding per-subject local rate limit; honor Retry-After. |
 | 503 | Live verification, policy configuration, database or trusted progress dependency unavailable. Do not infer completion; retry when available. |
 
-Successful response example:
+Example response for a Learning profile shell awaiting its module-owned completion contract:
 
 ```json
 {
@@ -37,7 +37,7 @@ Successful response example:
     "privateProfileComplete": false
   },
   "selectedModule": "learning",
-  "blockingDependency": "private_profile_infrastructure",
+  "blockingDependency": "approved_profile_contract",
   "onboardingComplete": false,
   "moduleHomeAuthorized": false
 }
@@ -58,12 +58,30 @@ incomplete. The existing catalog also requires Community Guidelines configuratio
 this endpoint does not require a Community Guidelines acknowledgment.
 An uninitialized account can be reported before consulting the policy catalog.
 
-Private-profile infrastructure is an explicit dependency. Gallery ownership and
-Social questionnaire answers do not prove completion. Until an authoritative,
-account-and-module-scoped profile contract exists, privateProfileComplete,
-onboardingComplete and moduleHomeAuthorized are always false. No module-home
-nextStep is emitted. This endpoint is a navigation hint, never a capability to
-access a module; future module endpoints must enforce their own authorization.
+## Current completion rules
+
+[AND-M2-SOC-ONB-DEC-20261121-01](https://github.com/Thulaanchan/Andril-Backend/pull/160)
+allows Social private-profile completion. The owner-scoped read requires a
+confirmed, initialized account, current Terms agreement and Privacy
+acknowledgment, an eligible Social starter membership, age 18+, explicit
+Social opt-in, and a valid persisted display name with canonical uniqueness.
+The profile must belong to the account and Social module. Biography, photo,
+interests, preferences and personality questionnaire are optional for this gate.
+
+[AND-M2-SOC-ONB-DEC-20261121-02](https://github.com/Thulaanchan/Andril-Backend/pull/164)
+also allows overall Social onboarding completion. With the approved evidence,
+the response has `progress.privateProfileComplete: true`,
+`onboardingComplete: true`, and `blockingDependency: null`. The existing
+`nextStep: profile_setup` remains. Clients show setup complete with entry
+unavailable, and `moduleHomeAuthorized` remains false. Protected entry requires
+a separate module authorization decision and check.
+
+Learning and Hobbies shells keep both completion flags false while their
+authoritative module-owned contracts are pending. An existing shell reports
+`approved_profile_contract`, a missing profile reports `private_profile_missing`,
+and a missing completion reader reports `private_profile_infrastructure`.
+Unavailable dependencies fail closed. Gallery ownership and Social questionnaire
+answers are insufficient evidence on their own.
 Concurrent updates may become visible on the next request; reads do not lock
 the entire onboarding flow or persist a stale last-screen/completion flag.
 
@@ -74,7 +92,7 @@ explicit loopback disposable-database fixture and is skipped when
 ANDRIL_M2_TEST_POSTGRES is absent. Synthetic HTTP identity evidence in security
 tests makes no external Supabase requests.
 
-## Validation in this checkout
+## Historical Feature 08 validation
 
 SDK: 10.0.404. A temporary writable DOTNET_CLI_HOME was used. Restore used
 the local NuGet cache with an empty package-source configuration and auditing
