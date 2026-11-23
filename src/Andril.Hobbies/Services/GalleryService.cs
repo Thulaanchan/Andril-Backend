@@ -75,14 +75,17 @@ public sealed class GalleryService : IGalleryService
         CancellationToken cancellationToken = default)
     {
         var ownerId = RequireActiveHobbiesProfile();
+        cancellationToken.ThrowIfCancellationRequested();
 
         var media = await _repository.GetOwnerGalleryAsync(
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         var coverId = await _repository.GetCoverIdAsync(
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         return media
             .Where(item => IsAccessible(item, ownerId))
@@ -95,6 +98,7 @@ public sealed class GalleryService : IGalleryService
         CancellationToken cancellationToken = default)
     {
         var ownerId = RequireActiveHobbiesProfile();
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (mediaId == Guid.Empty)
             return null;
@@ -103,6 +107,7 @@ public sealed class GalleryService : IGalleryService
             mediaId,
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (!IsAccessible(media, ownerId))
             return null;
@@ -110,6 +115,7 @@ public sealed class GalleryService : IGalleryService
         var coverId = await _repository.GetCoverIdAsync(
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         return ToDto(media!, coverId);
     }
@@ -120,6 +126,7 @@ public sealed class GalleryService : IGalleryService
         CancellationToken cancellationToken = default)
     {
         var ownerId = RequireActiveHobbiesProfile();
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (mediaId == Guid.Empty)
             return false;
@@ -135,15 +142,18 @@ public sealed class GalleryService : IGalleryService
             mediaId,
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (!IsAccessible(media, ownerId))
             return false;
 
-        return await _repository.UpdateTitleAsync(
+        var updated = await _repository.UpdateTitleAsync(
             mediaId,
             ownerId,
             title.Trim(),
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return updated;
     }
 
     public async Task<bool> SelectCoverAsync(
@@ -151,6 +161,7 @@ public sealed class GalleryService : IGalleryService
         CancellationToken cancellationToken = default)
     {
         var ownerId = RequireActiveHobbiesProfile();
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (mediaId == Guid.Empty)
             return false;
@@ -159,13 +170,16 @@ public sealed class GalleryService : IGalleryService
             mediaId,
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (!IsAccessible(media, ownerId))
             return false;
 
-        return await _repository.SetCoverAsync(
+        var selected = await _repository.SetCoverAsync(
             mediaId,
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return selected;
     }
 }
