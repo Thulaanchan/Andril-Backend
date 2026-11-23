@@ -5,6 +5,7 @@ using System.Net.Http.Json;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using Andril.API.Authentication;
+using Andril.Common.Accounts.Profiles;
 using Andril.Shared.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -14,6 +15,8 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Protocols;
 using Microsoft.IdentityModel.Protocols.OpenIdConnect;
 using Microsoft.IdentityModel.Tokens;
@@ -23,6 +26,144 @@ namespace Andril.SecurityTests.Authentication;
 
 public sealed class SupabaseAuthenticationTests
 {
+    private const string EventLogProviderName = "Microsoft.Extensions.Logging.EventLog.EventLogLoggerProvider";
+
+    [Fact]
+    public void LoggingRegression_EventLogFilterIsProviderSpecificAndDoesNotChangeProductionHost()
+    {
+        // Use the real API entry point without AuthenticationFactory overrides. No requests,
+        // credentials, external services or database operations are needed for this comparison.
+        using var production = new WebApplicationFactory<Program>();
+        var productionRules = production.Services.GetRequiredService<IOptions<LoggerFilterOptions>>().Value.Rules;
+        var originalRules = productionRules.ToArray();
+        using var authentication = new AuthenticationFactory();
+        var testRules = authentication.Services.GetRequiredService<IOptions<LoggerFilterOptions>>().Value.Rules;
+        var eventLogFilters = testRules.Where(rule => rule.ProviderName == EventLogProviderName && rule.Filter is not null).ToArray();
+        var productionEventLogFilters = originalRules.Where(rule => rule.ProviderName == EventLogProviderName && rule.Filter is not null).ToArray();
+
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Equal(productionEventLogFilters.Length + 1, eventLogFilters.Length);
+            var rule = Assert.Single(eventLogFilters, candidate =>
+                !candidate.Filter!(EventLogProviderName, "Microsoft.AspNetCore.Diagnostics", LogLevel.Critical));
+            Assert.Null(rule.CategoryName);
+            foreach (var level in Enum.GetValues<LogLevel>().Where(level => level != LogLevel.None))
+                Assert.False(rule.Filter!(EventLogProviderName, "Microsoft.AspNetCore.Diagnostics", level));
+        }
+        else
+        {
+            Assert.Equal(productionEventLogFilters.Length, eventLogFilters.Length);
+        }
+
+        Assert.DoesNotContain(productionEventLogFilters, rule =>
+            !rule.Filter!(EventLogProviderName, "Microsoft.AspNetCore.Diagnostics", LogLevel.Critical));
+        Assert.Equal(originalRules, productionRules.ToArray());
+        Assert.NotSame(productionRules, testRules);
+        Assert.DoesNotContain(testRules, rule => rule.ProviderName is null && rule.Filter is not null);
+    }
+
+    [Fact]
+    public void LoggingRegression_OtherProviderStillReceivesDiagnosticEvents()
+    {
+        using var capture = new DiagnosticCapture();
+        using var authentication = new AuthenticationFactory();
+        using var host = authentication.WithWebHostBuilder(builder =>
+            builder.ConfigureLogging(logging => logging.AddProvider(capture)));
+        var logger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("M1.LoggingRegression");
+        logger.LogWarning(new EventId(7101, "SyntheticDiagnostic"), "Synthetic diagnostic event");
+
+        var entry = Assert.Single(capture.Snapshot(), entry => entry.EventId.Id == 7101);
+        Assert.Equal(LogLevel.Warning, entry.Level);
+        Assert.Equal("M1.LoggingRegression", entry.Category);
+        Assert.Equal("Synthetic diagnostic event", entry.Message);
+        Assert.Equal(0, capture.Dropped);
+    }
+
+    [Fact]
+    public async Task LoggingRegression_PrivateRequestAndBearerAreNotExposedInDiagnosticsOrResponse()
+    {
+        const string privateMarker = "synthetic-private-profile-payload-7102";
+        using var capture = new DiagnosticCapture();
+        var profiles = new UnexpectedProfileCalls();
+        using var authentication = new AuthenticationFactory();
+        using var host = authentication.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureLogging(logging => logging.AddProvider(capture));
+            builder.ConfigureTestServices(services => services.AddSingleton<IPrivateProfileService>(profiles));
+        });
+        using var client = host.CreateClient();
+        var token = authentication.Token();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", token);
+        using var response = await client.PostAsJsonAsync("/api/v1/account/profiles/learning", new { accountId = privateMarker });
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Equal(0, profiles.Calls);
+
+        // Prove capture is live before inspecting it; never print captured content on failure.
+        host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("M1.LoggingRegression")
+            .LogWarning(new EventId(7102, "CaptureVerified"), "Synthetic capture verification");
+        var entries = capture.Snapshot();
+        Assert.Contains(entries, entry => entry.EventId.Id == 7102);
+        Assert.Equal(0, capture.Dropped);
+        var diagnostics = string.Join("\n", entries.Select(entry => entry.Category + "\n" + entry.Message + "\n" + entry.Exception));
+        var body = await response.Content.ReadAsStringAsync();
+        foreach (var sensitive in new[] { privateMarker, token, AuthenticationFactory.Subject.ToString() })
+        {
+            Assert.True(!diagnostics.Contains(sensitive, StringComparison.Ordinal), "Private data appeared in captured diagnostics.");
+            Assert.True(!body.Contains(sensitive, StringComparison.Ordinal), "Private data appeared in the HTTP error response.");
+        }
+    }
+
+    // Bounded, thread-safe, per-host capture. Nothing is written to test output or disk.
+    private sealed class DiagnosticCapture : ILoggerProvider
+    {
+        private readonly object gate = new();
+        private readonly Queue<Entry> entries = new();
+        private int dropped;
+        internal int Dropped { get { lock (gate) return dropped; } }
+        internal Entry[] Snapshot() { lock (gate) return entries.ToArray(); }
+        public ILogger CreateLogger(string categoryName) => new CaptureLogger(this, categoryName);
+        public void Dispose() { lock (gate) entries.Clear(); }
+
+        private void Add(Entry entry)
+        {
+            lock (gate)
+            {
+                if (entries.Count == 512) { dropped++; return; }
+                entries.Enqueue(entry);
+            }
+        }
+
+        internal sealed record Entry(string Category, LogLevel Level, EventId EventId, string Message, Exception? Exception)
+        {
+            public override string ToString() => "Captured diagnostic [content omitted]";
+        }
+
+        private sealed class CaptureLogger(DiagnosticCapture capture, string category) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => logLevel != LogLevel.None;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+                Func<TState, Exception?, string> formatter)
+            {
+                if (IsEnabled(logLevel)) capture.Add(new(category, logLevel, eventId, formatter(state, exception), exception));
+            }
+        }
+    }
+
+    private sealed class UnexpectedProfileCalls : IPrivateProfileService
+    {
+        private int calls;
+        internal int Calls => Volatile.Read(ref calls);
+        public Task<PrivateProfileDto> GetAsync(string module, CancellationToken cancellationToken = default) => Unexpected();
+        public Task<PrivateProfileDto> CreateAsync(string module, CancellationToken cancellationToken = default) => Unexpected();
+        private Task<PrivateProfileDto> Unexpected()
+        {
+            Interlocked.Increment(ref calls);
+            throw new InvalidOperationException("Invalid request must not reach profile operations.");
+        }
+    }
+
     [Fact]
     public async Task Health_IsPublic_AndProtectedRouteRequiresAuthentication()
     {
@@ -175,6 +316,13 @@ internal sealed class AuthenticationFactory : WebApplicationFactory<Program>
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        // Test hosts must not depend on Windows EventLog permissions. Keep every other
+        // provider and its diagnostic output, including framework exception logging.
+        builder.ConfigureLogging(logging =>
+        {
+            if (OperatingSystem.IsWindows())
+                logging.AddFilter<Microsoft.Extensions.Logging.EventLog.EventLogLoggerProvider>(static (_, _) => false);
+        });
         builder.ConfigureAppConfiguration((_, config) => config.AddInMemoryCollection(new Dictionary<string, string?>
         {
             ["SupabaseAuth:ProjectUrl"] = "https://andril-test.supabase.co",
