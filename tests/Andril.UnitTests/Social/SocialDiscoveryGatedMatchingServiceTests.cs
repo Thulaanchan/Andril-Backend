@@ -407,6 +407,102 @@ public sealed class SocialDiscoveryGatedMatchingServiceTests
     }
 
     [Fact]
+    public void BuildGatedSnapshots_IdentityAndAgeBothMismatched_IsOmitted()
+    {
+        var caller = CreateCallerEvidence();
+        var prefs = CreateCompatiblePreferences();
+        var candidate = CreateCandidateItem(
+            candidateId: CandidateA,
+            age: 24,
+            evidenceId: Guid.Parse("55555555-5555-5555-5555-555555555555"),
+            evidenceAge: 31);
+
+        var result = SocialDiscoveryGatedMatchingService.BuildGatedSnapshots(caller, "male", prefs, new[] { candidate });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void BuildGatedSnapshots_CandidateWithSameIdAsCaller_IsOmitted()
+    {
+        var caller = CreateCallerEvidence(callerId: CallerId);
+        var prefs = CreateCompatiblePreferences();
+        var selfCandidate = CreateCandidateItem(candidateId: CallerId, evidenceId: CallerId);
+
+        var result = SocialDiscoveryGatedMatchingService.BuildGatedSnapshots(caller, "male", prefs, new[] { selfCandidate });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void BuildGatedSnapshots_MutuallyBlockedCandidate_IsOmitted()
+    {
+        var caller = CreateCallerEvidence();
+        var prefs = CreateCompatiblePreferences();
+        var mutuallyBlocked = CreateCandidateItem(isBlockedByCaller: true, isCallerBlockedByCandidate: true);
+
+        var result = SocialDiscoveryGatedMatchingService.BuildGatedSnapshots(caller, "male", prefs, new[] { mutuallyBlocked });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void BuildGatedSnapshots_ComprehensiveMixedBatch_ExcludesInconsistentBlockedAndIneligibleAndPreservesRotation()
+    {
+        var candidateC = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        var idMismatchId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+        var ageMismatchId = Guid.Parse("66666666-6666-6666-6666-666666666666");
+        var missingEvidenceId = Guid.Parse("77777777-7777-7777-7777-777777777777");
+        var blockedByCallerId = Guid.Parse("88888888-8888-8888-8888-888888888888");
+        var blockedByCandidateId = Guid.Parse("99999999-9999-9999-9999-999999999999");
+        var hiddenId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var inactiveId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        var underageId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+
+        var caller = CreateCallerEvidence();
+        var prefs = CreateCompatiblePreferences();
+
+        var batch = new[]
+        {
+            CreateCandidateItem(candidateId: CandidateA, displayName: "Alex"),
+            CreateCandidateItem(candidateId: idMismatchId, evidenceId: Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd")),
+            CreateCandidateItem(candidateId: ageMismatchId, age: 25, evidenceAge: 29),
+            CreateCandidateItem(candidateId: missingEvidenceId, hasEvidence: false),
+            CreateCandidateItem(candidateId: blockedByCallerId, isBlockedByCaller: true),
+            CreateCandidateItem(candidateId: blockedByCandidateId, isCallerBlockedByCandidate: true),
+            CreateCandidateItem(candidateId: hiddenId, isDiscoverable: false),
+            CreateCandidateItem(candidateId: inactiveId, isActive: false),
+            CreateCandidateItem(candidateId: underageId, age: 17, evidenceAge: 17),
+            CreateCandidateItem(candidateId: CandidateB, displayName: "Jordan"),
+            CreateCandidateItem(candidateId: candidateC, displayName: "Sam")
+        };
+
+        var rotated0 = SocialDiscoveryGatedMatchingService.BuildGatedSnapshots(caller, "male", prefs, batch, rotationOffset: 0);
+        var rotated1 = SocialDiscoveryGatedMatchingService.BuildGatedSnapshots(caller, "male", prefs, batch, rotationOffset: 1);
+        var rotated2 = SocialDiscoveryGatedMatchingService.BuildGatedSnapshots(caller, "male", prefs, batch, rotationOffset: 2);
+
+        Assert.Equal(new[] { CandidateA, CandidateB, candidateC }, rotated0.Select(c => c.CandidateProfileId).ToArray());
+        Assert.Equal(new[] { CandidateB, candidateC, CandidateA }, rotated1.Select(c => c.CandidateProfileId).ToArray());
+        Assert.Equal(new[] { candidateC, CandidateA, CandidateB }, rotated2.Select(c => c.CandidateProfileId).ToArray());
+    }
+
+    [Fact]
+    public void BuildGatedSnapshots_UnderageCallerWithMultipleEligibleCandidates_ReturnsEmpty()
+    {
+        var underageCaller = CreateCallerEvidence(age: 17);
+        var prefs = CreateCompatiblePreferences();
+        var batch = new[]
+        {
+            CreateCandidateItem(candidateId: CandidateA, displayName: "Alex"),
+            CreateCandidateItem(candidateId: CandidateB, displayName: "Jordan")
+        };
+
+        var result = SocialDiscoveryGatedMatchingService.BuildGatedSnapshots(underageCaller, "male", prefs, batch, rotationOffset: 1);
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
     public void SocialGatedCandidateItem_ToStringAndEquality_SafeguardsPrivacy()
     {
         var item1 = CreateCandidateItem();
