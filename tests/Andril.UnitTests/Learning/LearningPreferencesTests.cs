@@ -78,7 +78,8 @@ public sealed class LearningPreferencesTests
     public void RejectedUpdate_PreservesEveryCollectionAndGoal(int collection, string defect)
     {
         var preferences = Create();
-        preferences.UpdateSelections([Guid.NewGuid()], [Guid.NewGuid()], [Guid.NewGuid()]);
+        var shared = Guid.NewGuid();
+        preferences.UpdateSelections([Guid.NewGuid()], [shared], [shared]);
         preferences.CreateGoal("Keep private");
         var interests = preferences.Interests;
         var teaching = preferences.TeachingSkills;
@@ -106,16 +107,67 @@ public sealed class LearningPreferencesTests
     }
 
     [Fact]
-    public void SkillOverlap_IsExplicitlyUnsupportedPendingApproval_AndPreservesState()
+    public void SameSkillInTeachingAndLearning_SucceedsWithIndependentSnapshotsAndUnchangedScope()
     {
         var preferences = Create();
-        preferences.UpdateSelections([Guid.NewGuid()], [Guid.NewGuid()], [Guid.NewGuid()]);
-        var prior = preferences.TeachingSkills;
-        var id = Guid.NewGuid();
-        Assert.Throws<NotSupportedException>(() => preferences.UpdateSelections([], [id], [id]));
-        Assert.Same(prior, preferences.TeachingSkills);
-        Assert.NotEmpty(preferences.Interests);
-        Assert.NotEmpty(preferences.LearningSkills);
+        var account = preferences.AccountId; var profile = preferences.LearningProfileId;
+        var shared = Guid.NewGuid(); var teachingOnly = Guid.NewGuid(); var learningOnly = Guid.NewGuid();
+        var teaching = new[] { shared, teachingOnly }; var learning = new[] { shared, learningOnly };
+        var goal = preferences.CreateGoal("Keep private");
+        preferences.UpdateSelections([Guid.NewGuid()], teaching, learning);
+        teaching[0] = Guid.NewGuid(); learning[0] = Guid.NewGuid();
+        Assert.Equal(new[] { shared, teachingOnly }, preferences.TeachingSkills);
+        Assert.Equal(new[] { shared, learningOnly }, preferences.LearningSkills);
+        Assert.NotSame(preferences.TeachingSkills, preferences.LearningSkills);
+        Assert.Equal(account, preferences.AccountId); Assert.Equal(profile, preferences.LearningProfileId);
+        Assert.Equal("learning", preferences.Module);
+        Assert.Same(goal, Assert.Single(preferences.Goals));
+        Assert.Single(preferences.Interests);
+        var teachingRow = LearningSkillSelection.CreateFromPreferences(Guid.NewGuid(), preferences, shared,
+            LearningSkillSelectionKind.Teaching);
+        var learningRow = LearningSkillSelection.CreateFromPreferences(Guid.NewGuid(), preferences, shared,
+            LearningSkillSelectionKind.Learning);
+        Assert.Equal(shared, teachingRow.SkillId); Assert.Equal(shared, learningRow.SkillId);
+        Assert.Equal(LearningSkillSelectionKind.Teaching, teachingRow.Kind);
+        Assert.Equal(LearningSkillSelectionKind.Learning, learningRow.Kind);
+        Assert.Equal(profile, teachingRow.LearningProfileId); Assert.Equal(profile, learningRow.LearningProfileId);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void DuplicateWithinEitherSkillList_IsRejectedAndPreservesValidOverlappingState(bool duplicateTeaching)
+    {
+        var preferences = Create(); var shared = Guid.NewGuid();
+        preferences.UpdateSelections([Guid.NewGuid()], [shared], [shared]);
+        var goal = preferences.CreateGoal("Keep private");
+        var interests = preferences.Interests; var teaching = preferences.TeachingSkills;
+        var learning = preferences.LearningSkills; var goals = preferences.Goals;
+        Assert.Throws<ArgumentException>(duplicateTeaching ? "teachingSkills" : "learningSkills", () =>
+            preferences.UpdateSelections([Guid.NewGuid()], duplicateTeaching ? [shared, shared] : [shared],
+                duplicateTeaching ? [shared] : [shared, shared]));
+        Assert.Same(interests, preferences.Interests); Assert.Same(teaching, preferences.TeachingSkills);
+        Assert.Same(learning, preferences.LearningSkills); Assert.Same(goals, preferences.Goals);
+        Assert.Equal(shared, Assert.Single(preferences.TeachingSkills));
+        Assert.Equal(shared, Assert.Single(preferences.LearningSkills));
+        Assert.Same(goal, Assert.Single(preferences.Goals));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ClearingOneOverlappingSkillList_DoesNotClearTheOtherOrAnotherProfile(bool clearTeaching)
+    {
+        var preferences = Create(); var shared = Guid.NewGuid();
+        var other = Create(); other.UpdateSelections([], [Guid.NewGuid()], [Guid.NewGuid()]);
+        var otherTeaching = other.TeachingSkills; var otherLearning = other.LearningSkills;
+        preferences.UpdateSelections([], [shared], [shared]);
+        var priorTeaching = preferences.TeachingSkills; var priorLearning = preferences.LearningSkills;
+        preferences.UpdateSelections([], clearTeaching ? [] : [shared], clearTeaching ? [shared] : []);
+        Assert.Empty(clearTeaching ? preferences.TeachingSkills : preferences.LearningSkills);
+        Assert.Equal(shared, Assert.Single(clearTeaching ? preferences.LearningSkills : preferences.TeachingSkills));
+        Assert.Equal(shared, Assert.Single(priorTeaching)); Assert.Equal(shared, Assert.Single(priorLearning));
+        Assert.Same(otherTeaching, other.TeachingSkills); Assert.Same(otherLearning, other.LearningSkills);
     }
 
     [Fact]

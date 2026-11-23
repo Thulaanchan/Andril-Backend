@@ -29,6 +29,8 @@ public sealed class AccountBackedGalleryActorResolver
     public async Task<GalleryActor?> ResolveAsync(
         CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (!_currentUser.IsAuthenticated ||
             _currentUser.UserId is not Guid subjectId ||
             subjectId == Guid.Empty)
@@ -39,6 +41,8 @@ public sealed class AccountBackedGalleryActorResolver
         var account = await _accounts.FindBySubjectAsync(
             subjectId,
             cancellationToken);
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (account is null ||
             account.Id == Guid.Empty ||
@@ -51,6 +55,8 @@ public sealed class AccountBackedGalleryActorResolver
             await _profiles.FindActiveOwnedHobbiesProfileIdAsync(
                 account.Id,
                 cancellationToken);
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (profileId is not Guid validProfileId ||
             validProfileId == Guid.Empty)

@@ -39,6 +39,56 @@ public sealed class GalleryRepository<TDbContext>
             .ToListAsync(cancellationToken);
     }
 
+    // Offline-only additive operation. Not exposed through IGalleryRepository or runtime callers.
+    // A future protected caller must freshly authorize the owner on EVERY page request.
+    // trustedTestOnlyMaximum is supplied by offline tests, not an approved Product limit.
+    internal async Task<GalleryPage> GetOwnerGalleryPageAsync(
+        Guid authorizedOwnerModuleProfileId,
+        int pageSize,
+        int trustedTestOnlyMaximum,
+        GalleryPagePosition? after = null,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (authorizedOwnerModuleProfileId == Guid.Empty)
+            throw new ArgumentException("A trusted owner scope is required.", nameof(authorizedOwnerModuleProfileId));
+        if (trustedTestOnlyMaximum <= 0 || trustedTestOnlyMaximum == int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(trustedTestOnlyMaximum));
+        if (pageSize <= 0 || pageSize > trustedTestOnlyMaximum)
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        if (after is not null && (after.OwnerModuleProfileId != authorizedOwnerModuleProfileId
+            || after.Module != HobbiesModule || after.Id == Guid.Empty
+            || after.Timestamp.Offset != TimeSpan.Zero || after.Timestamp == DateTimeOffset.MinValue
+            || after.Timestamp == DateTimeOffset.MaxValue || after.Timestamp.Ticks % 10 != 0))
+            throw new ArgumentException("The continuation position is invalid for this scope.", nameof(after));
+
+        var query = _context.Set<GalleryMedia>().AsNoTracking().Where(media =>
+            media.OwnerModuleProfileId == authorizedOwnerModuleProfileId
+            && media.Module == HobbiesModule && !media.IsDeleted);
+        if (after is not null)
+        {
+            // Preserve the database-returned UTC microsecond position; never round client input.
+            var timestamp = after.Timestamp;
+            var id = after.Id;
+            var fetch = checked(pageSize + 1);
+            var sameTimestamp = query.Where(media => media.CreatedAtUtc == timestamp && media.Id.CompareTo(id) > 0)
+                .OrderByDescending(media => media.CreatedAtUtc).ThenBy(media => media.Id).Take(fetch);
+            var older = query.Where(media => media.CreatedAtUtc < timestamp)
+                .OrderByDescending(media => media.CreatedAtUtc).ThenBy(media => media.Id).Take(fetch);
+            // Disjoint branches retain every possible combined top-fetch row; Concat stays server-side.
+            query = sameTimestamp.Concat(older);
+        }
+        var fetched = await query.OrderByDescending(media => media.CreatedAtUtc).ThenBy(media => media.Id)
+            .Take(checked(pageSize + 1)).ToListAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        var items = fetched.Take(pageSize).ToArray();
+        var next = fetched.Count > pageSize
+            ? new GalleryPagePosition(authorizedOwnerModuleProfileId, HobbiesModule, items[^1].CreatedAtUtc, items[^1].Id)
+            : null;
+        // Replaying a valid position is a read, not a consumed token. No authorization is cached.
+        return new GalleryPage(Array.AsReadOnly(items), next);
+    }
+
     public async Task<GalleryMedia?> GetOwnedByIdAsync(
         Guid mediaId,
         Guid ownerModuleProfileId,

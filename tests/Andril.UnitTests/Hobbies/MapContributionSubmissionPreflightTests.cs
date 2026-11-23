@@ -221,6 +221,94 @@ public sealed class MapContributionSubmissionPreflightTests
     }
 
     [Fact]
+    public async Task VerifiedPhotoCannotAuthorizeASubstitutedObjectOnTheSamePreflightInstance()
+    {
+        var ports = new TestPorts();
+        // Synthetic object binding only. This does not establish camera or storage authenticity.
+        var reader = new BoundTestPhotoReader("matching");
+        var writer = new WriterProbe();
+        var preflight = new MapContributionSubmissionPreflight(ports, ports, ports, reader, ports.Clock);
+
+        async Task<MapContributionSubmissionPreflight.PreparedSubmission?> SubmitInTestAsync(string key)
+        {
+            var prepared = await preflight.PrepareAsync(
+                AttractionId, SessionId, ports.Observation, key, "Description");
+            if (prepared is not null)
+                await writer.SubmitAsync(prepared);
+            return prepared;
+        }
+
+        Assert.NotNull(await SubmitInTestAsync(PhotoKey));
+        Assert.Equal(1, writer.Calls);
+        const string substitutedKey = "private/another-camera-object";
+        Assert.Null(await SubmitInTestAsync(substitutedKey));
+        Assert.Equal((OwnerId, AttractionId, SessionId, substitutedKey), reader.Request);
+        Assert.Equal(2, reader.Calls);
+        Assert.Equal(1, writer.Calls);
+
+        var retry = await SubmitInTestAsync(PhotoKey);
+        Assert.NotNull(retry);
+        Assert.Equal(PhotoKey, retry.Contribution.PrivatePhotoStorageObjectKey);
+        Assert.Equal(3, reader.Calls);
+        Assert.Equal(2, writer.Calls);
+    }
+
+    [Fact]
+    public async Task PhotoBoundToOneValidSessionCannotAuthorizeAnotherSessionButAllowsOriginalSessionRetry()
+    {
+        var ports = new TestPorts();
+        var firstSession = CreateSession();
+        var secondSession = CreateSession(sessionId: ForeignId);
+        Assert.NotEqual(firstSession.SessionId, secondSession.SessionId);
+        foreach (var session in new[] { firstSession, secondSession })
+        {
+            Assert.True(MapContributionEvidenceValidator.Validate(
+                ports.Attraction, session, OwnerId, ports.Observation).PassesChecks);
+            Assert.True(MapContributionSubmissionWindow.Allows(session, ports.Clock.GetUtcNow()));
+        }
+
+        // Synthetic fixture binds P to S1 only; no global consumption or real storage is simulated.
+        var reader = new BoundTestPhotoReader("matching");
+        var writer = new WriterProbe();
+        var preflight = new MapContributionSubmissionPreflight(ports, ports, ports, reader, ports.Clock);
+
+        async Task<MapContributionSubmissionPreflight.PreparedSubmission?> SubmitInTestAsync(
+            MapContributionCaptureSession session)
+        {
+            ports.Session = session;
+            ports.Calls.Clear();
+            var prepared = await preflight.PrepareAsync(
+                AttractionId, session.SessionId, ports.Observation, PhotoKey, "Description");
+            Assert.Equal((session.SessionId, OwnerId, AttractionId), ports.CaptureScope);
+            Assert.Equal(new[] { "access", "capture", "attraction" }, ports.Calls);
+            if (prepared is not null)
+                await writer.SubmitAsync(prepared);
+            return prepared;
+        }
+
+        var first = await SubmitInTestAsync(firstSession);
+        Assert.NotNull(first);
+        Assert.Equal(firstSession.SessionId, first.Contribution.CaptureSessionId);
+        Assert.Equal(PhotoKey, first.Contribution.PrivatePhotoStorageObjectKey);
+        Assert.Equal((OwnerId, AttractionId, firstSession.SessionId, PhotoKey), reader.Request);
+        Assert.Equal(1, reader.Calls);
+        Assert.Equal(1, writer.Calls);
+
+        Assert.Null(await SubmitInTestAsync(secondSession));
+        Assert.Equal((OwnerId, AttractionId, secondSession.SessionId, PhotoKey), reader.Request);
+        Assert.Equal(2, reader.Calls); // S2 reached verification; invalid capture timing/scope did not cause denial.
+        Assert.Equal(1, writer.Calls);
+
+        var retry = await SubmitInTestAsync(firstSession);
+        Assert.NotNull(retry);
+        Assert.Equal(firstSession.SessionId, retry.Contribution.CaptureSessionId);
+        Assert.Equal(PhotoKey, retry.Contribution.PrivatePhotoStorageObjectKey);
+        Assert.Equal((OwnerId, AttractionId, firstSession.SessionId, PhotoKey), reader.Request);
+        Assert.Equal(3, reader.Calls);
+        Assert.Equal(2, writer.Calls);
+    }
+
+    [Fact]
     public async Task ProductionDenyAllReaderBlocksOtherwiseValidPreparation()
     {
         var ports = new TestPorts();
@@ -304,6 +392,7 @@ public sealed class MapContributionSubmissionPreflightTests
     // Synthetic metadata only. This double establishes no real camera or storage provenance.
     private sealed class BoundTestPhotoReader(string scenario) : IMapContributionPhotoEvidenceReader
     {
+        public int Calls { get; private set; }
         public (Guid Owner, Guid Attraction, Guid Session, string? Key) Request { get; private set; }
 
         public Task<MapContributionPhotoVerificationResult> VerifyAsync(
@@ -311,6 +400,7 @@ public sealed class MapContributionSubmissionPreflightTests
             string? privatePhotoStorageObjectKey, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            Calls++;
             Request = (ownerHobbiesModuleProfileId, attractionId, captureSessionId, privatePhotoStorageObjectKey);
             var evidenceOwner = scenario == "foreign owner" ? ForeignId : OwnerId;
             var evidenceAttraction = scenario == "wrong attraction" ? ForeignId : AttractionId;
