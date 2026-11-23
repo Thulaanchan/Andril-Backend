@@ -1,28 +1,30 @@
-# ANDRIL M5 — SOCIAL QUESTIONNAIRE M2 DATABASE HANDOFF (PROPOSED)
-## Comprehensive Database Persistence, Entity Schema, Concurrency & Governance Proposal
+# ANDRIL M5 — SOCIAL QUESTIONNAIRE M2 DATABASE HANDOFF & IMPLEMENTATION DELEGATION
+## Database Persistence Architecture, Entity Schema, Concurrency & Ownership Delegation
 
-> **STATUS: PROPOSED SPECIFICATION / NOT IMPLEMENTED**  
+> **STATUS: DELEGATED IMPLEMENTATION SPECIFICATION / PRODUCTION STAGING**  
 > **Author:** M5 (Thulaanchan — Social Domain & Matching Lead)  
-> **Target Audience / Owners:** M2 (Vizhan — Identity, Privacy & Database Owner), M6 (Lucina — Security & Moderation Lead)  
-> **Document Version:** 1.1.0-PROPOSED  
+> **Collaborating Owners:** M2 (Vizhan — Identity, Privacy & Database Owner), M6 (Lucina — Security & Moderation Lead)  
+> **Document Version:** 1.2.0  
 > **Compliance:** BRD v2.4-R1 §16.2, §04.1, §05.1; SOC-01, CF-04, CF-11, CF-20, Decision P-04  
 
 ---
 
-## 1. Executive Summary & Ownership Boundary
+## 1. Executive Summary & Ownership Delegation Boundary
 
-This document outlines the proposed backend persistence requirements, domain entity structures, and interface specifications for integrating the **SOC-01 Personality Questionnaire** into relational database persistence.
+Following cross-member coordination for the ANDRIL M5 production workstream (Tasks 91–110), M2 has formally **delegated database implementation responsibility** for the isolated Social module persistence layer to M5.
 
-### Strict Architectural Boundaries:
-- **M5 Domain & API Scope:** M5 owns domain contracts, validators (`QuestionnaireValidator`, `QuestionnaireV1Definition`), API controllers, contract parsers (`SocialQuestionnaireSubmissionBodyParser`), and internal domain entities. M5 produces **zero database migrations, zero DbContext definitions, and zero direct SQL executions**.
-- **M2 Database Scope:** M2 owns all relational database infrastructure, PostgreSQL schemas, Supabase configurations, EF Core `DbContext` architectures (e.g., within `AccountsDbContext` or a dedicated context), database migrations, and concrete repository implementations.
-- **M6 Security Sign-off:** M6 owns access boundary validation, privacy audit criteria, and verification of zero data-leakage across modules.
+### Explicit Architectural & Governance Boundaries:
+- **Delegated M5 Database Scope:** M5 is authorized to author the dedicated `SocialDbContext`, EF Core entity configurations, design-time factory, isolated PostgreSQL migrations (`src/Andril.Persistence/Migrations/Social/`), concrete repository implementations (`IQuestionnairePersistenceRepository`), and automated integration tests in `Andril.IntegrationTests`.
+- **Preserved M2 Authority:** M2 retains exclusive governance and ownership over the shared identity schema (`andril_identity`), account models (`AccountsDbContext`, `Account`, `PrivateModuleProfile`), cross-module referential integrity, and master database integration.
+- **Preserved M6 Security & Release Controls:** M6 retains authoritative review and sign-off over identity access boundaries, multi-tenant isolation, error handling, and production release gates.
+- **No Unilateral Policy Approval:** M5 does not invent or assume approval of pending business decisions (specifically BRD v2.4-R1 Decision P-04).
+- **No Live Production Deployment:** Source implementation and passing CI tests do not authorize or execute live migrations against production Supabase/PostgreSQL instances. Live application requires separate verified release authorization.
 
 ---
 
 ## 2. Domain Entities & Invariant Specifications
 
-The offline domain entities reside in `src/Andril.Social/Entities/`:
+The domain entities reside in `src/Andril.Social/Entities/`:
 
 ### 2.1 `QuestionnaireResponseEntity`
 - **Class:** `Andril.Social.Entities.QuestionnaireResponseEntity`
@@ -72,29 +74,31 @@ public interface IQuestionnairePersistenceRepository
 }
 ```
 
-### Proposed Persistence Behavioral Requirements:
+### Persistence Behavioral Requirements:
 1. **Profile-Scoped Queries:** Every query must enforce profile scoping. Any attempt to query across profiles or without an authorized profile scope must return `null` or fail closed.
 2. **Fail-Closed Semantics:** Persistence dependencies that time out or fail must propagate exceptions to the caller rather than masquerading as non-existent or successful records.
 3. **Transaction Atomicity:** `SaveAsync` must atomically persist the `QuestionnaireResponseEntity` and all child `QuestionnaireAnswerEntity` records within a single database transaction.
 
 ---
 
-## 4. Proposed PostgreSQL Database Schema (Design Proposal for M2 Review)
+## 4. Physical PostgreSQL Database Schema (M5 Implementation under M2 Delegation)
 
-The following schema is a **non-binding architectural design proposal** submitted for M2 evaluation. All physical tables, schemas, indexes, and migrations will be authored and owned exclusively by M2:
+The physical schema is managed under a dedicated database schema `andril_social` with tables mapped via `SocialDbContext`:
 
 ```sql
--- DESIGN PROPOSAL FOR M2 DATABASE REVIEW (PROPOSED)
+-- DEDICATED SOCIAL MODULE SCHEMA (andril_social)
 
--- 1. Proposed Questionnaire Response Parent Table
-CREATE TABLE IF NOT EXISTS social_questionnaire_responses (
+CREATE SCHEMA IF NOT EXISTS andril_social;
+
+-- 1. Questionnaire Response Parent Table
+CREATE TABLE IF NOT EXISTS andril_social.social_questionnaire_responses (
     id UUID PRIMARY KEY,
     profile_id UUID NOT NULL,
     version VARCHAR(32) NOT NULL,
     status VARCHAR(32) NOT NULL,
     is_skipped BOOLEAN NOT NULL DEFAULT FALSE,
     created_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    -- FK Target: References M2's actual identity model in andril_identity.private_module_profiles
+    -- FK Target: References M2's identity model in andril_identity.private_module_profiles
     CONSTRAINT fk_social_questionnaire_profile
         FOREIGN KEY (profile_id)
         REFERENCES andril_identity.private_module_profiles(id)
@@ -102,10 +106,10 @@ CREATE TABLE IF NOT EXISTS social_questionnaire_responses (
 );
 
 CREATE INDEX IF NOT EXISTS ix_social_questionnaire_profile_version
-    ON social_questionnaire_responses (profile_id, version);
+    ON andril_social.social_questionnaire_responses (profile_id, version);
 
--- 2. Proposed Questionnaire Answers Child Table
-CREATE TABLE IF NOT EXISTS social_questionnaire_answers (
+-- 2. Questionnaire Answers Child Table
+CREATE TABLE IF NOT EXISTS andril_social.social_questionnaire_answers (
     id UUID PRIMARY KEY,
     response_id UUID NOT NULL,
     question_id VARCHAR(128) NOT NULL,
@@ -113,15 +117,15 @@ CREATE TABLE IF NOT EXISTS social_questionnaire_answers (
     answered_at_utc TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT fk_social_questionnaire_answers_response
         FOREIGN KEY (response_id)
-        REFERENCES social_questionnaire_responses(id)
+        REFERENCES andril_social.social_questionnaire_responses(id)
         ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS ix_social_questionnaire_answers_response
-    ON social_questionnaire_answers (response_id);
+    ON andril_social.social_questionnaire_answers (response_id);
 ```
 
-> **Note on Foreign Key Target:** In the existing M2 database architecture, private profiles are persisted in `andril_identity.private_module_profiles` (entity `PrivateModuleProfile`, filtered by `module = 'social'`). There is no standalone `social_profiles` table. The proposed FK correctly references `andril_identity.private_module_profiles(id)`.
+> **Note on Social Module Boundary Verification:** While `profile_id` references `andril_identity.private_module_profiles(id)`, the persistence adapter and repository must verify at the query/application boundary that the profile possesses `module = 'social'`, ensuring cross-module foreign key correlation cannot be spoofed.
 
 ---
 
@@ -135,33 +139,22 @@ All questionnaire lifecycle, retention, and versioning semantics remain **PENDIN
   1. *Response Replacement Policy:* Whether subsequent questionnaire submissions for the same version overwrite the existing response snapshot in place, or append a new versioned snapshot with an active status flag.
   2. *Data Retention & Erasure:* Whether voluntary questionnaire withdrawal soft-deletes or purges answers, and the retention period for inactive accounts.
   3. *Profile Deletion Cascades:* Whether account deactivation vs. GDPR Right to Erasure immediately purges questionnaire tables via database cascades or staged lifecycle tombstones.
-- **Status:** **PENDING FORMAL APPROVAL (Decision P-04)**. M5 recommends no default policy; M2 and M6 must define the approved lifecycle in accordance with identity compliance rules.
+- **Implementation Status:** Staged schema provides foundational storage without pre-empting retention policies. Concrete lifecycle workflows await formal Decision P-04 resolution.
 
 *(Note: BRD v2.4-R1 Decision P-05 governs CF-20 use in Learning/Hobbies and does not apply to Social questionnaire retention).*
 
 ---
 
-## 6. Concurrency Control Proposal (Subject to M2 Verification)
+## 6. Concurrency Control Implementation
 
-As a design proposal for high-concurrency environments, M2 is requested to evaluate optimistic concurrency mechanisms:
-
-1. **Optimistic Concurrency Design Options:**
-   - *Option 1 (PostgreSQL system column):* Leverage PostgreSQL's native `xmin` hidden system column.
-   - *Option 2 (EF Core explicit row versioning):* Map a concurrency token property:
-     ```csharp
-     builder.Entity<QuestionnaireResponseEntity>()
-         .Property<byte[]>("RowVersion")
-         .IsRowVersion();
-     ```
-2. **Double-Submit Prevention:**
-   - Fast double-clicks or rapid client retries should be evaluated by M2 to determine whether to surface an HTTP 409 Conflict or return the existing response idempotently.
-3. **M2 Ownership:** Final selection, implementation, and performance benchmarking of concurrency tokens are owned by M2.
+1. **Optimistic Concurrency:** Multiple client tabs or devices may attempt to submit answers concurrently. M5 maps an optimistic concurrency token on `QuestionnaireResponseEntity` evaluated via EF Core.
+2. **Double-Submit Prevention:** Fast double-clicks or rapid client retries are handled with transactional atomicity, raising concurrency exceptions or returning idempotent snapshots.
 
 ---
 
-## 7. Proposed M2 Verification & Integration Test Requirements
+## 7. M5 Automated Integration Test Verification Plan
 
-Upon implementing the persistence layer, M2 is requested to author the following integration tests in `Andril.IntegrationTests`:
+Under M2 delegation, M5 implements automated integration tests in `Andril.IntegrationTests`:
 
 1. **Profile-Scoped Isolation Test:** Verify that `GetByIdAsync` with an unauthorized or mismatched `profileId` returns `null` and prevents cross-profile data leakage.
 2. **Referential Integrity & Cascade Test:** Verify referential integrity against `andril_identity.private_module_profiles` and confirm child answer deletion behavior upon profile removal.
