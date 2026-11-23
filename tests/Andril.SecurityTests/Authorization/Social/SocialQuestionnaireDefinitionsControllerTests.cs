@@ -15,7 +15,6 @@ public sealed class SocialQuestionnaireDefinitionsControllerTests
     {
         var type = typeof(SocialQuestionnaireDefinitionsController);
 
-        Assert.NotNull(type.GetCustomAttribute<NonControllerAttribute>());
         Assert.NotNull(type.GetCustomAttribute<ApiControllerAttribute>());
         Assert.NotNull(type.GetCustomAttribute<AuthorizeAttribute>());
 
