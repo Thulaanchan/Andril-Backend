@@ -1,3 +1,4 @@
+using Andril.Hobbies.DTOs;
 using Andril.Persistence.DbContexts;
 using Andril.Persistence.Repositories.Hobbies;
 using Microsoft.EntityFrameworkCore;
