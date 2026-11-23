@@ -25,6 +25,42 @@ security:
   - supabaseBearer: []
 components:
   schemas:
+    QuestionnaireOptionDto:
+      type: object
+      additionalProperties: false
+      required: [id, label]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+    QuestionnaireQuestionDto:
+      type: object
+      additionalProperties: false
+      required: [id, prompt, isRequired, options]
+      properties:
+        id:
+          type: string
+        prompt:
+          type: string
+        isRequired:
+          type: boolean
+        options:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuestionnaireOptionDto'
+    QuestionnaireDefinitionDto:
+      type: object
+      additionalProperties: false
+      required: [version, questions]
+      properties:
+        version:
+          type: string
+          example: v1
+        questions:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuestionnaireQuestionDto'
     OnboardingStatus:
       type: object
       additionalProperties: false
@@ -1088,3 +1124,32 @@ paths:
                   status:
                     type: string
                     example: ok
+  /api/v1/social/questionnaires/active:
+    get:
+      summary: Get active Social Personality Questionnaire definition
+      operationId: getActiveSocialQuestionnaire
+      description: >-
+        Returns the server-owned Personality Questionnaire V1 definition for an eligible,
+        authenticated Social user. Does not expose private profile IDs, raw answers, or matching scores.
+      responses:
+        '200':
+          description: Active questionnaire definition returned successfully
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionnaireDefinitionDto'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          description: Forbidden - Unconfirmed identity or Social eligibility denied
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/AccountProblem'
+        '503':
+          $ref: '#/components/responses/AccountUnavailable'
