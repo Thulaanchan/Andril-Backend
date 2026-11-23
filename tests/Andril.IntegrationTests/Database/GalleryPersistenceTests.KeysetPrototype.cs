@@ -190,7 +190,9 @@ public sealed partial class GalleryPersistenceTests
         await using var context = CreateContext(connection, capture);
         await context.Database.OpenConnectionAsync(deadline.Token);
         var waitingPid = ((NpgsqlConnection)context.Database.GetDbConnection()).ProcessID;
-        var pending = ReadKeysetAsync(context, Owner, 2, token: cancellation.Token);
+        // Exercise bounded UNION branches as well as the first-page form in compatibility tests.
+        KeysetPosition? after = _experimentalEfShape is null ? null : new(CreatedAt.AddMinutes(2), KeysetId(1));
+        var pending = ReadKeysetAsync(context, Owner, 2, after, cancellation.Token);
         try
         {
             await capture.Started.Task.WaitAsync(deadline.Token);
@@ -222,7 +224,8 @@ public sealed partial class GalleryPersistenceTests
         await SeedKeysetAsync(connection, KeysetRows());
         await using var context = CreateContext(connection);
         await context.Database.ExecuteSqlRawAsync("ALTER TABLE andril_hobbies.\"GalleryMedia\" RENAME TO keyset_gallery_unavailable");
-        var error = await Assert.ThrowsAsync<PostgresException>(() => ReadKeysetAsync(context, Owner, 2));
+        KeysetPosition? after = _experimentalEfShape is null ? null : new(CreatedAt.AddMinutes(2), KeysetId(1));
+        var error = await Assert.ThrowsAsync<PostgresException>(() => ReadKeysetAsync(context, Owner, 2, after));
         Assert.Equal(PostgresErrorCodes.UndefinedTable, error.SqlState);
     });
 
@@ -290,11 +293,13 @@ public sealed partial class GalleryPersistenceTests
     private async Task<KeysetPage> ReadKeysetAsync(HobbiesGalleryDbContext context, Guid authorizedOwnerId,
         int limit, KeysetPosition? after = null, CancellationToken token = default)
     {
-        if (_exerciseRepositoryKeyset)
+        if (_exerciseRepositoryKeyset || _experimentalEfShape is not null)
         {
-            var page = await new GalleryRepository<HobbiesGalleryDbContext>(context).GetOwnerGalleryPageAsync(
-                authorizedOwnerId, limit, trustedTestOnlyMaximum: 3,
-                after is null ? null : new GalleryPagePosition(authorizedOwnerId, "Hobbies", after.Timestamp, after.Id), token);
+            var position = after is null ? null : new GalleryPagePosition(authorizedOwnerId, "Hobbies", after.Timestamp, after.Id);
+            var page = _experimentalEfShape is EfSeekShape shape
+                ? await ReadEfSeekAsync(context, shape, authorizedOwnerId, limit, 3, position, token)
+                : await new GalleryRepository<HobbiesGalleryDbContext>(context).GetOwnerGalleryPageAsync(
+                    authorizedOwnerId, limit, trustedTestOnlyMaximum: 3, position, token);
             if (page.Next is not null)
             {
                 Assert.Equal(authorizedOwnerId, page.Next.OwnerModuleProfileId);
@@ -360,11 +365,13 @@ public sealed partial class GalleryPersistenceTests
     private sealed class KeysetCommandCapture : DbCommandInterceptor
     {
         public string? Sql { get; private set; }
+        public int CommandCount { get; private set; }
         public IReadOnlyList<(string Name, string Type, object? Value)> Parameters { get; private set; } = [];
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public override ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(DbCommand command,
             CommandEventData eventData, InterceptionResult<DbDataReader> result, CancellationToken cancellationToken = default)
         {
+            CommandCount++;
             Sql = command.CommandText;
             Parameters = command.Parameters.Cast<DbParameter>()
                 .Select(parameter => (parameter.ParameterName, parameter.DbType.ToString(), parameter.Value)).ToArray();
