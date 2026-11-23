@@ -127,30 +127,66 @@ public sealed class GroupJoinRequestTests
         Assert.False(a.Equals(new object()));
     }
 
-    [Fact]
-    public void ToString_ConcealsConfidentialIdentifiers()
+    [Theory]
+    [InlineData("learning", GroupKind.Classroom)]
+    [InlineData("hobbies", GroupKind.Club)]
+    [InlineData("social", GroupKind.Zone)]
+    public void ToString_ConcealsConfidentialIdentifiers_AndPreservesExpectedDiagnostics(string module, GroupKind groupKind)
     {
-        var scope = new GroupModuleScope("social", GroupKind.Zone);
+        var scope = new GroupModuleScope(module, groupKind);
         var request = new GroupJoinRequest(ValidGroupId, scope, ValidProfileId, ValidUtcTime);
 
         var representation = request.ToString();
 
-        Assert.Equal("GroupJoinRequest [social:Zone]", representation);
+        Assert.Equal($"GroupJoinRequest [{module}:{groupKind}]", representation);
         Assert.DoesNotContain(ValidGroupId.ToString(), representation);
         Assert.DoesNotContain(ValidProfileId.ToString(), representation);
         Assert.DoesNotContain(ValidUtcTime.ToString(), representation);
     }
 
-    [Fact]
-    public void Serialization_SystemTextJson_ConcealsPrivateIdentifiers()
+    [Theory]
+    [InlineData("learning", GroupKind.Classroom)]
+    [InlineData("hobbies", GroupKind.Club)]
+    [InlineData("social", GroupKind.Zone)]
+    public void Serialization_SystemTextJson_ConcealsAllPropertiesAcrossAllModules(string module, GroupKind groupKind)
     {
-        var scope = new GroupModuleScope("learning", GroupKind.Classroom);
+        var scope = new GroupModuleScope(module, groupKind);
         var request = new GroupJoinRequest(ValidGroupId, scope, ValidProfileId, ValidUtcTime);
 
         var json = JsonSerializer.Serialize(request);
 
+        Assert.Equal("{}", json);
         Assert.DoesNotContain(ValidGroupId.ToString(), json);
         Assert.DoesNotContain(ValidProfileId.ToString(), json);
         Assert.DoesNotContain(ValidUtcTime.ToString("o"), json);
+        Assert.DoesNotContain("Scope", json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(module, json, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void InternalAccess_PreservesAllPropertiesAcrossModules()
+    {
+        var scope = new GroupModuleScope("hobbies", GroupKind.Club);
+        var request = new GroupJoinRequest(ValidGroupId, scope, ValidProfileId, ValidUtcTime);
+
+        // Internal C# callers retain full legitimate access
+        Assert.Equal(ValidGroupId, request.GroupId);
+        Assert.Equal(scope, request.Scope);
+        Assert.Equal(ValidProfileId, request.RequestingProfileId);
+        Assert.Equal(ValidUtcTime, request.RequestedAtUtc);
+    }
+
+    [Fact]
+    public void SecurityBoundary_NoImplicitMembershipOrAuthorizationGrant()
+    {
+        var scope = new GroupModuleScope("learning", GroupKind.Classroom);
+        var request = new GroupJoinRequest(ValidGroupId, scope, ValidProfileId, ValidUtcTime);
+
+        // Confirm diagnostic representation does not leak authorization or membership grants
+        var representation = request.ToString();
+        Assert.DoesNotContain("Member", representation, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Role", representation, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Token", representation, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Permission", representation, StringComparison.OrdinalIgnoreCase);
     }
 }
