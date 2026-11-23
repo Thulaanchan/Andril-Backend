@@ -197,7 +197,8 @@ public sealed class OnboardingEndpointTests
     [InlineData("membership", false, 200)]
     [InlineData("opt-in", false, 503)]
     [InlineData("foreign-profile", false, 503)]
-    [InlineData("wrong-module", false, 503)]
+    [InlineData("learning-profile", false, 503)]
+    [InlineData("hobbies-profile", false, 503)]
     [InlineData("profile-store", false, 503)]
     [InlineData("learning", false, 200)]
     [InlineData("hobbies", false, 200)]
@@ -217,7 +218,8 @@ public sealed class OnboardingEndpointTests
         if (fault == "membership") store.membership = null;
         if (fault == "opt-in") typeof(StarterMembership).GetProperty(nameof(StarterMembership.SocialOptInAtUtc))!.SetValue(store.membership, null);
         if (fault == "foreign-profile") store.Profile = PrivateModuleProfile.Create(Guid.NewGuid(), "social", DateTimeOffset.UtcNow);
-        if (fault == "wrong-module") store.Profile = PrivateModuleProfile.Create(store.Account.Id, "learning", DateTimeOffset.UtcNow);
+        if (fault is "learning-profile" or "hobbies-profile")
+            store.Profile = PrivateModuleProfile.Create(store.Account.Id, fault == "learning-profile" ? "learning" : "hobbies", DateTimeOffset.UtcNow);
         store.FailProfile = fault == "profile-store";
         using var factory = new AuthenticationFactory(identityHandler: new IdentityHandler());
         using var app = factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
@@ -312,9 +314,19 @@ public sealed class OnboardingEndpointTests
         await AssertUnavailableAsync("Account service unavailable");
         store.FailProfile = false;
 
-        store.Profile = PrivateModuleProfile.Create(store.Account.Id, "social", now);
-        store.Profile.SetDraftFields(new(displayName, null, "private"));
-        await AssertUnavailableAsync("Onboarding status unavailable");
+        var otherModule = module == "learning" ? "hobbies" : "learning";
+        var otherAccountId = Guid.NewGuid();
+        foreach (var mismatchedProfile in new[]
+        {
+            PrivateModuleProfile.Create(store.Account.Id, "social", now),
+            PrivateModuleProfile.Create(store.Account.Id, otherModule, now),
+            PrivateModuleProfile.Create(otherAccountId, module, now)
+        })
+        {
+            mismatchedProfile.SetDraftFields(new(displayName, null, "private"));
+            store.Profile = mismatchedProfile;
+            await AssertUnavailableAsync("Onboarding status unavailable");
+        }
 
         store.Profile = null;
         await AssertIncompleteAsync("private_profile_missing");
@@ -343,7 +355,15 @@ public sealed class OnboardingEndpointTests
             using var response = await client.GetAsync(Route);
             Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
             Assert.True(response.Headers.CacheControl?.NoStore);
-            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var json = await response.Content.ReadAsStringAsync();
+            Assert.DoesNotContain(displayName, json);
+            Assert.DoesNotContain(store.Account.Id.ToString(), json);
+            if (store.Profile is { } profile)
+            {
+                Assert.DoesNotContain(profile.AccountId.ToString(), json);
+                Assert.DoesNotContain(profile.Id.ToString(), json);
+            }
+            using var body = JsonDocument.Parse(json);
             var root = body.RootElement;
             Assert.Equal(title, root.GetProperty("title").GetString());
             Assert.False(root.TryGetProperty("progress", out _));
