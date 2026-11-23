@@ -5,7 +5,6 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Andril.API.Controllers.Social;
 
-[NonController]
 [ApiController]
 [Authorize]
 [Route("api/v1/social/questionnaires")]
