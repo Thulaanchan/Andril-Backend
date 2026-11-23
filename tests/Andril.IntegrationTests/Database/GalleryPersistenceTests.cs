@@ -22,7 +22,7 @@ using Xunit;
 
 namespace Andril.IntegrationTests.Database;
 
-public sealed class GalleryPersistenceTests
+public sealed partial class GalleryPersistenceTests
 {
     private const string OfflineConnection = "Host=127.0.0.1;Database=andril_model_only;Username=unused";
     private static readonly Guid Owner = new("10000000-0000-4000-8000-000000000001");
