@@ -197,7 +197,8 @@ public sealed class OnboardingEndpointTests
     [InlineData("membership", false, 200)]
     [InlineData("opt-in", false, 503)]
     [InlineData("foreign-profile", false, 503)]
-    [InlineData("wrong-module", false, 503)]
+    [InlineData("learning-profile", false, 503)]
+    [InlineData("hobbies-profile", false, 503)]
     [InlineData("profile-store", false, 503)]
     [InlineData("learning", false, 200)]
     [InlineData("hobbies", false, 200)]
@@ -217,7 +218,8 @@ public sealed class OnboardingEndpointTests
         if (fault == "membership") store.membership = null;
         if (fault == "opt-in") typeof(StarterMembership).GetProperty(nameof(StarterMembership.SocialOptInAtUtc))!.SetValue(store.membership, null);
         if (fault == "foreign-profile") store.Profile = PrivateModuleProfile.Create(Guid.NewGuid(), "social", DateTimeOffset.UtcNow);
-        if (fault == "wrong-module") store.Profile = PrivateModuleProfile.Create(store.Account.Id, "learning", DateTimeOffset.UtcNow);
+        if (fault is "learning-profile" or "hobbies-profile")
+            store.Profile = PrivateModuleProfile.Create(store.Account.Id, fault == "learning-profile" ? "learning" : "hobbies", DateTimeOffset.UtcNow);
         store.FailProfile = fault == "profile-store";
         using var factory = new AuthenticationFactory(identityHandler: new IdentityHandler());
         using var app = factory.WithWebHostBuilder(builder => builder.ConfigureTestServices(services =>
@@ -252,10 +254,28 @@ public sealed class OnboardingEndpointTests
             Assert.Equal("profile_setup", body.RootElement.GetProperty("nextStep").GetString());
             Assert.Equal(JsonValueKind.Null, body.RootElement.GetProperty("blockingDependency").ValueKind);
             var routes = app.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>();
-            Assert.DoesNotContain(routes, endpoint =>
-                endpoint.RoutePattern.PathSegments.Any(segment => segment.Parts.OfType<RoutePatternLiteralPart>()
-                    .Any(part => part.Content.Equals("social", StringComparison.OrdinalIgnoreCase)
-                        || part.Content.Equals("chat", StringComparison.OrdinalIgnoreCase))));
+            foreach (var endpoint in routes)
+            {
+                var hasDisallowedSegment = endpoint.RoutePattern.PathSegments.Any(segment => segment.Parts.OfType<RoutePatternLiteralPart>()
+                    .Any(part => part.Content.Equals("chat", StringComparison.OrdinalIgnoreCase)));
+                Assert.False(hasDisallowedSegment, $"Chat endpoint mapped without authorization: {endpoint.DisplayName}");
+
+                var hasSocialSegment = endpoint.RoutePattern.PathSegments.Any(segment => segment.Parts.OfType<RoutePatternLiteralPart>()
+                    .Any(part => part.Content.Equals("social", StringComparison.OrdinalIgnoreCase)));
+                if (hasSocialSegment)
+                {
+                    // The only permitted Social endpoint across the entire system is the authorized GET /api/v1/social/questionnaires/active
+                    var template = endpoint.RoutePattern.RawText?.TrimStart('/') ?? "";
+                    Assert.True(template.Equals("api/v1/social/questionnaires/active", StringComparison.OrdinalIgnoreCase),
+                        $"Unauthorized Social endpoint mapped: {template}");
+                    var httpMethods = endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Routing.IHttpMethodMetadata>()?.HttpMethods;
+                    Assert.NotNull(httpMethods);
+                    Assert.True(httpMethods.All(m => m.Equals("GET", StringComparison.OrdinalIgnoreCase)),
+                        $"Social questionnaire definition endpoint must only accept GET: {string.Join(",", httpMethods)}");
+                    Assert.Null(endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Authorization.IAllowAnonymous>());
+                    Assert.NotNull(endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Authorization.IAuthorizeData>());
+                }
+            }
             // A new HTTP request scope must re-read the same persisted owner evidence.
             using var resumed = app.CreateClient();
             resumed.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token());
@@ -312,9 +332,19 @@ public sealed class OnboardingEndpointTests
         await AssertUnavailableAsync("Account service unavailable");
         store.FailProfile = false;
 
-        store.Profile = PrivateModuleProfile.Create(store.Account.Id, "social", now);
-        store.Profile.SetDraftFields(new(displayName, null, "private"));
-        await AssertUnavailableAsync("Onboarding status unavailable");
+        var otherModule = module == "learning" ? "hobbies" : "learning";
+        var otherAccountId = Guid.NewGuid();
+        foreach (var mismatchedProfile in new[]
+        {
+            PrivateModuleProfile.Create(store.Account.Id, "social", now),
+            PrivateModuleProfile.Create(store.Account.Id, otherModule, now),
+            PrivateModuleProfile.Create(otherAccountId, module, now)
+        })
+        {
+            mismatchedProfile.SetDraftFields(new(displayName, null, "private"));
+            store.Profile = mismatchedProfile;
+            await AssertUnavailableAsync("Onboarding status unavailable");
+        }
 
         store.Profile = null;
         await AssertIncompleteAsync("private_profile_missing");
@@ -343,7 +373,15 @@ public sealed class OnboardingEndpointTests
             using var response = await client.GetAsync(Route);
             Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
             Assert.True(response.Headers.CacheControl?.NoStore);
-            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            var json = await response.Content.ReadAsStringAsync();
+            Assert.DoesNotContain(displayName, json);
+            Assert.DoesNotContain(store.Account.Id.ToString(), json);
+            if (store.Profile is { } profile)
+            {
+                Assert.DoesNotContain(profile.AccountId.ToString(), json);
+                Assert.DoesNotContain(profile.Id.ToString(), json);
+            }
+            using var body = JsonDocument.Parse(json);
             var root = body.RootElement;
             Assert.Equal(title, root.GetProperty("title").GetString());
             Assert.False(root.TryGetProperty("progress", out _));

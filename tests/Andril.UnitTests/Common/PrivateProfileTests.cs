@@ -106,23 +106,61 @@ public sealed class PrivateProfileTests
         Assert.Null(f.Profile);
     }
 
-    [Fact]
-    public async Task MissingAndExistingShellsNeverCompleteOnboardingOrAuthorizeModuleHome()
+    [Theory]
+    [InlineData("learning")]
+    [InlineData("hobbies")]
+    [InlineData("social")]
+    public async Task EligibleStarterWithoutProfileCannotAuthorizeProtectedEntry(string module)
     {
-        var f = new Fixture();
+        var f = new Fixture(module);
         var reader = new PrivateProfileCompletionReader(f.Service);
         var onboarding = new OnboardingStatusService(f, f, f, f, reader);
-        Assert.Equal("private_profile_missing", (await onboarding.GetAsync()).BlockingDependency);
-        await f.Service.CreateAsync("learning");
+        var before = await onboarding.GetAsync();
+        Assert.True(before.Progress.StarterModuleSelected);
+        Assert.Equal(module, before.SelectedModule);
+        Assert.Equal("private_profile_missing", before.BlockingDependency);
+        Assert.False(before.ModuleHomeAuthorized);
+
+        await Assert.ThrowsAsync<ProfileContractPendingException>(() => new PrivateModuleAccess(reader).RequireAsync(module));
+
+        Assert.Null(f.Profile);
+        Assert.Equal(before, await onboarding.GetAsync());
+    }
+
+    [Theory]
+    [InlineData("learning")]
+    [InlineData("hobbies")]
+    public async Task ExistingShellsNeverCompleteOnboardingOrAuthorizeModuleHome(string module)
+    {
+        var f = new Fixture(module);
+        var reader = new PrivateProfileCompletionReader(f.Service);
+        var onboarding = new OnboardingStatusService(f, f, f, f, reader);
+        await f.Service.CreateAsync(module);
         var status = await onboarding.GetAsync();
         Assert.Equal("profile_setup", status.NextStep);
         Assert.Equal("approved_profile_contract", status.BlockingDependency);
         Assert.False(status.Progress.PrivateProfileComplete);
         Assert.False(status.OnboardingComplete);
         Assert.False(status.ModuleHomeAuthorized);
-        await Assert.ThrowsAsync<ProfileContractPendingException>(() => new PrivateModuleAccess(reader).RequireAsync("learning"));
+        await Assert.ThrowsAsync<ProfileContractPendingException>(() => new PrivateModuleAccess(reader).RequireAsync(module));
         f.State = f.State with { Policies = [] };
         await Assert.ThrowsAsync<OnboardingDependencyException>(() => onboarding.GetAsync());
+    }
+
+    [Theory]
+    [InlineData("learning", "social", false)]
+    [InlineData("hobbies", "learning", false)]
+    [InlineData("social", "hobbies", false)]
+    [InlineData("social", "social", true)]
+    public async Task ProtectedEntryRejectsMismatchedProfileEvidence(string requestedModule, string returnedModule, bool foreignOwner)
+    {
+        var f = new Fixture(requestedModule);
+        var owner = foreignOwner ? Guid.NewGuid() : f.Account.Id;
+        f.Profile = PrivateModuleProfile.Create(owner, returnedModule, f.GetUtcNow());
+        f.Profile.SetDraftFields(new("Private Person", null, "private"));
+        var access = new PrivateModuleAccess(new PrivateProfileCompletionReader(f.Service));
+
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() => access.RequireAsync(requestedModule));
     }
 
     [Fact]
@@ -131,7 +169,9 @@ public sealed class PrivateProfileTests
         var f = new Fixture { Configured = false };
         await Assert.ThrowsAsync<PolicyConfigurationException>(() => f.Service.CreateAsync("learning"));
         f.Configured = true; f.FailStore = true;
-        await Assert.ThrowsAsync<AccountStoreUnavailableException>(() => new PrivateProfileCompletionReader(f.Service).ReadAsync("learning"));
+        var access = new PrivateModuleAccess(new PrivateProfileCompletionReader(f.Service));
+        await Assert.ThrowsAsync<AccountStoreUnavailableException>(() => access.RequireAsync("learning"));
+        await Assert.ThrowsAsync<ProfileValidationException>(() => access.RequireAsync("unknown"));
     }
 
     [Fact]
@@ -140,6 +180,9 @@ public sealed class PrivateProfileTests
         var f = new Fixture("social");
         f.Profile = PrivateModuleProfile.Create(f.Account.Id, "social", f.GetUtcNow());
         f.Profile.SetDraftFields(new("Social Person", null, "private"));
+        var profileBefore = await f.Service.GetAsync("social");
+        var membership = f.State.Membership!;
+        var membershipBefore = (membership.AccountId, membership.Module, membership.ActivatedAtUtc, membership.SocialOptInAtUtc);
         // No photo, interests, preferences or questionnaire service/evidence is supplied.
         var results = await Task.WhenAll(Enumerable.Range(0, 20).Select(async _ =>
         {
@@ -158,7 +201,11 @@ public sealed class PrivateProfileTests
             Assert.Equal("profile_setup", status.NextStep);
             Assert.Null(status.BlockingDependency);
         });
-        Assert.Null(f.Profile.Bio);
+        Assert.Equal(profileBefore, await f.Service.GetAsync("social"));
+        var membershipAfter = f.State.Membership!;
+        Assert.Equal(membershipBefore,
+            (membershipAfter.AccountId, membershipAfter.Module, membershipAfter.ActivatedAtUtc, membershipAfter.SocialOptInAtUtc));
+        Assert.Equal(results[0], await new OnboardingStatusService(f, f, f, f, new PrivateProfileCompletionReader(f.Service)).GetAsync());
     }
 
     [Theory]

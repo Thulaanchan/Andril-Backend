@@ -27,5 +27,8 @@ public sealed class AccountsDbContext(DbContextOptions<AccountsDbContext> option
         modelBuilder.ApplyConfiguration(new StarterMembershipConfiguration());
         modelBuilder.ApplyConfiguration(new PrivateModuleProfileConfiguration());
         modelBuilder.ApplyConfiguration(new PrivateProfilePhotoConfiguration());
+        modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleConfiguration());
+        modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleReceiptConfiguration());
+        modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleAuditConfiguration());
     }
 }

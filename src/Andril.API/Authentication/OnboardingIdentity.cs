@@ -16,5 +16,6 @@ internal static class IdentityProtectedRoutes
         path.StartsWithSegments("/api/v1/onboarding", StringComparison.OrdinalIgnoreCase);
 
     internal static bool Contains(PathString path) => IsOnboarding(path)
-        || path.StartsWithSegments("/api/v1/account", StringComparison.OrdinalIgnoreCase);
+        || path.StartsWithSegments("/api/v1/account", StringComparison.OrdinalIgnoreCase)
+        || path.StartsWithSegments("/api/v1/social", StringComparison.OrdinalIgnoreCase);
 }

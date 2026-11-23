@@ -20,6 +20,7 @@ public sealed class GroupJoinRequest : IEquatable<GroupJoinRequest>
     /// <summary>
     /// Gets the validated module and kind scope of the target group.
     /// </summary>
+    [JsonIgnore]
     public GroupModuleScope Scope { get; }
 
     /// <summary>

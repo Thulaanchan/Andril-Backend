@@ -276,10 +276,6 @@ namespace Andril.Persistence.Migrations.Accounts
                         .HasColumnType("uuid")
                         .HasColumnName("cleanup_claim_id");
 
-                    b.Property<DateTimeOffset?>("NextCleanupAttemptAtUtc")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("next_cleanup_attempt_at_utc");
-
                     b.Property<bool>("CleanupPending")
                         .HasColumnType("boolean")
                         .HasColumnName("cleanup_pending");
@@ -324,6 +320,10 @@ namespace Andril.Persistence.Migrations.Accounts
                         .HasMaxLength(16)
                         .HasColumnType("character varying(16)")
                         .HasColumnName("module");
+
+                    b.Property<DateTimeOffset?>("NextCleanupAttemptAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("next_cleanup_attempt_at_utc");
 
                     b.Property<string>("ObjectKey")
                         .IsRequired()
@@ -382,13 +382,13 @@ namespace Andril.Persistence.Migrations.Accounts
                         .IsUnique()
                         .HasDatabaseName("uq_profile_photo_object");
 
-                    b.HasIndex("ProfileId", "Module", "NextCleanupAttemptAtUtc", "Id")
-                        .HasDatabaseName("ix_profile_photo_cleanup")
-                        .HasFilter("cleanup_pending");
-
                     b.HasIndex("ProfileId", "Module", "RequestId")
                         .IsUnique()
                         .HasDatabaseName("uq_profile_photo_request");
+
+                    b.HasIndex("ProfileId", "Module", "NextCleanupAttemptAtUtc", "Id")
+                        .HasDatabaseName("ix_profile_photo_cleanup")
+                        .HasFilter("cleanup_pending");
 
                     b.HasIndex(new[] { "ProfileId" }, "CurrentPhoto")
                         .IsUnique()
@@ -402,13 +402,13 @@ namespace Andril.Persistence.Migrations.Accounts
 
                     b.ToTable("private_profile_photos", "andril_identity", t =>
                         {
+                            t.HasCheckConstraint("ck_profile_photo_cleanup", "cleanup_pending = (next_cleanup_attempt_at_utc IS NOT NULL) AND (next_cleanup_attempt_at_utc IS NULL OR (isfinite(next_cleanup_attempt_at_utc) AND next_cleanup_attempt_at_utc >= created_at_utc)) AND ((cleanup_claim_id IS NULL AND cleanup_claim_expires_at_utc IS NULL) OR (cleanup_pending AND cleanup_claim_id IS NOT NULL AND cleanup_claim_id <> '00000000-0000-0000-0000-000000000000' AND cleanup_claim_expires_at_utc IS NOT NULL AND isfinite(cleanup_claim_expires_at_utc) AND cleanup_claim_expires_at_utc > updated_at_utc))");
+
                             t.HasCheckConstraint("ck_profile_photo_hashes", "original_content_hash COLLATE \"C\" ~ '^[0-9a-f]{64}$' AND stored_content_hash COLLATE \"C\" ~ '^[0-9a-f]{64}$'");
 
                             t.HasCheckConstraint("ck_profile_photo_ids", "id <> '00000000-0000-0000-0000-000000000000' AND request_id <> '00000000-0000-0000-0000-000000000000' AND id <> request_id");
 
                             t.HasCheckConstraint("ck_profile_photo_key", "object_key = module || '/' || profile_id::text || '/' || id::text || '.jpg'");
-
-                            t.HasCheckConstraint("ck_profile_photo_cleanup", "cleanup_pending = (next_cleanup_attempt_at_utc IS NOT NULL) AND (next_cleanup_attempt_at_utc IS NULL OR (isfinite(next_cleanup_attempt_at_utc) AND next_cleanup_attempt_at_utc >= created_at_utc)) AND ((cleanup_claim_id IS NULL AND cleanup_claim_expires_at_utc IS NULL) OR (cleanup_pending AND cleanup_claim_id IS NOT NULL AND cleanup_claim_id <> '00000000-0000-0000-0000-000000000000' AND cleanup_claim_expires_at_utc IS NOT NULL AND isfinite(cleanup_claim_expires_at_utc) AND cleanup_claim_expires_at_utc > updated_at_utc))");
 
                             t.HasCheckConstraint("ck_profile_photo_late_write", "NOT late_write_risk OR state = 'PendingStorage' OR is_current OR cleanup_pending");
 
@@ -416,9 +416,180 @@ namespace Andril.Persistence.Migrations.Accounts
 
                             t.HasCheckConstraint("ck_profile_photo_module", "module IN ('learning','hobbies','social')");
 
-                            t.HasCheckConstraint("ck_profile_photo_state", "(state = 'PendingStorage' AND reason = 'None' AND NOT is_current\n  AND NOT cleanup_pending AND superseded_at_utc IS NULL\n  AND lease_token IS NOT NULL AND lease_until_utc IS NOT NULL)\nOR (state = 'Stored' AND reason = 'None'\n  AND is_current = (superseded_at_utc IS NULL) AND (NOT is_current OR NOT cleanup_pending)\n  AND lease_token IS NULL AND lease_until_utc IS NULL)\nOR (state = 'Failed' AND reason IN ('StorageFailure','UploadAbandoned','IntegrityFailure')\n  AND NOT is_current AND superseded_at_utc IS NULL\n  AND lease_token IS NULL AND lease_until_utc IS NULL)");
+                            t.HasCheckConstraint("ck_profile_photo_state", "(state = 'PendingStorage' AND reason = 'None' AND NOT is_current\r\n  AND NOT cleanup_pending AND superseded_at_utc IS NULL\r\n  AND lease_token IS NOT NULL AND lease_until_utc IS NOT NULL)\r\nOR (state = 'Stored' AND reason = 'None'\r\n  AND is_current = (superseded_at_utc IS NULL) AND (NOT is_current OR NOT cleanup_pending)\r\n  AND lease_token IS NULL AND lease_until_utc IS NULL)\r\nOR (state = 'Failed' AND reason IN ('StorageFailure','UploadAbandoned','IntegrityFailure')\r\n  AND NOT is_current AND superseded_at_utc IS NULL\r\n  AND lease_token IS NULL AND lease_until_utc IS NULL)");
 
-                            t.HasCheckConstraint("ck_profile_photo_times", "isfinite(created_at_utc) AND isfinite(updated_at_utc) AND updated_at_utc >= created_at_utc\nAND (superseded_at_utc IS NULL OR (isfinite(superseded_at_utc) AND superseded_at_utc BETWEEN created_at_utc AND updated_at_utc))\nAND (lease_until_utc IS NULL OR (isfinite(lease_until_utc) AND lease_until_utc > updated_at_utc))\nAND (lease_token IS NULL OR lease_token <> '00000000-0000-0000-0000-000000000000')");
+                            t.HasCheckConstraint("ck_profile_photo_times", "isfinite(created_at_utc) AND isfinite(updated_at_utc) AND updated_at_utc >= created_at_utc\r\nAND (superseded_at_utc IS NULL OR (isfinite(superseded_at_utc) AND superseded_at_utc BETWEEN created_at_utc AND updated_at_utc))\r\nAND (lease_until_utc IS NULL OR (isfinite(lease_until_utc) AND lease_until_utc > updated_at_utc))\r\nAND (lease_token IS NULL OR lease_token <> '00000000-0000-0000-0000-000000000000')");
+                        });
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Accounts.ModuleLifecycleAuditRow", b =>
+                {
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<string>("Module")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("module")
+                        .UseCollation("C");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
+                    b.Property<Guid>("CorrelationId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("operation")
+                        .UseCollation("C");
+
+                    b.Property<string>("PreviousState")
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("previous_state")
+                        .UseCollation("C");
+
+                    b.Property<DateTimeOffset>("RecordedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("recorded_at_utc")
+                        .HasDefaultValueSql("statement_timestamp()");
+
+                    b.Property<Guid>("RequestKey")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_key");
+
+                    b.HasKey("AccountId", "Module", "Revision");
+
+                    b.HasIndex("AccountId", "Module", "RequestKey")
+                        .IsUnique();
+
+                    b.ToTable("account_module_lifecycle_audit", "andril_identity", t =>
+                        {
+                            t.HasCheckConstraint("ck_lifecycle_audit_correlation", "correlation_id <> '00000000-0000-0000-0000-000000000000'");
+
+                            t.HasCheckConstraint("ck_lifecycle_audit_time", "isfinite(recorded_at_utc)");
+
+                            t.HasCheckConstraint("ck_lifecycle_audit_transition", "revision > 0 AND ((operation = 'activate' AND previous_state IS NULL AND revision = 1) OR (operation = 'reactivate' AND previous_state IS NOT NULL AND previous_state = 'inactive' AND revision > 1))");
+                        });
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Accounts.ModuleLifecycleReceiptRow", b =>
+                {
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<string>("Module")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("module")
+                        .UseCollation("C");
+
+                    b.Property<Guid>("RequestKey")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_key");
+
+                    b.Property<long?>("ExpectedRevision")
+                        .HasColumnType("bigint")
+                        .HasColumnName("expected_revision");
+
+                    b.Property<string>("IntentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("intent_hash")
+                        .UseCollation("C");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(10)
+                        .HasColumnType("character varying(10)")
+                        .HasColumnName("operation")
+                        .UseCollation("C");
+
+                    b.Property<DateTimeOffset>("RecordedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("recorded_at_utc")
+                        .HasDefaultValueSql("statement_timestamp()");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset>("StateChangedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("state_changed_at_utc");
+
+                    b.HasKey("AccountId", "Module", "RequestKey");
+
+                    b.ToTable("account_module_lifecycle_receipts", "andril_identity", t =>
+                        {
+                            t.HasCheckConstraint("ck_lifecycle_receipt_intent", "intent_hash COLLATE \"C\" ~ '^[0-9A-F]{64}$'");
+
+                            t.HasCheckConstraint("ck_lifecycle_receipt_key", "request_key <> '00000000-0000-0000-0000-000000000000'");
+
+                            t.HasCheckConstraint("ck_lifecycle_receipt_revision", "revision > 0 AND ((operation = 'activate' AND expected_revision IS NULL) OR (operation = 'reactivate' AND expected_revision IS NOT NULL AND expected_revision > 0 AND expected_revision < 9223372036854775807))");
+
+                            t.HasCheckConstraint("ck_lifecycle_receipt_time", "isfinite(recorded_at_utc) AND isfinite(state_changed_at_utc) AND recorded_at_utc >= state_changed_at_utc");
+                        });
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Accounts.ModuleLifecycleRow", b =>
+                {
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<string>("Module")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("module")
+                        .UseCollation("C");
+
+                    b.Property<DateTimeOffset>("FirstActivatedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("first_activated_at_utc")
+                        .HasDefaultValueSql("statement_timestamp()");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(8)
+                        .HasColumnType("character varying(8)")
+                        .HasColumnName("state")
+                        .UseCollation("C");
+
+                    b.Property<DateTimeOffset>("StateChangedAtUtc")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("state_changed_at_utc")
+                        .HasDefaultValueSql("statement_timestamp()");
+
+                    b.HasKey("AccountId", "Module")
+                        .HasName("pk_account_module_lifecycles");
+
+                    b.ToTable("account_module_lifecycles", "andril_identity", t =>
+                        {
+                            t.HasCheckConstraint("ck_account_module_lifecycles_module", "module IN ('learning', 'hobbies', 'social')");
+
+                            t.HasCheckConstraint("ck_account_module_lifecycles_revision", "revision > 0");
+
+                            t.HasCheckConstraint("ck_account_module_lifecycles_state", "state IN ('active', 'inactive')");
+
+                            t.HasCheckConstraint("ck_account_module_lifecycles_timestamps", "isfinite(first_activated_at_utc) AND isfinite(state_changed_at_utc) AND state_changed_at_utc >= first_activated_at_utc");
                         });
                 });
 
@@ -481,6 +652,34 @@ namespace Andril.Persistence.Migrations.Accounts
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_profile_photo_profile_module");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Accounts.ModuleLifecycleAuditRow", b =>
+                {
+                    b.HasOne("Andril.Persistence.Accounts.ModuleLifecycleReceiptRow", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId", "Module", "RequestKey")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Accounts.ModuleLifecycleReceiptRow", b =>
+                {
+                    b.HasOne("Andril.Persistence.Accounts.ModuleLifecycleRow", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId", "Module")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Accounts.ModuleLifecycleRow", b =>
+                {
+                    b.HasOne("Andril.Common.Accounts.Account", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_account_module_lifecycles_accounts");
                 });
 #pragma warning restore 612, 618
         }

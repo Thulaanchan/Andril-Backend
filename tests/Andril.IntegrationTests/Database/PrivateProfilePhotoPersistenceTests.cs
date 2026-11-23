@@ -29,7 +29,7 @@ public sealed class PrivateProfilePhotoPersistenceTests
     {
         using var db = new AccountsDbContext(new DbContextOptionsBuilder<AccountsDbContext>()
             .UseNpgsql("Host=localhost;Database=not_connected;Username=not_connected").Options);
-        Assert.Equal(Migration, db.Database.GetMigrations().Last());
+        Assert.Contains(Migration, db.Database.GetMigrations());
         Assert.False(db.Database.HasPendingModelChanges());
         var migrator = db.GetService<IMigrator>();
         var sql = migrator.GenerateScript("20261116000200_AddPrivateProfileFields", Migration);
