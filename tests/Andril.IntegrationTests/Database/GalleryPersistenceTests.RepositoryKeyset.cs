@@ -92,6 +92,39 @@ public sealed partial class GalleryPersistenceTests
     });
 
     [MapCapturePostgresFact]
+    public Task RepositoryKeyset_ContinuationCombinesBothScopedBranchesBeforeLookaheadTrimming() => WithDatabaseAsync(async connection =>
+    {
+        var timestamp = CreatedAt.AddMinutes(2);
+        await SeedKeysetAsync(connection, [.. KeysetRows(), KeysetMedia(10, timestamp, OtherOwner),
+            KeysetMedia(11, CreatedAt, OtherOwner), KeysetMedia(12, timestamp, module: "Learning"),
+            KeysetMedia(13, CreatedAt, module: "Social"), KeysetMedia(14, CreatedAt, module: "Dating"),
+            KeysetMedia(15, timestamp, deleted: true), KeysetMedia(16, CreatedAt, deleted: true)]);
+        var capture = new KeysetCommandCapture();
+        await using var context = CreateContext(connection, capture);
+        var repository = new GalleryRepository<HobbiesGalleryDbContext>(context);
+        var page = await repository.GetOwnerGalleryPageAsync(Owner, 3, 3, new(Owner, "Hobbies", timestamp, KeysetId(1)));
+        Assert.Equal(new[] { 2, 3, 4 }.Select(KeysetId), page.Items.Select(row => row.Id));
+        Assert.Equal(new GalleryPagePosition(Owner, "Hobbies", CreatedAt.AddMinutes(1), KeysetId(4)), page.Next);
+        Assert.All(page.Items, row =>
+        {
+            Assert.Equal(Owner, row.OwnerModuleProfileId);
+            Assert.Equal("Hobbies", row.Module);
+            Assert.False(row.IsDeleted);
+        });
+        Assert.Equal(1, capture.CommandCount);
+        AssertEfSeekSql(EfSeekShape.C, capture.Sql!);
+        Assert.Contains(capture.Parameters, parameter => Equals(parameter.Value, Owner));
+        Assert.Contains(capture.Parameters, parameter => Equals(parameter.Value, timestamp));
+        Assert.Contains(capture.Parameters, parameter => Equals(parameter.Value, KeysetId(1)));
+        Assert.Contains(capture.Parameters, parameter => Equals(parameter.Value, 4));
+        var final = await repository.GetOwnerGalleryPageAsync(Owner, 3, 3, page.Next);
+        Assert.Equal(new[] { 5, 6 }.Select(KeysetId), final.Items.Select(row => row.Id));
+        Assert.Null(final.Next);
+        Assert.Equal(2, capture.CommandCount);
+        Assert.Empty(context.ChangeTracker.Entries());
+    });
+
+    [MapCapturePostgresFact]
     public Task RepositoryKeyset_InvalidInputsAreRejectedAgainstPostgreSqlWithoutChangingRows() => WithDatabaseAsync(async connection =>
     {
         await SeedKeysetAsync(connection, KeysetRows());

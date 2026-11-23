@@ -191,7 +191,8 @@ public sealed partial class GalleryPersistenceTests
         await context.Database.OpenConnectionAsync(deadline.Token);
         var waitingPid = ((NpgsqlConnection)context.Database.GetDbConnection()).ProcessID;
         // Exercise bounded UNION branches as well as the first-page form in compatibility tests.
-        KeysetPosition? after = _experimentalEfShape is null ? null : new(CreatedAt.AddMinutes(2), KeysetId(1));
+        KeysetPosition? after = !_exerciseRepositoryKeyset && _experimentalEfShape is null
+            ? null : new(CreatedAt.AddMinutes(2), KeysetId(1));
         var pending = ReadKeysetAsync(context, Owner, 2, after, cancellation.Token);
         try
         {
@@ -224,7 +225,8 @@ public sealed partial class GalleryPersistenceTests
         await SeedKeysetAsync(connection, KeysetRows());
         await using var context = CreateContext(connection);
         await context.Database.ExecuteSqlRawAsync("ALTER TABLE andril_hobbies.\"GalleryMedia\" RENAME TO keyset_gallery_unavailable");
-        KeysetPosition? after = _experimentalEfShape is null ? null : new(CreatedAt.AddMinutes(2), KeysetId(1));
+        KeysetPosition? after = !_exerciseRepositoryKeyset && _experimentalEfShape is null
+            ? null : new(CreatedAt.AddMinutes(2), KeysetId(1));
         var error = await Assert.ThrowsAsync<PostgresException>(() => ReadKeysetAsync(context, Owner, 2, after));
         Assert.Equal(PostgresErrorCodes.UndefinedTable, error.SqlState);
     });
