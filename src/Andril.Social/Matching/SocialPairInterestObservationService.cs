@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.Social.Interfaces;
@@ -27,6 +28,10 @@ public enum SocialPairInterestObservationStatus
 /// <para>
 /// <b>Privacy and Security Safeguards:</b><br />
 /// This result conceals individual directional decisions to prevent private interest leakage.
+/// All properties are annotated with <see cref="JsonIgnoreAttribute"/> to prevent accidental
+/// transport serialization of private profile pair keys, reciprocal interest status, observation status,
+/// or mutual-match indicators. Serialization attributes are a defense-in-depth safeguard and do NOT
+/// replace authoritative backend authorization.
 /// It does NOT constitute chat/communication authorization (e.g. M4 authorization evidence),
 /// does NOT authenticate participants, and does NOT persist a mutual match entity.
 /// </para>
@@ -34,18 +39,23 @@ public enum SocialPairInterestObservationStatus
 public sealed class SocialPairInterestObservationResult : IEquatable<SocialPairInterestObservationResult>
 {
     /// <summary>Gets the canonical profile pair key.</summary>
+    [JsonIgnore]
     public SocialProfilePairKey? PairKey { get; }
 
     /// <summary>Gets the evaluated reciprocal interest status.</summary>
+    [JsonIgnore]
     public SocialReciprocalInterestStatus ReciprocalStatus { get; }
 
     /// <summary>Gets the observation operation status.</summary>
+    [JsonIgnore]
     public SocialPairInterestObservationStatus ObservationStatus { get; }
 
     /// <summary>Gets a value indicating whether the observation succeeded without scope violations.</summary>
+    [JsonIgnore]
     public bool IsValid => ObservationStatus == SocialPairInterestObservationStatus.Success;
 
     /// <summary>Gets a value indicating whether both participants have confirmed mutual interest.</summary>
+    [JsonIgnore]
     public bool IsMutualMatch => IsValid && ReciprocalStatus == SocialReciprocalInterestStatus.MutualInterestObserved;
 
     private SocialPairInterestObservationResult(
