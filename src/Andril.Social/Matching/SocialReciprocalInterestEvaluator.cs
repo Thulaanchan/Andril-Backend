@@ -78,4 +78,68 @@ public static class SocialReciprocalInterestEvaluator
 
         return SocialReciprocalInterestStatus.Indeterminate;
     }
+
+    /// <summary>
+    /// Evaluates reciprocal interest between two directional interest records within a canonical profile pair.
+    /// </summary>
+    /// <param name="interestFromFirst">The directional interest recorded by one participant, or <see langword="null"/> if unrecorded.</param>
+    /// <param name="interestFromSecond">The directional interest recorded by the other participant, or <see langword="null"/> if unrecorded.</param>
+    /// <returns>The evaluated reciprocal interest status.</returns>
+    /// <exception cref="ArgumentException">Thrown when both interest records are provided but belong to different pair keys or the same acting profile.</exception>
+    public static SocialReciprocalInterestStatus Evaluate(
+        SocialDirectionalInterest? interestFromFirst,
+        SocialDirectionalInterest? interestFromSecond)
+    {
+        if (interestFromFirst is null && interestFromSecond is null)
+        {
+            return SocialReciprocalInterestStatus.Indeterminate;
+        }
+
+        if (interestFromFirst is not null && interestFromSecond is not null)
+        {
+            if (!interestFromFirst.PairKey.Equals(interestFromSecond.PairKey))
+            {
+                throw new ArgumentException("Directional interests must belong to the same canonical profile pair.", nameof(interestFromSecond));
+            }
+
+            if (interestFromFirst.ActingProfileId == interestFromSecond.ActingProfileId)
+            {
+                throw new ArgumentException("Directional interests must originate from distinct participants in the pair.", nameof(interestFromSecond));
+            }
+        }
+
+        bool? firstSignal = interestFromFirst?.IsPositive;
+        bool? secondSignal = interestFromSecond?.IsPositive;
+
+        return Evaluate(firstSignal, secondSignal);
+    }
+
+    /// <summary>
+    /// Observes the reciprocal interest outcome for a canonical profile pair given optional directional interest records.
+    /// </summary>
+    /// <param name="pairKey">The canonical profile pair key. Must not be null.</param>
+    /// <param name="interestFromFirst">The directional interest recorded by one participant, or <see langword="null"/> if unrecorded.</param>
+    /// <param name="interestFromSecond">The directional interest recorded by the other participant, or <see langword="null"/> if unrecorded.</param>
+    /// <returns>The evaluated reciprocal interest status.</returns>
+    /// <exception cref="ArgumentNullException">Thrown when <paramref name="pairKey"/> is null.</exception>
+    /// <exception cref="ArgumentException">Thrown when an interest record does not match <paramref name="pairKey"/>.</exception>
+    public static SocialReciprocalInterestStatus Observe(
+        SocialProfilePairKey pairKey,
+        SocialDirectionalInterest? interestFromFirst,
+        SocialDirectionalInterest? interestFromSecond)
+    {
+        ArgumentNullException.ThrowIfNull(pairKey);
+
+        if (interestFromFirst is not null && !pairKey.Equals(interestFromFirst.PairKey))
+        {
+            throw new ArgumentException("First directional interest must belong to the specified pair key.", nameof(interestFromFirst));
+        }
+
+        if (interestFromSecond is not null && !pairKey.Equals(interestFromSecond.PairKey))
+        {
+            throw new ArgumentException("Second directional interest must belong to the specified pair key.", nameof(interestFromSecond));
+        }
+
+        return Evaluate(interestFromFirst, interestFromSecond);
+    }
 }
