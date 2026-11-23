@@ -4,6 +4,8 @@ using Andril.Common.Accounts.Policies;
 using ModuleNames = Andril.Common.Accounts.StarterModules.StarterModules;
 
 [assembly: InternalsVisibleTo("Andril.UnitTests")]
+[assembly: InternalsVisibleTo("Andril.Persistence")]
+[assembly: InternalsVisibleTo("Andril.IntegrationTests")]
 
 namespace Andril.Common.Accounts.Lifecycle;
 
@@ -46,6 +48,10 @@ internal sealed class InactiveModuleMembership(ModuleMembershipScope scope, long
 internal sealed class ActiveModuleMembership : ModuleMembership
 {
     private ActiveModuleMembership(ModuleMembershipScope scope, long revision) : base(scope, revision) { }
+
+    // Persistence materialization only; this does not authorize a new transition.
+    internal static ActiveModuleMembership Restore(ModuleMembershipScope scope, long revision) => revision > 0
+        ? new(scope, revision) : throw new ArgumentOutOfRangeException(nameof(revision));
 
     internal static ActiveModuleMembership Activate(ModuleMembershipScope scope, ModuleActivationEvidence evidence,
         ModuleMembership? current = null)

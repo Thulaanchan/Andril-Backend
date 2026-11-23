@@ -4,7 +4,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace Andril.Persistence.Accounts;
 
-// Offline mapping only. AccountsDbContext and its migration snapshot exclude this type.
+// Schema integration does not register a runtime writer or apply a migration at startup.
 internal sealed class ModuleLifecycleRow
 {
     public Guid AccountId { get; private set; }
@@ -35,8 +35,8 @@ internal sealed class ModuleLifecycleConfiguration : IEntityTypeConfiguration<Mo
         builder.Property(row => row.State).HasColumnName("state").HasMaxLength(8).UseCollation("C").IsRequired();
         builder.Property(row => row.Revision).HasColumnName("revision").HasColumnType("bigint").IsConcurrencyToken();
 
-        // Defaults share the insert statement's timestamp. A future approved writer
-        // must explicitly set state_changed_at_utc from the database on a real change.
+        // Defaults share the insert statement's timestamp. The controlled writer
+        // supplies a database clock sample for each real state change.
         builder.Property(row => row.FirstActivatedAtUtc).HasColumnName("first_activated_at_utc")
             .HasColumnType("timestamp with time zone").HasDefaultValueSql("statement_timestamp()");
         builder.Property(row => row.StateChangedAtUtc).HasColumnName("state_changed_at_utc")

@@ -75,7 +75,7 @@ public sealed class ModuleLifecycleMappingTests
     }
 
     [Fact]
-    public void ProductionAccountsModelAndMigrationSnapshotExcludeTheOfflineMapping()
+    public void AccountsModelAndMigrationSnapshotIncludeTheAuthorizedMappingWithoutConnecting()
     {
         var guard = new RejectConnections();
         using var context = new AccountsDbContext(new DbContextOptionsBuilder<AccountsDbContext>()
@@ -83,8 +83,8 @@ public sealed class ModuleLifecycleMappingTests
                 options => options.MigrationsHistoryTable("__EFMigrationsHistory", "andril_identity"))
             .AddInterceptors(guard).Options);
 
-        Assert.Null(context.Model.FindEntityType(typeof(ModuleLifecycleRow)));
-        Assert.DoesNotContain(context.Model.GetEntityTypes(),
+        Assert.NotNull(context.Model.FindEntityType(typeof(ModuleLifecycleRow)));
+        Assert.Contains(context.Model.GetEntityTypes(),
             entity => entity.GetTableName() == "account_module_lifecycles");
         Assert.False(context.Database.HasPendingModelChanges());
         Assert.Equal(0, guard.Attempts);
