@@ -1,10 +1,10 @@
-# Feature 09 — private module profile foundation (PARTIAL / contracts PENDING)
+# Feature 09 — private module profiles and completion boundaries
 
-## Authorized continuation — current behavior
+## Current profile behavior
 
-This section supersedes the historical foundation report below. Existing work was
-extended in place under explicit authorization to continue with the dirty tree.
-F08 commit `7a1a5dc` is in local ancestry. Canonical module identifiers are unchanged.
+This section describes the current contract. The earlier foundation report below
+records the original scope and verification. Canonical module identifiers remain
+`learning`, `hobbies` and `social` (Dating).
 
 Draft profiles now have independently scoped display name, bio and private
 visibility. No values are copied between modules. `PUT /api/v1/account/profiles/{module}`
@@ -22,57 +22,57 @@ The stored name is `Alice`; canonical comparison is `alice`. Only ASCII A–Z is
 case-folded. Unicode letters are not folded or normalized. Both approved rules
 are enforced: UNIQUE(module, canonical_display_name) and
 UNIQUE(account_id, canonical_display_name). Different accounts can reuse a name
-in different modules. Names cannot be blank. Name format/length/reserved words
-are still PENDING: these are drafts, not approved complete profiles. The 16 KiB
-PUT transport limit is a resource guard, not an approved display-name length.
-Other visibility modes remain disabled. Clients must render bio/name as plain text.
+in different modules. The current validator requires 3–30 graphemes and rejects
+reserved names. The 16 KiB PUT transport limit is a separate resource guard.
+Only private visibility is supported. Clients must render bio/name as plain text.
 
 Additive migration `20261116000200_AddPrivateProfileFields` adds nullable draft
 fields, private visibility, generated canonical name with C collation, exact
 Unicode-whitespace trim check and both unique indexes. Database-generated
 canonical values cannot be overridden by clients. Existing shell rows remain
 valid with null names. Repository prechecks give safe 409 conflicts; database
-constraints close concurrent claim races. Previous migrations, including the
-initial uncommitted F09 migration, are preserved unchanged. No migration applied.
+constraints close concurrent claim races.
 
-### PHOTO-01 boundary (not live photo infrastructure)
+### PHOTO-01 boundary
 
-`ProfilePhotos.cs` defines approved-provider interfaces for byte limits, safe
-decoding/re-encoding, clear-face assessment and durable private scoped storage.
-The orchestrator bounds bytes, rejects empty input, calls the safety inspector,
-requires sanitized JPEG/PNG output, rechecks owner prerequisites after expensive
-work, and processes PendingValidation / PendingReview / Rejected / Approved states.
-Photo status contains only upload ID and safe state/reason, never storage keys,
-public URLs, biometric information or another module's profile ID.
+The implementation includes scoped upload, status, current-photo and content
+endpoints, a durable PostgreSQL photo repository, and a backend-only Supabase
+Storage adapter. Migration `20261120152336_AddPrivateProfilePhotos` adds photo
+metadata and its composite profile/module foreign key. Uploads are keyed by a
+profile-scoped request UUID, and private content is read through the owner-scoped
+API. Status responses omit storage keys, public URLs and other module identities.
 
 * POST `/api/v1/account/profiles/{module}/photos/{requestId}` accepts
-  `application/octet-stream`; the nonempty UUID is a scoped idempotency key.
+  `application/octet-stream` with a nonempty, profile-scoped request UUID.
 * GET `/api/v1/account/profiles/{module}/photos/{uploadId}` reads scoped status.
-* Both currently return safe 503 after authorization because production providers
-  are deliberately unavailable. No upload bytes are read, transmitted or stored.
+* GET `/api/v1/account/profiles/{module}/photos/current` reads the current status.
+* GET `/api/v1/account/profiles/{module}/photos/{uploadId}/content` returns private JPEG content.
 
-No approved decoder, face provider, private storage adapter, durable upload-state
-repository, review queue, reviewer authorization, retention policy or upload limits
-exist. These are explicit infrastructure dependencies, not implemented services.
-The store contract requires atomic quarantine + pending metadata, idempotency
-with content-conflict detection, compare-and-set terminal transitions and atomic
-human-review queuing. No media delivery endpoint exists. No photo reference is
-assigned to a profile until the approved storage/association integration is built.
-This prevents rejected or unreviewed bytes from becoming a public profile photo.
+Offline tests with synthetic processing and Storage cover scope isolation,
+retries, publication and cleanup. Disposable PostgreSQL tests cover persistence
+and proposed restricted grants. This evidence leaves hosted Storage, live image
+processing and deployed permissions unverified. The shipped API wiring uses
+an unavailable image inspector and the production feature remains inactive.
+Deployment requires separately approved processing, private Storage, runtime
+permissions and cleanup verification. See the [photo deployment notes](M2_PHASE02A_PHOTO_DEPLOYMENT.md).
 
-Controlled mocks demonstrate accepted clear-photo decisions, all requested safe
-rejection reasons, uncertain-to-review behavior, invalid uploads, missing dependencies,
-scope isolation and retries. They do NOT detect actual faces or validate real images.
-No provider, thresholds, accuracy score or biometric recognition was invented.
-Accessories/headwear/disability/skin tone/appearance are not rejection reasons.
-Automated validation is not claimed perfectly accurate. Approval must include
-provider quality/fairness testing and deployment of private review infrastructure.
+### Onboarding and protected access
 
-F08 completion and module-home authorization remain false, including after draft
-edits or mock-approved photos. Whether a photo is mandatory and all required
-completion fields remain PENDING. Other members' protected endpoints were not changed.
+The owner-scoped completion read rechecks confirmed account identity, current
+Terms and Privacy receipts, eligible starter membership and, for Social, age
+18+ and explicit opt-in. Under `AND-M2-SOC-ONB-DEC-20261121-01`, a valid,
+persisted and canonically unique name on the owned Social profile completes
+private-profile setup. Biography, photo, interests, preferences and personality
+questionnaire are optional for this gate. Decision `AND-M2-SOC-ONB-DEC-20261121-02`
+also allows overall onboarding completion. See the [Feature 08 status contract](M2_FEATURE08.md).
 
-### Continuation files
+The profile DTO still describes a draft. Clients use onboarding status for
+completion, including the legacy `profile_setup` next step after Social setup
+completes. Learning and Hobbies shells await authoritative module-owned evidence.
+`IPrivateModuleAccess` remains a separate fail-closed boundary for protected entry,
+and onboarding status keeps `moduleHomeAuthorized` false.
+
+### Historical continuation files
 
 The 19 foundation files listed below remain present. Four additional files:
 
@@ -90,7 +90,7 @@ All other foundation files remain intact. Final status: 7 tracked modifications,
 16 untracked files (23 total), all uncommitted on Member-2 at unchanged HEAD
 `66d40f0bef0a15e5eb49568eb106e504401350ff`.
 
-## Historical foundation report (superseded where noted above)
+## Historical foundation report (November 2026)
 
 Continuation validation: offline local-cache restore passed; final build has zero
 warnings/errors after correcting one xUnit analyzer warning. Standard solution
@@ -103,9 +103,9 @@ RLS role permissions remain unverified. The mocks do not prove real face detecti
 image safety, durable media storage or human review. `git diff --check` passed.
 No dependency packages downloaded, remote operations, commits or deployments.
 
-The following sections describe the earlier foundation, not current validation totals.
+The following sections record the original foundation scope, pending decisions and validation. Use the current sections above for Social completion, field updates and photo status.
 
-## Scope and approved decisions
+### Scope and approved decisions
 
 Canonical account identifiers remain `learning`, `hobbies`, `social`. There is no
 approved Dating rename in this checkout. No other member's contracts were renamed.
@@ -126,7 +126,7 @@ as completed profiles or completed onboarding. Field update endpoints and
 display-name uniqueness constraints cannot safely be implemented until approved
 rules are provided. There is no production completion bypass or configurable flag.
 
-## Architecture and persistence
+### Architecture and persistence
 
 `PrivateModuleProfile` is a private identity root with an independent random UUID,
 internal account FK, canonical module and immutable UTC creation timestamp.
@@ -154,7 +154,7 @@ Membership is checked in both repository and service; the DB FK enforces account
 ownership, not membership eligibility. A privileged SQL writer must not be treated
 as a client API. No partial user field updates exist yet.
 
-## APIs
+### APIs
 
 Both routes require a valid JWT AND the existing fresh Supabase confirmed-user
 check. They inherit account no-store responses and per-subject throttling.
@@ -189,7 +189,7 @@ missing/wrong membership, demographics, current policies or age eligibility: 403
 Missing account/profile: 404. Throttling: 429. Missing policy configuration, identity
 dependency or store: 503. POST body limit: 1024 bytes. PATCH/PUT are unsupported.
 
-## F08 integration and protected access
+### F08 integration and protected access
 
 Before F09: F08 always reported `private_profile_infrastructure` at profile_setup.
 After F09: the production DI wiring uses an owner-scoped completion reader that
@@ -209,7 +209,7 @@ owners must integrate their own protected access checks after approval; routing
 responses must never grant module access. This change does not certify those
 existing endpoints as protected by F09.
 
-## Required follow-up and ownership
+### Required follow-up and ownership
 
 Product/spec owner with M1 (Learning), M3 (Hobbies), M5 (Social): supply approved
 required/optional fields, display-name uniqueness scope/case/Unicode/rename rules,
@@ -224,7 +224,7 @@ F08 progression only when all prerequisites and module permissions pass.
 Until then successful-completion and display-name uniqueness tests are blocked by
 missing requirements, not passed or replaced by invented assertions.
 
-## Validation
+### Validation
 
 Offline restore/build and standard solution tests are run for this change.
 New tests cover age boundaries, identity/ownership, cross-module denial, retries,
@@ -261,7 +261,7 @@ their product contracts are absent. YAML parser verification could not run becau
 the local Python environment lacks PyYAML; no dependency was downloaded. OpenAPI
 edits were reviewed as text. `git diff --check` passed.
 
-## Exact changed-file manifest
+### Exact changed-file manifest
 
 Created:
 
