@@ -6,14 +6,12 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 namespace Andril.Persistence.Configurations;
 
 /// <summary>
-/// Proposed EF Core configuration for module-scoped
+/// EF Core configuration for private, module-scoped
 /// ANDRIL notification persistence.
 ///
-/// Not registered with a DbContext yet.
-/// No database migration is applied by this class.
-///
-/// Production use requires M2 identity authorization,
-/// approved database schema, and security review.
+/// Offline metadata configuration only.
+/// Production database integration requires separate
+/// M2 authorization and M6 security approval.
 /// </summary>
 internal sealed class NotificationPersistenceRecordConfiguration
     : IEntityTypeConfiguration<NotificationPersistenceRecord>
@@ -21,48 +19,73 @@ internal sealed class NotificationPersistenceRecordConfiguration
     public void Configure(
         EntityTypeBuilder<NotificationPersistenceRecord> builder)
     {
+        // Explicit Notifications table and schema.
+        builder.ToTable(
+            "notifications",
+            "andril_notifications");
+
         // Application-generated notification identity.
-        builder.HasKey(record => record.Id);
+        builder.HasKey(record => record.Id)
+            .HasName("pk_notifications");
 
         builder.Property(record => record.Id)
+            .HasColumnName("id")
+            .HasColumnType("uuid")
             .ValueGeneratedNever();
 
-        // Private recipient profile identifier.
+        // Private recipient module-profile identifier.
         builder.Property(record =>
                 record.RecipientModuleProfileId)
+            .HasColumnName("recipient_module_profile_id")
+            .HasColumnType("uuid")
             .IsRequired();
 
-        // Learning, Hobbies, or Social.
+        // Canonical module identifier:
+        // learning, hobbies, social.
         builder.Property(record => record.Module)
+            .HasColumnName("module")
+            .HasColumnType("character varying(16)")
             .IsRequired();
 
         // Notification classification and display content.
         builder.Property(record => record.Type)
+            .HasColumnName("type")
+            .HasColumnType("text")
             .IsRequired();
 
         builder.Property(record => record.Title)
+            .HasColumnName("title")
+            .HasColumnType("text")
             .IsRequired();
 
         builder.Property(record => record.Preview)
+            .HasColumnName("preview")
+            .HasColumnType("text")
             .IsRequired(false);
 
-        // Notification lifecycle timestamps.
+        // Notification lifecycle timestamps (UTC).
         builder.Property(record => record.CreatedAtUtc)
+            .HasColumnName("created_at_utc")
+            .HasColumnType("timestamp with time zone")
             .IsRequired();
 
         builder.Property(record => record.ReadAtUtc)
+            .HasColumnName("read_at_utc")
+            .HasColumnType("timestamp with time zone")
             .IsRequired(false);
 
-        // Calculated from ReadAtUtc; not a storage column.
+        // Computed property; never persisted.
         builder.Ignore(record => record.IsRead);
 
-        // Proposed index for module-profile-scoped queries.
+        // Existing module-profile query index.
         builder.HasIndex(record => new
         {
             record.RecipientModuleProfileId,
             record.Module,
             record.CreatedAtUtc,
             record.Id
-        });
+        })
+        .HasDatabaseName(
+            "ix_notifications_profile_module_created_id");
     }
 }
