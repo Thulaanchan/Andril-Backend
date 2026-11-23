@@ -1,3 +1,4 @@
+using Fixture = Andril.IntegrationTests.Communication.Chat.ChatSyntheticAuthorizationFixture;
 using System.Reflection;
 using Andril.API.Extensions;
 using Andril.Communication.Chat;
@@ -345,93 +346,5 @@ public sealed class ChatActorContextIsolationContractTests
         Assert.Equal(typeof(ChatActorContextIsolationContractTests).Assembly, typeof(ChatActorContextIsolationContract).Assembly);
     }
 
-    private static void Set(object evidence, string property, object? value) => evidence.GetType()
-        .GetProperty(property, BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(evidence, value);
-
-    /// <summary>Test adapter for the existing internal reader, not a replacement authorization contract.</summary>
-    public class SyntheticEvidenceProxy : DispatchProxy
-    {
-        public Func<MethodInfo, object?[]?, object?>? Handler { get; set; }
-        protected override object? Invoke(MethodInfo? targetMethod, object?[]? args) => Handler!(targetMethod!, args);
-    }
-
-    private sealed class SyntheticUser : ICurrentUser
-    {
-        public Guid? UserId { get; set; } = Subject;
-        public bool IsAuthenticated { get; set; } = true;
-    }
-
-    private sealed class FixedClock : TimeProvider
-    {
-        public override DateTimeOffset GetUtcNow() => Fixture.Now;
-    }
-
-    private sealed class Fixture
-    {
-        // Explicit synthetic evidence instants only; no production TTL or tolerance is proposed.
-        internal static readonly DateTimeOffset Now = new(2030, 1, 1, 0, 0, 0, TimeSpan.Zero);
-        private static readonly DateTimeOffset Expiry = new(2030, 1, 1, 0, 0, 1, TimeSpan.Zero);
-        private static readonly Type EvidenceType = typeof(IChatAccessAuthorizer).Assembly.GetType("Andril.Communication.Chat.ChatConversationAccessEvidence", true)!;
-        internal SyntheticUser User { get; } = new();
-        internal Guid AccountId { get; set; } = Account;
-        internal IChatAccessAuthorizer Policy { get; }
-        internal int Reads { get; private set; }
-        internal object? LastEvidence { get; private set; }
-        internal Func<object, object?> Transform { get; set; } = evidence => evidence;
-        internal TaskCompletionSource<object?>? HoldNext { get; set; }
-
-        internal Fixture(bool missingReader = false, bool missingUser = false)
-        {
-            var assembly = typeof(IChatAccessAuthorizer).Assembly;
-            var readerType = assembly.GetType("Andril.Communication.Interfaces.IChatConversationAccessEvidenceReader", true)!;
-            var proxy = DispatchProxy.Create(readerType, typeof(SyntheticEvidenceProxy));
-            ((SyntheticEvidenceProxy)proxy).Handler = (_, args) => Read(args!);
-            var policyType = assembly.GetType("Andril.Communication.Chat.ChatConversationAccessPolicy", true)!;
-            Policy = Assert.IsAssignableFrom<IChatAccessAuthorizer>(Activator.CreateInstance(policyType,
-                BindingFlags.Instance | BindingFlags.NonPublic, binder: null,
-                args: [missingUser ? null : User, missingReader ? null : proxy, new FixedClock()], culture: null));
-        }
-
-        internal ChatActorContextIsolationContract Slot() => new(Policy, User);
-        internal ChatConversation ConversationFor(ChatModule module, Guid conversation) => ChatConversation.Create(module, conversation,
-            [ChatParticipantReference.Create(module, AccountId, Profile(module, AccountId))]);
-
-        internal static Guid Profile(ChatModule module, Guid account) => (account == Account ? (int)module : (int)module + 3) switch
-        {
-            1 => Guid.Parse("40000000-0000-4000-8000-000000000001"),
-            2 => Guid.Parse("40000000-0000-4000-8000-000000000002"),
-            3 => Guid.Parse("40000000-0000-4000-8000-000000000003"),
-            4 => Guid.Parse("40000000-0000-4000-8000-000000000004"),
-            5 => Guid.Parse("40000000-0000-4000-8000-000000000005"),
-            _ => Guid.Parse("40000000-0000-4000-8000-000000000006")
-        };
-
-        private object Read(object?[] args)
-        {
-            Reads++;
-            var module = (ChatModule)args[1]!;
-            var evidence = Activator.CreateInstance(EvidenceType, nonPublic: true)!;
-            Set(evidence, "RequestId", args[3]);
-            Set(evidence, "AccountSubjectId", args[0]);
-            Set(evidence, "AccountId", AccountId);
-            Set(evidence, "ProfileAccountId", AccountId);
-            Set(evidence, "ModuleProfileId", Profile(module, AccountId));
-            Set(evidence, "ProfileModule", module);
-            Set(evidence, "Conversation", ConversationFor(module, (Guid)args[2]!));
-            Set(evidence, "ObservedAtUtc", Now);
-            Set(evidence, "ValidUntilUtc", Expiry);
-            foreach (var flag in new[] { "IsCurrent", "IsProfileActive", "IsProfileEligible", "IsParticipationAuthorized",
-                "IsModuleCommunicationEligible", "IsAdult", "HasSocialOptIn", "HasMutualMatch" }) Set(evidence, flag, true);
-            Set(evidence, "IsBlocked", false);
-            Set(evidence, "IsRevoked", false);
-            LastEvidence = evidence;
-            var held = HoldNext;
-            HoldNext = null;
-            var task = held?.Task ?? Task.FromResult(Transform(evidence));
-            return typeof(Fixture).GetMethod(nameof(Bridge), BindingFlags.Static | BindingFlags.NonPublic)!
-                .MakeGenericMethod(EvidenceType).Invoke(null, [task])!;
-        }
-
-        private static async Task<T?> Bridge<T>(Task<object?> task) where T : class => (T?)await task;
-    }
+    private static void Set(object evidence, string property, object? value) => Fixture.Set(evidence, property, value);
 }
