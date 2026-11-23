@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using Andril.Communication.Chat;
 using Andril.Communication.Interfaces;
@@ -17,6 +18,7 @@ internal sealed class ChatSyntheticAuthorizationFixture : IDisposable
 {
     private static readonly Guid Account = Guid.Parse("20000000-0000-4000-8000-000000000001");
     private SyntheticIdentity? fixedIdentity;
+    private readonly ConcurrentDictionary<Guid, ChatConversation> conversations = new();
     private bool disposed;
 
     // Explicit synthetic evidence instants only; no production TTL or tolerance is proposed.
@@ -49,7 +51,7 @@ internal sealed class ChatSyntheticAuthorizationFixture : IDisposable
     }
 
     internal ChatActorContextIsolationContract Slot() => new(Policy, User);
-    internal ChatConversation ConversationFor(ChatModule module, Guid conversation) => ChatConversation.Create(module, conversation,
+    internal ChatConversation ConversationFor(ChatModule module, Guid conversation) => conversations.TryGetValue(conversation, out var registered) ? registered : ChatConversation.Create(module, conversation,
         [ChatParticipantReference.Create(module, fixedIdentity?.Account ?? AccountId, fixedIdentity?.Profile ?? Profile(module, AccountId))]);
 
     // Legacy actor-slot cases deliberately exercise changing module/account pairs. Hosts never use this mapping.
@@ -67,7 +69,7 @@ internal sealed class ChatSyntheticAuthorizationFixture : IDisposable
     {
         if (disposed || (fixedIdentity is not null &&
             (args[0] is not Guid subject || subject != fixedIdentity.Subject ||
-             (ChatModule)args[1]! != fixedIdentity.Module || (Guid)args[2]! != SyntheticIdentity.Conversation)))
+             (ChatModule)args[1]! != fixedIdentity.Module || !conversations.ContainsKey((Guid)args[2]!))))
             return BridgeResult(Task.FromResult<object?>(null));
         Reads++;
         var module = (ChatModule)args[1]!;
@@ -102,7 +104,17 @@ internal sealed class ChatSyntheticAuthorizationFixture : IDisposable
         var fixture = new ChatSyntheticAuthorizationFixture { fixedIdentity = identity };
         fixture.User.UserId = identity?.Subject;
         fixture.User.IsAuthenticated = identity is not null;
+        if (identity is not null) fixture.RegisterConversation(fixture.ConversationFor(identity.Module, SyntheticIdentity.Conversation));
         return fixture;
+    }
+
+    // Explicit fixture-owned snapshots only; registration is not authorization. The real policy
+    // still verifies module, owned profile, participation and fresh eligibility on every read.
+    internal void RegisterConversation(ChatConversation conversation)
+    {
+        if (disposed || fixedIdentity is null || conversation.Module != fixedIdentity.Module)
+            throw new InvalidOperationException("Invalid synthetic conversation registration.");
+        conversations[conversation.ConversationId] = conversation;
     }
 
     internal void Block() => SetFlag("IsBlocked", true);
@@ -130,6 +142,7 @@ internal sealed class ChatSyntheticAuthorizationFixture : IDisposable
         User.UserId = null;
         User.IsAuthenticated = false;
         LastEvidence = null;
+        conversations.Clear();
         HoldNext?.TrySetCanceled();
         HoldNext = null;
         Transform = _ => null;

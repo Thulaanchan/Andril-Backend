@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -16,9 +17,9 @@ using Microsoft.Extensions.Options;
 namespace Andril.IntegrationTests.Communication.Chat.Prototype;
 
 /// <summary>
-/// Standalone test assembly host. No Program, configuration sources, controllers, routes,
+/// Standalone test assembly host. No Program, production configuration sources, controllers,
 /// sockets, real identity, persistence or delivery services. The probe is an in-process
-/// HttpContext feature, impossible to select through HTTP; every HTTP response is empty 404.
+/// HttpContext feature, impossible to select through HTTP; only four synthetic routes are mapped.
 /// </summary>
 internal sealed class ChatPrototypeTestHost : IAsyncDisposable
 {
@@ -28,12 +29,14 @@ internal sealed class ChatPrototypeTestHost : IAsyncDisposable
     internal ChatSyntheticAuthorizationFixture Evidence { get; }
     internal SyntheticIdentity? Identity { get; }
     internal HttpClient Client { get; }
+    internal ChatPrototypeScenario Scenario { get; }
     internal IReadOnlyList<ServiceDescriptor> Registrations { get; }
     internal TestServer Server => host.GetTestServer();
     internal IServiceProvider Services => host.Services;
 
-    private ChatPrototypeTestHost(IHost host, ChatSyntheticAuthorizationFixture fixture, SyntheticIdentity? identity, IReadOnlyList<ServiceDescriptor> registrations)
+    private ChatPrototypeTestHost(IHost host, ChatSyntheticAuthorizationFixture fixture, SyntheticIdentity? identity, IReadOnlyList<ServiceDescriptor> registrations, ChatPrototypeScenario scenario)
     {
+        Scenario = scenario;
         Registrations = registrations;
         this.host = host;
         Evidence = fixture;
@@ -46,10 +49,12 @@ internal sealed class ChatPrototypeTestHost : IAsyncDisposable
     {
         var identity = SyntheticIdentity.Select(actor);
         var fixture = ChatSyntheticAuthorizationFixture.ForIdentity(identity);
+        ChatPrototypeScenario? scenario = null;
         IHost? built = null;
         ServiceDescriptor[] registrations = [];
         try
         {
+            scenario = new ChatPrototypeScenario(identity, fixture);
             // Deliberately not CreateDefaultBuilder: no environment/appsettings production configuration.
             built = new HostBuilder().ConfigureLogging(logging => logging.ClearProviders())
                 .ConfigureWebHost(web => web.UseTestServer().ConfigureServices(services =>
@@ -61,11 +66,29 @@ internal sealed class ChatPrototypeTestHost : IAsyncDisposable
                     services.AddScoped<ICurrentUser, HttpCurrentUser>();
                     services.AddScoped<IChatAccessAuthorizer>(provider => fixture.CreatePolicy(provider.GetRequiredService<ICurrentUser>()));
                     services.AddScoped<RequestActorState>();
+                    services.AddRouting();
+                    services.AddSingleton(scenario);
+                    services.AddScoped<ChatPrototypeApplicationService>();
                     configureTestServices?.Invoke(services);
                     registrations = services.ToArray();
                 }).Configure(app =>
                 {
+                    app.Use(async (context, next) =>
+                    {
+                        if (context.Request.Path.StartsWithSegments("/__test/chat"))
+                            context.Response.Headers.CacheControl = "no-store";
+                        try { await next(context); }
+                        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { throw; }
+                        catch (Exception)
+                        {
+                            context.Response.Clear();
+                            context.Response.Headers.CacheControl = "no-store";
+                            await ChatPrototypeApplicationService.Error(context, 500);
+                        }
+                    });
+                    app.UseRouting();
                     app.UseAuthentication();
+                    app.UseEndpoints(ChatPrototypeApplicationService.MapRoutes);
                     app.Run(async context =>
                     {
                         var probe = context.Features.Get<InMemoryProbe>();
@@ -74,12 +97,13 @@ internal sealed class ChatPrototypeTestHost : IAsyncDisposable
                     });
                 })).Build();
             await built.StartAsync();
-            return new ChatPrototypeTestHost(built, fixture, identity, registrations);
+            return new ChatPrototypeTestHost(built, fixture, identity, registrations, scenario);
         }
         catch
         {
             built?.Dispose();
             fixture.Dispose();
+            scenario?.Dispose();
             // Do not propagate private configuration/dependency details.
             throw new InvalidOperationException("Synthetic Chat host setup failed.");
         }
@@ -115,6 +139,7 @@ internal sealed class ChatPrototypeTestHost : IAsyncDisposable
         {
             host.Dispose();
             Evidence.Dispose();
+            Scenario.Dispose();
         }
     }
 
