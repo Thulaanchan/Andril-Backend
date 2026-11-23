@@ -14,7 +14,7 @@
 This document outlines the proposed backend persistence requirements, domain entity structures, and interface specifications for integrating the **SOC-01 Personality Questionnaire** into relational database persistence.
 
 ### Strict Architectural Boundaries:
-- **M5 Domain & API Scope:** M5 owns domain contracts, validators (`QuestionnaireValidator`, `PersonalityQuestionnaireV1Definition`), API controllers, contract parsers (`SocialQuestionnaireSubmissionBodyParser`), and internal domain entities. M5 produces **zero database migrations, zero DbContext definitions, and zero direct SQL executions**.
+- **M5 Domain & API Scope:** M5 owns domain contracts, validators (`QuestionnaireValidator`, `QuestionnaireV1Definition`), API controllers, contract parsers (`SocialQuestionnaireSubmissionBodyParser`), and internal domain entities. M5 produces **zero database migrations, zero DbContext definitions, and zero direct SQL executions**.
 - **M2 Database Scope:** M2 owns all relational database infrastructure, PostgreSQL schemas, Supabase configurations, EF Core `DbContext` architectures (e.g., within `AccountsDbContext` or a dedicated context), database migrations, and concrete repository implementations.
 - **M6 Security Sign-off:** M6 owns access boundary validation, privacy audit criteria, and verification of zero data-leakage across modules.
 
