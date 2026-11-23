@@ -70,8 +70,13 @@ public sealed class GalleryRepository<TDbContext>
             // Preserve the database-returned UTC microsecond position; never round client input.
             var timestamp = after.Timestamp;
             var id = after.Id;
-            query = query.Where(media => media.CreatedAtUtc < timestamp
-                || (media.CreatedAtUtc == timestamp && media.Id.CompareTo(id) > 0));
+            var fetch = checked(pageSize + 1);
+            var sameTimestamp = query.Where(media => media.CreatedAtUtc == timestamp && media.Id.CompareTo(id) > 0)
+                .OrderByDescending(media => media.CreatedAtUtc).ThenBy(media => media.Id).Take(fetch);
+            var older = query.Where(media => media.CreatedAtUtc < timestamp)
+                .OrderByDescending(media => media.CreatedAtUtc).ThenBy(media => media.Id).Take(fetch);
+            // Disjoint branches retain every possible combined top-fetch row; Concat stays server-side.
+            query = sameTimestamp.Concat(older);
         }
         var fetched = await query.OrderByDescending(media => media.CreatedAtUtc).ThenBy(media => media.Id)
             .Take(checked(pageSize + 1)).ToListAsync(cancellationToken);

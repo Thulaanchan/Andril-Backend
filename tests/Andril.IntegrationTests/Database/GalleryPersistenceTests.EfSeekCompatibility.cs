@@ -232,6 +232,9 @@ public sealed partial class GalleryPersistenceTests
         foreach (var after in positions)
         {
             var baseline = await new GalleryRepository<HobbiesGalleryDbContext>(reference).GetOwnerGalleryPageAsync(Owner, 50, 64, after);
+            var previous = await ReadEfSeekAsync(reference, EfSeekShape.A, Owner, 50, 64, after);
+            Assert.Equal(previous.Items.Select(row => row.Id), baseline.Items.Select(row => row.Id));
+            Assert.Equal(previous.Next, baseline.Next);
             foreach (var shape in new[] { EfSeekShape.B, EfSeekShape.C })
             {
                 var capture = new KeysetCommandCapture();
@@ -279,6 +282,8 @@ public sealed partial class GalleryPersistenceTests
             Assert.Contains("UNION ALL", sql);
             Assert.Equal(3, sql.Split("LIMIT", StringSplitOptions.None).Length - 1);
             Assert.Equal(2, sql.Split("'Hobbies'", StringSplitOptions.None).Length - 1);
+            Assert.Equal(2, sql.Split("\"OwnerModuleProfileId\" = @", StringSplitOptions.None).Length - 1);
+            Assert.Equal(2, sql.Split("NOT (", StringSplitOptions.None).Length - 1);
         }
     }
 
@@ -286,14 +291,18 @@ public sealed partial class GalleryPersistenceTests
     public Task EfSeek_CancellationAfterReaderCreationDoesNotReturnASuccessfulPage() => WithDatabaseAsync(async connection =>
     {
         await SeedKeysetAsync(connection, KeysetRows());
-        foreach (var shape in new[] { EfSeekShape.B, EfSeekShape.C })
+        // Null selects the real repository; keep both experimental candidates covered too.
+        foreach (var shape in new EfSeekShape?[] { null, EfSeekShape.B, EfSeekShape.C })
         {
             using var cancellation = new CancellationTokenSource();
             var gate = new CancelEfSeekReader(cancellation);
             await using var context = CreateContext(connection, gate);
             var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
-                ReadEfSeekAsync(context, shape, Owner, 2, 3,
-                    new(Owner, "Hobbies", CreatedAt.AddMinutes(2), KeysetId(1)), cancellation.Token));
+                shape is EfSeekShape candidate
+                    ? ReadEfSeekAsync(context, candidate, Owner, 2, 3,
+                        new(Owner, "Hobbies", CreatedAt.AddMinutes(2), KeysetId(1)), cancellation.Token)
+                    : new GalleryRepository<HobbiesGalleryDbContext>(context).GetOwnerGalleryPageAsync(Owner, 2, 3,
+                        new(Owner, "Hobbies", CreatedAt.AddMinutes(2), KeysetId(1)), cancellation.Token));
             Assert.True(gate.ReachedReader);
             Assert.Equal(cancellation.Token, error.CancellationToken);
             Assert.Empty(context.ChangeTracker.Entries());
@@ -306,18 +315,20 @@ public sealed partial class GalleryPersistenceTests
     {
         var samples = new List<(string Dataset, string Index, string Position, EfSeekShape Shape,
             double Milliseconds, long Hits, long Reads, long Removed)>();
-        foreach (var allTies in new[] { false, true })
+        foreach (var dataset in new[] { (Rows: 100, Ties: 1, Name: "small_100", PageSize: 2),
+            (Rows: 50000, Ties: 1000, Name: "groups_1000", PageSize: 50),
+            (Rows: 50000, Ties: 50000, Name: "one_timestamp", PageSize: 50) })
         {
             await using var setup = CreateContext(connection);
             await setup.Database.ExecuteSqlRawAsync("TRUNCATE andril_hobbies.\"GalleryMedia\"");
-            var ties = allTies ? 50000 : 1000;
+            var ties = dataset.Ties;
             await setup.Database.ExecuteSqlInterpolatedAsync($@"
 INSERT INTO andril_hobbies.""GalleryMedia""
 (""Id"",""OwnerModuleProfileId"",""Module"",""Title"",""Description"",""Category"",""MediaType"",""StorageObjectKey"",""IsPrivate"",""CreatedAtUtc"",""IsDeleted"")
 SELECT md5('ef-seek:'||r::text)::uuid,{Owner},
  CASE WHEN r%10=0 THEN 'Social' ELSE 'Hobbies' END,'Synthetic',repeat('Synthetic ',8),'Synthetic','Photo','synthetic/private.jpg',true,
  {CreatedAt} - (((r-1)/{ties})*interval '1 second'),r%100<50
-FROM generate_series(1,50000) r");
+FROM generate_series(1,{dataset.Rows}) r");
             await setup.Database.ExecuteSqlRawAsync("ANALYZE andril_hobbies.\"GalleryMedia\"");
             var ordered = await setup.GalleryMedia.AsNoTracking()
                 .Where(row => row.OwnerModuleProfileId == Owner && row.Module == "Hobbies" && !row.IsDeleted)
@@ -340,10 +351,11 @@ FROM generate_series(1,50000) r");
                     {
                         var capture = new KeysetCommandCapture();
                         await using var context = CreateContext(connection, capture);
-                        var page = shape == EfSeekShape.A
-                            ? await new GalleryRepository<HobbiesGalleryDbContext>(context).GetOwnerGalleryPageAsync(Owner, 50, 64, after)
-                            : await ReadEfSeekAsync(context, shape, Owner, 50, 64, after);
-                        Assert.Equal(expected, page.Items.Select(row => row.Id));
+                        // A freezes the prior OR formulation; C executes the optimized production method.
+                        var page = shape == EfSeekShape.C
+                            ? await new GalleryRepository<HobbiesGalleryDbContext>(context).GetOwnerGalleryPageAsync(Owner, dataset.PageSize, 64, after)
+                            : await ReadEfSeekAsync(context, shape, Owner, dataset.PageSize, 64, after);
+                        Assert.Equal(expected.Take(dataset.PageSize), page.Items.Select(row => row.Id));
                         Assert.Equal(1, capture.CommandCount);
                         Assert.Empty(context.ChangeTracker.Entries());
                         if (after is not null && shape != EfSeekShape.A) AssertEfSeekSql(shape, capture.Sql!);
@@ -357,17 +369,17 @@ FROM generate_series(1,50000) r");
                             using var document = JsonDocument.Parse((await explain.ExecuteScalarAsync())!.ToString()!);
                             var root = document.RootElement[0];
                             var node = root.GetProperty("Plan");
-                            Assert.Equal(51, node.GetProperty("Actual Rows").GetInt32());
+                            Assert.Equal(dataset.PageSize + 1, node.GetProperty("Actual Rows").GetInt32());
                             var nodes = new List<JsonElement>();
                             CollectEfPlanNodes(node, nodes);
                             var removed = nodes.Max(item => EfPlanNumber(item, "Rows Removed by Filter"));
                             if (repetition > 0)
-                                samples.Add((allTies ? "one_timestamp" : "groups_1000", candidate ? "candidate" : "existing",
+                                samples.Add((dataset.Name, candidate ? "candidate" : "existing",
                                     position.Name, shape, root.GetProperty("Execution Time").GetDouble(),
                                     EfPlanNumber(node, "Shared Hit Blocks"), EfPlanNumber(node, "Shared Read Blocks"), removed));
                             if (round == 0 && candidate && position.Name == "late" && repetition == 1)
                             {
-                                _keysetOutput.WriteLine($"SQL {allTies} {shape}: {capture.Sql}");
+                                _keysetOutput.WriteLine($"SQL {dataset.Name} {shape}: {capture.Sql}");
                                 _keysetOutput.WriteLine(JsonSerializer.Serialize(nodes.Select(item => new
                                 {
                                     Node = item.GetProperty("Node Type").GetString(),
@@ -389,7 +401,7 @@ FROM generate_series(1,50000) r");
             await setup.Database.ExecuteSqlRawAsync("CREATE INDEX gallery_ef_seek_candidate ON andril_hobbies.\"GalleryMedia\" (\"OwnerModuleProfileId\",\"Module\",\"IsDeleted\",\"CreatedAtUtc\" DESC,\"Id\" ASC)");
             await using var sizes = new NpgsqlCommand("SELECT indexrelname,pg_relation_size(indexrelid) FROM pg_stat_user_indexes WHERE schemaname='andril_hobbies' AND relname='GalleryMedia' ORDER BY indexrelname", sizeQuery);
             await using (var reader = await sizes.ExecuteReaderAsync())
-                while (await reader.ReadAsync()) _keysetOutput.WriteLine($"SIZE {allTies}: {reader.GetString(0)}={reader.GetInt64(1)}");
+                while (await reader.ReadAsync()) _keysetOutput.WriteLine($"SIZE {dataset.Name}: {reader.GetString(0)}={reader.GetInt64(1)}");
             await setup.Database.ExecuteSqlRawAsync("DROP INDEX andril_hobbies.gallery_ef_seek_candidate");
         }
         _keysetOutput.WriteLine("dataset,index,position,shape,median_ms,max_hits,max_reads,max_filtered");
@@ -398,7 +410,7 @@ FROM generate_series(1,50000) r");
             var times = group.Select(sample => sample.Milliseconds).Order().ToArray();
             _keysetOutput.WriteLine($"{group.Key.Dataset},{group.Key.Index},{group.Key.Position},{group.Key.Shape},{(times[2] + times[3]) / 2:F3},{group.Max(sample => sample.Hits)},{group.Max(sample => sample.Reads)},{group.Max(sample => sample.Removed)}");
         }
-        Assert.Equal(288, samples.Count);
+        Assert.Equal(432, samples.Count);
     });
 
     private static long EfPlanNumber(JsonElement node, string key) =>
@@ -427,11 +439,14 @@ FROM generate_series(1,50000) r");
     public Task EfSeek_UnavailableDatabasePropagatesRatherThanReturningAnEmptyPage() => WithDatabaseAsync(async connection =>
     {
         var settings = new NpgsqlConnectionStringBuilder(connection) { Database = $"andril_m3_missing_{Guid.NewGuid():N}" };
-        foreach (var shape in new[] { EfSeekShape.B, EfSeekShape.C })
+        foreach (var shape in new EfSeekShape?[] { null, EfSeekShape.B, EfSeekShape.C })
         {
             await using var context = CreateContext(settings.ConnectionString);
-            var error = await Assert.ThrowsAsync<PostgresException>(() => ReadEfSeekAsync(context, shape, Owner, 1, 3,
-                new(Owner, "Hobbies", CreatedAt.AddMinutes(2), KeysetId(1))));
+            var error = await Assert.ThrowsAsync<PostgresException>(() => shape is EfSeekShape candidate
+                ? ReadEfSeekAsync(context, candidate, Owner, 1, 3,
+                    new(Owner, "Hobbies", CreatedAt.AddMinutes(2), KeysetId(1)))
+                : new GalleryRepository<HobbiesGalleryDbContext>(context).GetOwnerGalleryPageAsync(Owner, 1, 3,
+                    new(Owner, "Hobbies", CreatedAt.AddMinutes(2), KeysetId(1))));
             Assert.Equal(PostgresErrorCodes.InvalidCatalogName, error.SqlState);
         }
     });
