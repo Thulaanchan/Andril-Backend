@@ -568,6 +568,31 @@ public sealed class GalleryPersistenceTests
         });
 
     [MapCapturePostgresFact]
+    public Task GetCover_SuppressesMissingForeignOwnerAndWrongModuleReferencesWithoutRepairingPreferences() =>
+        WithDatabaseAsync(async connection =>
+        {
+            await SeedAsync(connection);
+            await using var context = CreateContext(connection);
+            context.GalleryPreferences.Add(new GalleryPreferences { OwnerModuleProfileId = Owner, CoverMediaId = Older });
+            await context.SaveChangesAsync();
+            context.ChangeTracker.Clear();
+            var repository = Repository(context);
+            foreach (var stale in new[] { Missing, ForeignOwner, ForeignModule })
+            {
+                Assert.Equal(1, await context.GalleryPreferences.Where(preference => preference.OwnerModuleProfileId == Owner)
+                    .ExecuteUpdateAsync(setters => setters.SetProperty(preference => preference.CoverMediaId, stale)));
+                Assert.Null(await repository.GetCoverIdAsync(Owner));
+                Assert.Null(await repository.GetOwnedByIdAsync(stale, Owner));
+                var gallery = await repository.GetOwnerGalleryAsync(Owner);
+                Assert.DoesNotContain(gallery, media => media.Id == stale);
+                Assert.Equal(new[] { Newer, Older }, gallery.Select(media => media.Id));
+                var stored = Assert.Single(await context.GalleryPreferences.AsNoTracking().ToListAsync());
+                Assert.Equal(Owner, stored.OwnerModuleProfileId);
+                Assert.Equal(stale, stored.CoverMediaId); // Read suppression is not a deletion or repair operation.
+            }
+        });
+
+    [MapCapturePostgresFact]
     public Task Repository_ConcurrentFirstCoverSelectionLeavesExactlyOneOwnedPreference() =>
         WithDatabaseAsync(async connection =>
         {
@@ -610,11 +635,16 @@ public sealed class GalleryPersistenceTests
             Assert.Empty(await context.GalleryPreferences.AsNoTracking().ToListAsync());
             Assert.Equal("Original title", (await repository.GetOwnedByIdAsync(Older, Owner))!.Title);
 
+            // Exercise GetCover's media-validation query rather than its no-preference short circuit.
+            context.GalleryPreferences.Add(new GalleryPreferences { OwnerModuleProfileId = Owner, CoverMediaId = Older });
+            await context.SaveChangesAsync();
+            context.ChangeTracker.Clear();
             await context.Database.ExecuteSqlRawAsync("ALTER TABLE andril_hobbies.\"GalleryMedia\" RENAME TO gallery_media_unavailable");
             var operations = new Func<Task>[]
             {
                 () => repository.GetOwnerGalleryAsync(Owner),
                 () => repository.GetOwnedByIdAsync(Older, Owner),
+                () => repository.GetCoverIdAsync(Owner),
                 () => repository.UpdateTitleAsync(Older, Owner, "Failed"),
                 () => repository.SetCoverAsync(Older, Owner)
             };
