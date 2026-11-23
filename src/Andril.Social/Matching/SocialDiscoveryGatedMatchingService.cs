@@ -138,14 +138,9 @@ public static class SocialDiscoveryGatedMatchingService
             var evidence = item.Evidence;
             var matchingInput = item.MatchingInput;
 
-            // Identity consistency: candidate evidence and matching input must refer to the same private profile
-            if (evidence.CandidateProfileId != matchingInput.CandidateProfileId)
-            {
-                continue;
-            }
-
-            // Age consistency: candidate evidence age must match candidate matching input age
-            if (evidence.CandidateAge != matchingInput.CandidateAge)
+            // Consistency Gate: validate candidate identity, age, and authoritative evidence via authoritative policy
+            var consistencyResult = SocialDiscoveryEvidenceConsistencyPolicy.Validate(evidence, matchingInput);
+            if (!consistencyResult.IsValid)
             {
                 continue;
             }
