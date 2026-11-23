@@ -195,6 +195,174 @@ public sealed class MapContributionModerationTests
         Assert.Single(Enum.GetValues<MapContributionModerationStatus>());
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(7)]
+    public void RestorePendingPreservesScopeAndAllowsNormalFirstDecision(long revision)
+    {
+        var contribution = Contribution();
+        var evidence = MapContributionModeration.CreatePending(contribution, revision).Snapshot;
+        var restored = MapContributionModeration.Restore(contribution, evidence, acceptedAction: null);
+        Assert.True(restored.Snapshot.IsPendingReview);
+        Assert.Null(restored.Snapshot.Decision);
+        Assert.Equal(revision, restored.Snapshot.Revision);
+        Assert.Equal(evidence.OwnerHobbiesModuleProfileId, restored.Snapshot.OwnerHobbiesModuleProfileId);
+        Assert.Equal(evidence.AttractionId, restored.Snapshot.AttractionId);
+        Assert.Equal(evidence.CaptureSessionId, restored.Snapshot.CaptureSessionId);
+        var accepted = restored.Decide(Request(contribution, revision: revision), Now);
+        Assert.Equal(revision + 1, accepted.Revision);
+        Assert.True(evidence.IsPendingReview);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void RestoreAcceptedPreservesOriginalReceiptAndExactRetry(int actionValue)
+    {
+        var contribution = Contribution();
+        var action = (MapContributionReviewAction)actionValue;
+        var original = MapContributionModeration.CreatePending(contribution, 4)
+            .Decide(Request(contribution, action, revision: 4), Now);
+        // Reconstruct all receipt objects, rather than retaining the original domain instance.
+        var saved = original.Decision!;
+        var request = new MapContributionReviewRequest(saved.Request.DecisionId, saved.Request.ContributionId,
+            saved.Request.Action, saved.Request.ExpectedRevision, saved.Request.ReviewerSubject);
+        var evidence = Snapshot(contribution, 5, new(request, saved.DecidedAtUtc.ToOffset(TimeSpan.FromHours(5.5))));
+        var restored = MapContributionModeration.Restore(contribution, evidence, action);
+        var snapshot = restored.Snapshot;
+        Assert.False(snapshot.IsPendingReview);
+        Assert.Equal(5, snapshot.Revision);
+        Assert.Equal(saved.Request, snapshot.Decision!.Request);
+        Assert.Equal(saved.DecidedAtUtc, snapshot.Decision.DecidedAtUtc);
+        Assert.Equal(TimeSpan.Zero, snapshot.Decision.DecidedAtUtc.Offset);
+        Assert.Same(snapshot, restored.Decide(request, Now.AddHours(1)));
+        Assert.Equal(MapContributionModerationStatus.PendingReview, contribution.ModerationStatus);
+    }
+
+    [Theory]
+    [InlineData(1, "action")]
+    [InlineData(1, "reviewer")]
+    [InlineData(1, "contribution")]
+    [InlineData(1, "revision")]
+    [InlineData(1, "new-key")]
+    [InlineData(2, "action")]
+    [InlineData(2, "reviewer")]
+    [InlineData(2, "contribution")]
+    [InlineData(2, "revision")]
+    [InlineData(2, "new-key")]
+    public void RestoredTerminalStateRejectsChangedRetriesWithoutMutation(int actionValue, string changed)
+    {
+        var contribution = Contribution();
+        var action = (MapContributionReviewAction)actionValue;
+        var request = Request(contribution, action);
+        var restored = MapContributionModeration.Restore(contribution,
+            Snapshot(contribution, 1, new(request, Now)), action);
+        var accepted = restored.Snapshot;
+        var conflict = new MapContributionReviewRequest(
+            changed == "new-key" ? Guid.NewGuid() : request.DecisionId,
+            changed == "contribution" ? Guid.NewGuid() : request.ContributionId,
+            changed == "action" ? (action == MapContributionReviewAction.Approve ? MapContributionReviewAction.Reject : MapContributionReviewAction.Approve) : action,
+            changed is "revision" or "new-key" ? 1 : 0,
+            changed == "reviewer" ? "other-subject" : request.ReviewerSubject);
+        Assert.Throws<InvalidOperationException>(() => restored.Decide(conflict, Now.AddHours(1)));
+        Assert.Same(accepted, restored.Snapshot);
+        Assert.Same(accepted, restored.Decide(request, Now.AddHours(1)));
+    }
+
+    [Theory]
+    [InlineData("contribution", false)]
+    [InlineData("owner", false)]
+    [InlineData("attraction", false)]
+    [InlineData("session", false)]
+    [InlineData("contribution", true)]
+    [InlineData("owner", true)]
+    [InlineData("attraction", true)]
+    [InlineData("session", true)]
+    public void RestoreRejectsMismatchedIdentityEvidence(string changed, bool terminal)
+    {
+        var contribution = Contribution();
+        var evidence = new MapContributionModerationSnapshot(
+            changed == "contribution" ? Guid.NewGuid() : contribution.ContributionId,
+            changed == "owner" ? Guid.NewGuid() : contribution.OwnerHobbiesModuleProfileId,
+            changed == "attraction" ? Guid.NewGuid() : contribution.AttractionId,
+            changed == "session" ? Guid.NewGuid() : contribution.CaptureSessionId,
+            terminal ? 1 : 0, terminal ? new(Request(contribution), Now) : null);
+        Assert.Throws<InvalidOperationException>(() => MapContributionModeration.Restore(contribution,
+            evidence, terminal ? MapContributionReviewAction.Approve : null));
+        Assert.Equal(MapContributionModerationStatus.PendingReview, contribution.ModerationStatus);
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(1, 0)]
+    [InlineData(2, 0)]
+    [InlineData(1, 2)]
+    [InlineData(2, 1)]
+    public void RestoreRejectsMissingOrContradictoryDecisionEvidence(int claimedAction, int receiptAction)
+    {
+        var contribution = Contribution();
+        var evidence = Snapshot(contribution, receiptAction == 0 ? 0 : 1,
+            receiptAction == 0 ? null : new(Request(contribution, (MapContributionReviewAction)receiptAction), Now));
+        Assert.Throws<InvalidOperationException>(() => MapContributionModeration.Restore(contribution,
+            evidence, claimedAction == 0 ? null : (MapContributionReviewAction)claimedAction));
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(0)]
+    [InlineData(4)]
+    [InlineData(6)]
+    public void RestoreRejectsInvalidResultRevision(long revision)
+    {
+        var contribution = Contribution();
+        var evidence = Snapshot(contribution, revision, new(Request(contribution, revision: 4), Now));
+        Assert.ThrowsAny<ArgumentException>(() => MapContributionModeration.Restore(contribution,
+            evidence, MapContributionReviewAction.Approve));
+    }
+
+    [Fact]
+    public void RestoreRejectsIncompleteReceiptAndOverflowWithoutPublishingPartialState()
+    {
+        var contribution = Contribution();
+        var pending = MapContributionModeration.CreatePending(contribution, 0);
+        var original = pending.Snapshot;
+        Assert.Throws<ArgumentNullException>(() => MapContributionModeration.Restore(null!, original, null));
+        Assert.Throws<ArgumentNullException>(() => MapContributionModeration.Restore(contribution, null!, null));
+        Assert.Throws<ArgumentOutOfRangeException>(() => MapContributionModeration.Restore(contribution, original, (MapContributionReviewAction)999));
+        Assert.Throws<ArgumentOutOfRangeException>(() => MapContributionModeration.Restore(contribution, Snapshot(contribution, -1), null));
+        Assert.Throws<ArgumentNullException>(() => MapContributionModeration.Restore(contribution,
+            Snapshot(contribution, 1, new(null!, Now)), MapContributionReviewAction.Approve));
+        Assert.Throws<ArgumentOutOfRangeException>(() => MapContributionModeration.Restore(contribution,
+            Snapshot(contribution, 1, new(Request(contribution), default)), MapContributionReviewAction.Approve));
+        Assert.Throws<InvalidOperationException>(() => MapContributionModeration.Restore(contribution,
+            Snapshot(contribution, 1, new(Request(Contribution()), Now)), MapContributionReviewAction.Approve));
+        Assert.Throws<OverflowException>(() => MapContributionModeration.Restore(contribution,
+            Snapshot(contribution, long.MaxValue, new(Request(contribution, revision: long.MaxValue), Now)), MapContributionReviewAction.Approve));
+        Assert.Same(original, pending.Snapshot);
+        Assert.True(pending.Snapshot.IsPendingReview);
+    }
+
+    [Fact]
+    public void RestoredSnapshotsRemainImmutableAndHaveNoImplicitSideEffects()
+    {
+        var contribution = Contribution();
+        var evidence = Snapshot(contribution, 1, new(Request(contribution), Now));
+        var restored = MapContributionModeration.Restore(contribution, evidence, MapContributionReviewAction.Approve);
+        Assert.NotSame(evidence, restored.Snapshot);
+        foreach (var type in new[] { restored.Snapshot.GetType(), restored.Snapshot.Decision!.GetType(), restored.Snapshot.Decision.Request.GetType() })
+            Assert.All(type.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic |
+                System.Reflection.BindingFlags.Instance), property => Assert.Null(property.SetMethod));
+        Assert.Equal(MapContributionModerationStatus.PendingReview, contribution.ModerationStatus);
+        Assert.Single(Enum.GetValues<MapContributionModerationStatus>());
+        var maxPending = MapContributionModeration.Restore(contribution, Snapshot(contribution, long.MaxValue), null);
+        Assert.Throws<OverflowException>(() => maxPending.Decide(Request(contribution, revision: long.MaxValue), Now));
+        Assert.True(maxPending.Snapshot.IsPendingReview);
+    }
+
+    private static MapContributionModerationSnapshot Snapshot(MapContribution contribution, long revision,
+        MapContributionReviewDecision? decision = null) => new(contribution.ContributionId,
+            contribution.OwnerHobbiesModuleProfileId, contribution.AttractionId, contribution.CaptureSessionId, revision, decision);
+
     private static MapContributionReviewRequest Request(MapContribution contribution,
         MapContributionReviewAction action = MapContributionReviewAction.Approve,
         long revision = 0, Guid? decisionId = null) =>
