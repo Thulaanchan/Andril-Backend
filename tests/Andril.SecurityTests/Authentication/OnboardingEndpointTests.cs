@@ -254,10 +254,28 @@ public sealed class OnboardingEndpointTests
             Assert.Equal("profile_setup", body.RootElement.GetProperty("nextStep").GetString());
             Assert.Equal(JsonValueKind.Null, body.RootElement.GetProperty("blockingDependency").ValueKind);
             var routes = app.Services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>();
-            Assert.DoesNotContain(routes, endpoint =>
-                endpoint.RoutePattern.PathSegments.Any(segment => segment.Parts.OfType<RoutePatternLiteralPart>()
-                    .Any(part => part.Content.Equals("social", StringComparison.OrdinalIgnoreCase)
-                        || part.Content.Equals("chat", StringComparison.OrdinalIgnoreCase))));
+            foreach (var endpoint in routes)
+            {
+                var hasDisallowedSegment = endpoint.RoutePattern.PathSegments.Any(segment => segment.Parts.OfType<RoutePatternLiteralPart>()
+                    .Any(part => part.Content.Equals("chat", StringComparison.OrdinalIgnoreCase)));
+                Assert.False(hasDisallowedSegment, $"Chat endpoint mapped without authorization: {endpoint.DisplayName}");
+
+                var hasSocialSegment = endpoint.RoutePattern.PathSegments.Any(segment => segment.Parts.OfType<RoutePatternLiteralPart>()
+                    .Any(part => part.Content.Equals("social", StringComparison.OrdinalIgnoreCase)));
+                if (hasSocialSegment)
+                {
+                    // The only permitted Social endpoint across the entire system is the authorized GET /api/v1/social/questionnaires/active
+                    var template = endpoint.RoutePattern.RawText?.TrimStart('/') ?? "";
+                    Assert.True(template.Equals("api/v1/social/questionnaires/active", StringComparison.OrdinalIgnoreCase),
+                        $"Unauthorized Social endpoint mapped: {template}");
+                    var httpMethods = endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Routing.IHttpMethodMetadata>()?.HttpMethods;
+                    Assert.NotNull(httpMethods);
+                    Assert.True(httpMethods.All(m => m.Equals("GET", StringComparison.OrdinalIgnoreCase)),
+                        $"Social questionnaire definition endpoint must only accept GET: {string.Join(",", httpMethods)}");
+                    Assert.Null(endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Authorization.IAllowAnonymous>());
+                    Assert.NotNull(endpoint.Metadata.GetMetadata<Microsoft.AspNetCore.Authorization.IAuthorizeData>());
+                }
+            }
             // A new HTTP request scope must re-read the same persisted owner evidence.
             using var resumed = app.CreateClient();
             resumed.DefaultRequestHeaders.Authorization = new("Bearer", factory.Token());
