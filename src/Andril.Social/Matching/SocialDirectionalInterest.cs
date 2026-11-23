@@ -14,7 +14,7 @@ namespace Andril.Social.Matching;
 /// <item><description>The acting profile must be a validated member of the canonical <see cref="SocialProfilePairKey"/>.</description></item>
 /// <item><description>It does NOT constitute a mutual match or grant chat/messaging authorization (e.g., M4 access evidence).</description></item>
 /// <item><description>It does NOT authorize caller identity or verify upstream M2/M6 eligibility or block-list standing.</description></item>
-/// <item><description>All identifier properties are annotated with <see cref="JsonIgnoreAttribute"/>, and diagnostic <see cref="ToString"/> returns a non-sensitive constant.</description></item>
+/// <item><description>All identifier properties, pair references, and directional interest decisions are annotated with <see cref="JsonIgnoreAttribute"/>, and diagnostic <see cref="ToString"/> returns a non-sensitive constant.</description></item>
 /// </list>
 /// </para>
 /// </remarks>
@@ -23,6 +23,7 @@ public sealed class SocialDirectionalInterest : IEquatable<SocialDirectionalInte
     /// <summary>
     /// Gets the canonical unordered profile pair key.
     /// </summary>
+    [JsonIgnore]
     public SocialProfilePairKey PairKey { get; }
 
     /// <summary>
@@ -40,6 +41,7 @@ public sealed class SocialDirectionalInterest : IEquatable<SocialDirectionalInte
     /// <summary>
     /// Gets a value indicating whether the directional interest is positive (e.g., like) or negative (e.g., pass).
     /// </summary>
+    [JsonIgnore]
     public bool IsPositive { get; }
 
     /// <summary>
