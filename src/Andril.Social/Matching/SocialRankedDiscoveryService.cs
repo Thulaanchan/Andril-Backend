@@ -1,7 +1,71 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Text.Json.Serialization;
 
 namespace Andril.Social.Matching;
+
+/// <summary>
+/// Authoritative candidate item bundling profile scoring evidence, revision snapshots, display name, and approximate distance.
+/// </summary>
+public sealed class SocialAuthoritativeCandidateItem : IEquatable<SocialAuthoritativeCandidateItem>
+{
+    [JsonIgnore]
+    public SocialScoringProfileEvidence Evidence { get; }
+
+    [JsonIgnore]
+    public SocialEvidenceRevisionSnapshot CachedRevision { get; }
+
+    [JsonIgnore]
+    public SocialEvidenceRevisionSnapshot CommittedRevision { get; }
+
+    [JsonIgnore]
+    public string DisplayName { get; }
+
+    [JsonIgnore]
+    public int? ApproximateDistanceKm { get; }
+
+    public SocialAuthoritativeCandidateItem(
+        SocialScoringProfileEvidence evidence,
+        SocialEvidenceRevisionSnapshot cachedRevision,
+        SocialEvidenceRevisionSnapshot committedRevision,
+        string displayName,
+        int? approximateDistanceKm = null)
+    {
+        Evidence = evidence ?? throw new ArgumentNullException(nameof(evidence));
+        CachedRevision = cachedRevision ?? throw new ArgumentNullException(nameof(cachedRevision));
+        CommittedRevision = committedRevision ?? throw new ArgumentNullException(nameof(committedRevision));
+        DisplayName = displayName ?? throw new ArgumentNullException(nameof(displayName));
+        if (string.IsNullOrWhiteSpace(displayName))
+        {
+            throw new ArgumentException("Display name cannot be whitespace.", nameof(displayName));
+        }
+
+        if (approximateDistanceKm < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(approximateDistanceKm), approximateDistanceKm, "Approximate distance cannot be negative.");
+        }
+
+        ApproximateDistanceKm = approximateDistanceKm;
+    }
+
+    public bool Equals(SocialAuthoritativeCandidateItem? other)
+    {
+        if (other is null) return false;
+        if (ReferenceEquals(this, other)) return true;
+        return Evidence.Equals(other.Evidence) &&
+               CachedRevision.Equals(other.CachedRevision) &&
+               CommittedRevision.Equals(other.CommittedRevision) &&
+               string.Equals(DisplayName, other.DisplayName, StringComparison.Ordinal) &&
+               ApproximateDistanceKm == other.ApproximateDistanceKm;
+    }
+
+    public override bool Equals(object? obj) => obj is SocialAuthoritativeCandidateItem other && Equals(other);
+
+    public override int GetHashCode() => HashCode.Combine(Evidence, CachedRevision, CommittedRevision, DisplayName, ApproximateDistanceKm);
+
+    public override string ToString() => "SocialAuthoritativeCandidateItem [private]";
+}
 
 /// <summary>
 /// Deterministic, eligibility-gated recommendation ranking service.
@@ -10,6 +74,226 @@ namespace Andril.Social.Matching;
 /// </summary>
 public static class SocialRankedDiscoveryService
 {
+    public const int DefaultMaxCandidateBatchSize = 100;
+
+    /// <summary>
+    /// Performs strict, authoritative ranked discovery with freshness verification, bounded candidate batching,
+    /// and privacy-safe projection to <see cref="SocialExploreCandidateCard"/> snapshots (Task 168).
+    /// </summary>
+    /// <param name="caller">The discovering caller's authoritative evidence bundle.</param>
+    /// <param name="callerCachedRevision">The caller's cached evidence revision snapshot.</param>
+    /// <param name="callerCommittedRevision">The caller's latest committed evidence revision snapshot.</param>
+    /// <param name="candidates">The collection of authoritative candidate items.</param>
+    /// <param name="rotationOffset">Deterministic offset applied for exploratory candidate rotation within ranking tie groups.</param>
+    /// <param name="maxCandidateBatchSize">Server-supplied technical limit bounding the candidate processing batch.</param>
+    /// <returns>A defensively ranked, immutable list of eligible, privacy-safe <see cref="SocialExploreCandidateCard"/> instances.</returns>
+    public static IReadOnlyList<SocialExploreCandidateCard> DiscoverAuthoritativeRankedCards(
+        SocialScoringProfileEvidence caller,
+        SocialEvidenceRevisionSnapshot callerCachedRevision,
+        SocialEvidenceRevisionSnapshot callerCommittedRevision,
+        IEnumerable<SocialAuthoritativeCandidateItem> candidates,
+        int rotationOffset = 0,
+        int maxCandidateBatchSize = DefaultMaxCandidateBatchSize)
+    {
+        ArgumentNullException.ThrowIfNull(caller);
+        ArgumentNullException.ThrowIfNull(callerCachedRevision);
+        ArgumentNullException.ThrowIfNull(callerCommittedRevision);
+        ArgumentNullException.ThrowIfNull(candidates);
+
+        if (rotationOffset < 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(rotationOffset),
+                rotationOffset,
+                "Rotation offset cannot be negative.");
+        }
+
+        if (maxCandidateBatchSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxCandidateBatchSize),
+                maxCandidateBatchSize,
+                "Maximum candidate batch size must be greater than zero.");
+        }
+
+        // 1. Caller identity consistency and authoritative evidence check
+        if (caller.ProfileId == Guid.Empty ||
+            callerCachedRevision.ProfileId != caller.ProfileId ||
+            callerCommittedRevision.ProfileId != caller.ProfileId)
+        {
+            return Array.Empty<SocialExploreCandidateCard>();
+        }
+
+        if (!caller.HasAuthoritativeEvidence || caller.Age < 18 || !caller.IsOptedIn || !caller.IsActive)
+        {
+            return Array.Empty<SocialExploreCandidateCard>();
+        }
+
+        // 2. Matching policy version check
+        if (!string.Equals(callerCommittedRevision.PolicyVersion, SocialCompatibilityScoringEngine.PolicyVersion, StringComparison.Ordinal))
+        {
+            return Array.Empty<SocialExploreCandidateCard>();
+        }
+
+        // 3. Caller evidence currency check (fails closed on stale revisions, restriction, or deactivation)
+        var callerCurrency = SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(callerCachedRevision, callerCommittedRevision);
+        if (!callerCurrency.IsCurrent)
+        {
+            return Array.Empty<SocialExploreCandidateCard>();
+        }
+
+        var eligibleCandidatesWithCards = new List<(SocialScoringProfileEvidence Candidate, int? ApproximateDistanceKm, SocialCandidateEvaluationResult EvaluationResult, string DisplayName)>();
+        var seenProfileIds = new HashSet<Guid>();
+        var processedCount = 0;
+
+        foreach (var item in candidates)
+        {
+            if (processedCount >= maxCandidateBatchSize)
+            {
+                break;
+            }
+
+            if (item is null)
+            {
+                continue;
+            }
+
+            processedCount++;
+
+            var candidate = item.Evidence;
+            if (candidate is null || item.CachedRevision is null || item.CommittedRevision is null)
+            {
+                continue;
+            }
+
+            // 4. Reject empty, self-discovery, duplicate, or contradictory candidate identities
+            if (candidate.ProfileId == Guid.Empty ||
+                candidate.ProfileId == caller.ProfileId ||
+                item.CachedRevision.ProfileId != candidate.ProfileId ||
+                item.CommittedRevision.ProfileId != candidate.ProfileId)
+            {
+                continue;
+            }
+
+            if (!seenProfileIds.Add(candidate.ProfileId))
+            {
+                continue;
+            }
+
+            if (string.IsNullOrWhiteSpace(item.DisplayName) || (item.ApproximateDistanceKm.HasValue && item.ApproximateDistanceKm.Value < 0))
+            {
+                continue;
+            }
+
+            // 5. Candidate authoritative provenance and eligibility checks
+            if (!candidate.HasAuthoritativeEvidence ||
+                candidate.Age < 18 ||
+                !candidate.IsOptedIn ||
+                !candidate.IsActive ||
+                !candidate.IsDiscoverable)
+            {
+                continue;
+            }
+
+            // 6. Candidate matching policy version check
+            if (!string.Equals(item.CommittedRevision.PolicyVersion, SocialCompatibilityScoringEngine.PolicyVersion, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            // 7. Candidate evidence currency check
+            var candidateCurrency = SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(item.CachedRevision, item.CommittedRevision);
+            if (!candidateCurrency.IsCurrent)
+            {
+                continue;
+            }
+
+            // 8. Bidirectional blocking check
+            var isBlockedByCaller = caller.BlockedProfileIds.Contains(candidate.ProfileId);
+            var isCallerBlockedByCandidate = candidate.BlockedProfileIds.Contains(caller.ProfileId);
+            if (isBlockedByCaller || isCallerBlockedByCandidate)
+            {
+                continue;
+            }
+
+            // 9. Stage 1: Discovery eligibility pre-filter
+            var callerPreFilterEvidence = new SocialDiscoveryCallerEvidence(
+                caller.ProfileId,
+                caller.Age,
+                caller.IsOptedIn,
+                caller.IsActive,
+                caller.HasAuthoritativeEvidence);
+
+            var candidatePreFilterEvidence = new SocialDiscoveryCandidateEvidence(
+                candidate.ProfileId,
+                candidate.Age,
+                candidate.IsOptedIn,
+                candidate.IsActive,
+                candidate.IsDiscoverable,
+                isBlockedByCaller,
+                isCallerBlockedByCandidate,
+                candidate.HasAuthoritativeEvidence);
+
+            var preFilterResult = SocialDiscoveryEligibilityPreFilter.Evaluate(
+                callerPreFilterEvidence,
+                candidatePreFilterEvidence);
+
+            if (!preFilterResult.IsEligible)
+            {
+                continue;
+            }
+
+            // 10. Stage 2: Reciprocal hard demographic filters (rejects Excluded and Indeterminate)
+            var filterInput = new SocialCandidateEvaluationInput(
+                caller.Age,
+                caller.DemographicGender,
+                caller.Preferences,
+                candidate.Age,
+                candidate.DemographicGender,
+                candidate.Preferences,
+                item.ApproximateDistanceKm);
+
+            var filterResult = SocialCandidateFilterEvaluator.Evaluate(filterInput);
+            if (filterResult.Status != SocialCandidateMatchStatus.Eligible)
+            {
+                continue;
+            }
+
+            eligibleCandidatesWithCards.Add((candidate, item.ApproximateDistanceKm, filterResult, item.DisplayName));
+        }
+
+        if (eligibleCandidatesWithCards.Count == 0)
+        {
+            return Array.Empty<SocialExploreCandidateCard>();
+        }
+
+        // 11. Multi-factor compatibility scoring & tier ranking preserving priority
+        var rankingInput = eligibleCandidatesWithCards.Select(x => (x.Candidate, x.ApproximateDistanceKm));
+        var rankedCandidates = SocialRecommendationRankingPolicy.RankCandidates(caller, rankingInput, rotationOffset);
+
+        // 12. Privacy-safe projection to approved SocialExploreCandidateCard
+        var cardLookup = eligibleCandidatesWithCards.ToDictionary(
+            x => x.Candidate.ProfileId,
+            x => (x.DisplayName, x.ApproximateDistanceKm, x.EvaluationResult));
+
+        var projectedCards = new List<SocialExploreCandidateCard>(rankedCandidates.Count);
+        foreach (var ranked in rankedCandidates)
+        {
+            if (cardLookup.TryGetValue(ranked.CandidateProfileId, out var info))
+            {
+                var card = SocialExploreCandidateCard.Create(
+                    ranked.CandidateProfileId,
+                    info.DisplayName,
+                    ranked.CandidateEvidence.Age,
+                    info.ApproximateDistanceKm,
+                    info.EvaluationResult);
+
+                projectedCards.Add(card);
+            }
+        }
+
+        return projectedCards.AsReadOnly();
+    }
     /// <summary>
     /// Discovers, filters, scores, and ranks candidate profiles against a discovering caller.
     /// Ineligible, excluded, blocked, or indeterminate candidates are strictly omitted before ranking.
