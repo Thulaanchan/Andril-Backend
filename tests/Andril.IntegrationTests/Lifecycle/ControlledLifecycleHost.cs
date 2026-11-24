@@ -3,7 +3,6 @@ using System.Net;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
 using System.Threading.RateLimiting;
 using Andril.API.Authentication;
@@ -25,9 +24,6 @@ using Npgsql;
 
 namespace Andril.IntegrationTests.Lifecycle;
 
-[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
-internal sealed record LifecycleTestRequest(bool? SocialOptIn = null, long? ExpectedRevision = null);
-
 // This entire executable composition is in the test assembly. It cannot be activated
 // using production configuration flags. Authentication validates a signed test bearer
 // token; the real SupabaseUserVerifier parses a synthetic upstream response in memory.
@@ -40,8 +36,13 @@ internal sealed class ControlledLifecycleHost : IAsyncDisposable
     private ControlledLifecycleHost(WebApplication app, SymmetricSecurityKey key, List<string> log)
     { this.app = app; this.key = key; SafeLog = log; }
 
-    internal static async Task<ControlledLifecycleHost> StartAsync(ControlledLifecycleDatabase db, bool optIn = true, int limit = 50,
-        Func<IModuleLifecycleStore, IModuleLifecycleStore>? decorate = null)
+    internal static Task<ControlledLifecycleHost> StartAsync(ControlledLifecycleDatabase db, bool optIn = true, int limit = 50,
+        Func<IModuleLifecycleStore, IModuleLifecycleStore>? decorate = null) =>
+        StartAsync(() => decorate is null ? db.Store() : decorate(db.Store()), () => db.Authority.Confirmed, optIn, limit);
+
+    // This overload keeps the signed-bearer HTTP boundary independently runnable without PostgreSQL.
+    internal static async Task<ControlledLifecycleHost> StartAsync(Func<IModuleLifecycleStore> store,
+        Func<bool> isConfirmed, bool optIn = true, int limit = 50)
     {
         if (!optIn) throw new InvalidOperationException("Explicit integration opt-in is required.");
         var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "LifecycleIntegration" });
@@ -109,8 +110,8 @@ internal sealed class ControlledLifecycleHost : IAsyncDisposable
             ["SupabaseAuth:ProjectUrl"] = "https://synthetic.supabase.co",
             ["SupabaseAuth:SigningAlgorithm"] = "RS256", ["SupabaseIdentity:PublishableKey"] = "sb_publishable_synthetic_test_only"
         }).Build();
-        builder.Services.AddSingleton<ISupabaseUserVerifier>(new SupabaseUserVerifier(new HttpClient(new SyntheticIdentity(db)), config, TimeProvider.System));
-        builder.Services.AddScoped<IModuleLifecycleStore>(_ => decorate is null ? db.Store() : decorate(db.Store()));
+        builder.Services.AddSingleton<ISupabaseUserVerifier>(new SupabaseUserVerifier(new HttpClient(new SyntheticIdentity(isConfirmed)), config, TimeProvider.System));
+        builder.Services.AddScoped<IModuleLifecycleStore>(_ => store());
         builder.Services.AddScoped<OfflineModuleLifecycleService>();
         builder.Services.AddSingleton<IPrivateProfileCompletionReader>(new CompletedSyntheticProfile());
         builder.Services.AddScoped<IPrivateModuleAccess, PrivateModuleAccess>();
@@ -147,17 +148,17 @@ internal sealed class ControlledLifecycleHost : IAsyncDisposable
         {
             if (!Andril.Common.Accounts.StarterModules.StarterModules.IsValid(module)) return Results.Problem(statusCode: 400, title: "Invalid request");
             if (!Guid.TryParse(context.User.FindFirstValue("sub"), out var subject) || subject == Guid.Empty) return Results.Unauthorized();
+            if (context.Request.Headers["Idempotency-Key"].Count != 1
+                || !Guid.TryParseExact(context.Request.Headers["Idempotency-Key"], "D", out var requestKey) || requestKey == Guid.Empty)
+                return Results.Problem(statusCode: 400, title: "Invalid request");
+            var body = await ReadTransitionRequestAsync(context.Request, reactivation, context.RequestAborted);
+            if (body is null)
+                return Results.Problem(statusCode: 400, title: "Invalid request");
+
             var verifier = context.RequestServices.GetRequiredService<ISupabaseUserVerifier>();
             var verified = await verifier.VerifyAsync(subject, context.Request.Headers.Authorization.ToString()["Bearer ".Length..], context.RequestAborted);
             if (verified != SupabaseUserVerification.Confirmed)
                 return Results.Problem(statusCode: verified == SupabaseUserVerification.Unavailable ? 503 : 403, title: "Authorization unavailable or denied");
-            if (context.Request.Headers["Idempotency-Key"].Count != 1
-                || !Guid.TryParse(context.Request.Headers["Idempotency-Key"], out var requestKey) || requestKey == Guid.Empty)
-                return Results.Problem(statusCode: 400, title: "Invalid request");
-            if (!context.Request.HasJsonContentType()) return Results.Problem(statusCode: 400, title: "Invalid request");
-            var body = await context.Request.ReadFromJsonAsync<LifecycleTestRequest>(context.RequestAborted);
-            if (body is null || (reactivation ? body.ExpectedRevision is not > 0 or long.MaxValue : body.ExpectedRevision is not null))
-                return Results.Problem(statusCode: 400, title: "Invalid request");
             if (module == "social" && body.SocialOptIn != true || module != "social" && body.SocialOptIn == true)
                 return Results.Problem(statusCode: 403, title: "Activation denied");
             return Results.Ok(await context.RequestServices.GetRequiredService<OfflineModuleLifecycleService>().ExecuteAsync(subject,
@@ -185,6 +186,42 @@ internal sealed class ControlledLifecycleHost : IAsyncDisposable
         host.Client = app.GetTestClient();
         return host;
     }
+    private sealed record TransitionRequest(bool? SocialOptIn, long? ExpectedRevision);
+
+    private static async Task<TransitionRequest?> ReadTransitionRequestAsync(HttpRequest request, bool reactivation, CancellationToken ct)
+    {
+        const int maxBytes = 4096; // Controlled test-host limit.
+        if (!request.HasJsonContentType() || request.ContentLength > maxBytes)
+            return null;
+
+        // Bound chunked/lengthless requests as well as those that declare Content-Length.
+        var buffer = new byte[maxBytes + 1];
+        var count = await request.Body.ReadAtLeastAsync(buffer, buffer.Length, throwOnEndOfStream: false, cancellationToken: ct);
+        if (count > maxBytes)
+            return null;
+
+        using var document = JsonDocument.Parse(buffer.AsMemory(0, count));
+        if (document.RootElement.ValueKind != JsonValueKind.Object)
+            return null;
+
+        bool? socialOptIn = null;
+        long? expectedRevision = null;
+        foreach (var property in document.RootElement.EnumerateObject())
+        {
+            if (property.NameEquals("socialOptIn") && socialOptIn is null &&
+                property.Value.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                socialOptIn = property.Value.GetBoolean();
+            else if (reactivation && property.NameEquals("expectedRevision") && expectedRevision is null &&
+                property.Value.ValueKind == JsonValueKind.Number && property.Value.TryGetInt64(out var revision) &&
+                revision is > 0 and < long.MaxValue)
+                expectedRevision = revision;
+            else
+                return null;
+        }
+
+        return reactivation && expectedRevision is null ? null : new(socialOptIn, expectedRevision);
+    }
+
     internal string Token(Guid subject, bool expired = false) => new JwtSecurityTokenHandler().WriteToken(new JwtSecurityToken(
         issuer: "andril-lifecycle-test", audience: "andril-lifecycle-test", claims: [new Claim("sub", subject.ToString())],
         notBefore: DateTime.UtcNow.AddMinutes(-10), expires: DateTime.UtcNow.AddMinutes(expired ? -1 : 10),
@@ -220,7 +257,7 @@ internal sealed class ControlledLifecycleHost : IAsyncDisposable
             Task.FromResult(new ProfileCompletionStatus(null, true));
     }
 
-    private sealed class SyntheticIdentity(ControlledLifecycleDatabase db) : HttpMessageHandler
+    private sealed class SyntheticIdentity(Func<bool> isConfirmed) : HttpMessageHandler
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
@@ -229,7 +266,7 @@ internal sealed class ControlledLifecycleHost : IAsyncDisposable
             return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(JsonSerializer.Serialize(new
             {
                 id = subject, is_anonymous = false, role = "authenticated", aud = "authenticated", email = "synthetic@example.invalid",
-                email_confirmed_at = db.Authority.Confirmed ? DateTimeOffset.UtcNow.AddHours(-1).ToString("O") : null
+                email_confirmed_at = isConfirmed() ? DateTimeOffset.UtcNow.AddHours(-1).ToString("O") : null
             })) });
         }
     }
