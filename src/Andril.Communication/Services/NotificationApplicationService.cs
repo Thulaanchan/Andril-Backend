@@ -155,7 +155,8 @@ public sealed class NotificationApplicationService
     {
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (notificationId == Guid.Empty)
+        if (notificationId == Guid.Empty ||
+            readAtUtc == default)
         {
             return false;
         }
