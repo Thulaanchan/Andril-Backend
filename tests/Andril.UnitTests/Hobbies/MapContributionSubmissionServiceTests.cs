@@ -6,7 +6,7 @@ using Xunit;
 
 namespace Andril.UnitTests.Hobbies;
 
-public sealed class MapContributionSubmissionServiceTests
+public sealed partial class MapContributionSubmissionServiceTests
 {
     [Fact]
     public async Task ValidSubmissionPassesTrustedPreparedPendingContributionAndTokenOnce()
