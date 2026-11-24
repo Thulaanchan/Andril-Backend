@@ -180,15 +180,8 @@ public sealed class PostgresSocialQuestionnaireReadAdapterTests
     [LocalPostgresFact]
     public async Task LivePostgres_GetByIdAsync_EnforcesProfileScope_AndEagerLoadsAnswers()
     {
-        var env = Environment.GetEnvironmentVariable("ANDRIL_M2_TEST_POSTGRES");
-        if (string.IsNullOrWhiteSpace(env)) return;
-
-        var options = new DbContextOptionsBuilder<SocialDbContext>()
-            .UseNpgsql(env)
-            .Options;
-
-        using var context = new SocialDbContext(options);
-        await context.Database.EnsureCreatedAsync();
+        await using var database = await LocalSocialQuestionnaireDatabase.CreateAsync(applySocialMigrations: true);
+        await using var context = database.Open();
 
         var authorizedProfileId = Guid.NewGuid();
         var otherProfileId = Guid.NewGuid();
