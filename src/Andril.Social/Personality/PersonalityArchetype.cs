@@ -58,8 +58,14 @@ public sealed class PersonalityArchetype : IEquatable<PersonalityArchetype>
 {
     public PersonalityArchetypeId Id { get; }
     public string Name { get; }
+
+    [JsonIgnore]
     public SocialEngagementTendency Social { get; }
+
+    [JsonIgnore]
     public CommunicationTendency Communication { get; }
+
+    [JsonIgnore]
     public PlanningTendency Planning { get; }
 
     private PersonalityArchetype(
@@ -139,21 +145,21 @@ public sealed class PersonalityArchetype : IEquatable<PersonalityArchetype>
 /// Must be bound to the exact questionnaire revision.
 /// </summary>
 public sealed record PersonalityArchetypeConfirmation(
-    string QuestionnaireRevision,
-    SocialEngagementTendency? SocialConfirmation = null,
-    CommunicationTendency? CommunicationConfirmation = null,
-    PlanningTendency? PlanningConfirmation = null
-);
+    [property: JsonIgnore] string QuestionnaireRevision,
+    [property: JsonIgnore] SocialEngagementTendency? SocialConfirmation = null,
+    [property: JsonIgnore] CommunicationTendency? CommunicationConfirmation = null,
+    [property: JsonIgnore] PlanningTendency? PlanningConfirmation = null)
+{
+    public override string ToString() => "PersonalityArchetypeConfirmation [private]";
+}
 
 /// <summary>
 /// Deterministic result of personality archetype classification.
 /// </summary>
 public sealed class PersonalityArchetypeClassificationResult
 {
-    [JsonIgnore]
     public bool IsSuccess => Archetype is not null;
 
-    [JsonIgnore]
     public PersonalityArchetype? Archetype { get; }
 
     [JsonIgnore]
@@ -179,14 +185,16 @@ public sealed class PersonalityArchetypeClassificationResult
         SocialEngagementTendency? social,
         CommunicationTendency? communication,
         PlanningTendency? planning,
-        IReadOnlyList<string> unresolvedAxes,
+        IReadOnlyList<string>? unresolvedAxes,
         string? errorMessage)
     {
         Archetype = archetype;
         SocialTendency = social;
         CommunicationTendency = communication;
         PlanningTendency = planning;
-        UnresolvedAxes = unresolvedAxes ?? Array.Empty<string>();
+        UnresolvedAxes = unresolvedAxes is null || unresolvedAxes.Count == 0
+            ? Array.Empty<string>()
+            : unresolvedAxes.ToArray();
         ErrorMessage = errorMessage;
     }
 
@@ -208,5 +216,5 @@ public sealed class PersonalityArchetypeClassificationResult
         new(null, null, null, null, Array.Empty<string>(), errorMessage);
 
     public override string ToString() =>
-        IsSuccess ? $"Classification: {Archetype!.Id} ({Archetype.Name})" : $"Classification Incomplete: {ErrorMessage}";
+        IsSuccess ? $"PersonalityArchetypeClassificationResult: {Archetype!.Id} ({Archetype.Name})" : "PersonalityArchetypeClassificationResult [incomplete]";
 }
