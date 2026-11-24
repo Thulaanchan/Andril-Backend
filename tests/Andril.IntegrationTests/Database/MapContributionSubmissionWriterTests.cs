@@ -17,7 +17,7 @@ using Xunit;
 
 namespace Andril.IntegrationTests.Database;
 
-public sealed class MapContributionSubmissionWriterTests
+public sealed partial class MapContributionSubmissionWriterTests
 {
     [MapCapturePostgresFact]
     public Task SubmissionWindowIsRecheckedAfterTheSessionLockAndBeforeCommit() =>
