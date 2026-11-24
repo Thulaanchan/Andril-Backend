@@ -96,6 +96,16 @@ public sealed class LearningSetupSnapshot
         }
         Scope = scope; Selections = copiedSelections.AsReadOnly(); Goals = copiedGoals.AsReadOnly();
     }
+    // Assembly-only composition: validate new selections through the same constructor and
+    // retain the already detached immutable goals, without recreating or changing goal IDs.
+    internal LearningSetupSnapshot WithSelections(IEnumerable<LearningSkillSelection> selections)
+    {
+        var validated = new LearningSetupSnapshot(Scope, selections, []);
+        return new LearningSetupSnapshot(Scope, validated.Selections, Goals);
+    }
+    private LearningSetupSnapshot(LearningSetupScope scope, IReadOnlyList<Selection> selections, IReadOnlyList<Goal> goals)
+    { Scope = scope; Selections = selections; Goals = goals; }
+
     public override string ToString() => "Private Learning setup snapshot [rows and scope omitted]";
 
     public sealed class Selection
