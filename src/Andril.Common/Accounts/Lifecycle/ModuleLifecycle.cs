@@ -80,7 +80,11 @@ internal sealed class ActiveModuleMembership : ModuleMembership
         };
     }
 
-    internal static void ValidateEvidence(ModuleMembershipScope scope, ModuleActivationEvidence evidence, ModuleMembership? current)
+    internal static void ValidateEvidence(ModuleMembershipScope scope, ModuleActivationEvidence evidence, ModuleMembership? current) =>
+        ValidatePrerequisites(scope, evidence, current, evidence.RestrictionsAllowActivation);
+
+    internal static void ValidatePrerequisites(ModuleMembershipScope scope, ModuleActivationEvidence evidence,
+        ModuleMembership? current, bool? standingAllowsOperation)
     {
         if (scope.AccountId == Guid.Empty || !ModuleNames.IsValid(scope.Module)
             || evidence.Scope != scope || (current is not null && current.Scope != scope))
@@ -99,9 +103,9 @@ internal sealed class ActiveModuleMembership : ModuleMembership
             || account.SupabaseUserId == Guid.Empty || account.SupabaseUserId != evidence.ConfirmedSubject)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.UnconfirmedAccount);
 
-        if (evidence.RestrictionsAllowActivation is null)
+        if (standingAllowsOperation is null)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.EvidenceUnavailable);
-        if (evidence.RestrictionsAllowActivation == false)
+        if (standingAllowsOperation == false)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.AccountRestricted);
 
         if (scope.Module == ModuleNames.Social ? evidence.SocialOptIn != true : evidence.SocialOptIn == true)

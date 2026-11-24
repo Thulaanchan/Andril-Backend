@@ -1,5 +1,7 @@
 {
   "requiredM2": [
+    "Andril.IntegrationTests.Lifecycle.LifecycleAuthorizationContractPersistenceTests.DeactivationContractReplaysOnceAndStatusReadsLeaveOtherModulesUnchanged",
+    "Andril.IntegrationTests.Lifecycle.LifecycleAuthorizationContractPersistenceTests.FreshInactiveEvidenceDeniesReadOfRetainedOwnedProfile",
     "Andril.IntegrationTests.Lifecycle.ModuleNavigationPersistenceTests.ScopedStatusReadsLeaveMembershipJournalsStarterAndProfilesUnchanged",
     "Andril.IntegrationTests.Lifecycle.ModuleNavigationPersistenceTests.ReadRacingDeactivationIsAConsistentSnapshotAndFreshReadSeesInactive",
     "Andril.IntegrationTests.Lifecycle.DeactivationPersistenceTests.RoundTripAndExactReplayPreserveProfileStarterOtherModuleAndFirstActivation",
