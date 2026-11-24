@@ -214,4 +214,241 @@ public class SocialRecommendationRankingPolicyTests
         Assert.Equal(unrotated.Count, rotated1.Count);
         Assert.Equal(unrotated[1].CandidateProfileId, rotated1[0].CandidateProfileId);
     }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(5)]
+    [InlineData(100)]
+    [InlineData(1000000)]
+    public void RankCandidates_RotationDoesNotMoveStandardAheadOfStrong(int rotationOffset)
+    {
+        var interestId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        var caller = new SocialScoringProfileEvidence(
+            Guid.NewGuid(),
+            25,
+            "male",
+            new SocialExplorePreferences(
+                new SocialExploreRangeFilters(20, 30, 0, 50),
+                "Women",
+                new[] { "English" },
+                new[] { "Dating" }),
+            confirmedLanguages: new[] { "English" },
+            confirmedConnectionGoals: new[] { "Dating" },
+            confirmedSocialInterestIds: new[] { interestId });
+
+        var candStrong1 = CreateSimpleEvidence(confirmedSocialInterests: new[] { interestId });
+        var candStrong2 = CreateSimpleEvidence(confirmedSocialInterests: new[] { interestId });
+
+        var candStandard1 = new SocialScoringProfileEvidence(
+            Guid.NewGuid(),
+            25,
+            "female",
+            new SocialExplorePreferences(
+                new SocialExploreRangeFilters(18, 40, 0, 50),
+                "Men",
+                new[] { "French" },
+                new[] { "Dating" }),
+            confirmedLanguages: new[] { "French" },
+            confirmedConnectionGoals: new[] { "Dating" },
+            confirmedSocialInterestIds: new[] { interestId });
+
+        var candStandard2 = new SocialScoringProfileEvidence(
+            Guid.NewGuid(),
+            25,
+            "female",
+            new SocialExplorePreferences(
+                new SocialExploreRangeFilters(18, 40, 0, 50),
+                "Men",
+                new[] { "French" },
+                new[] { "Dating" }),
+            confirmedLanguages: new[] { "French" },
+            confirmedConnectionGoals: new[] { "Dating" },
+            confirmedSocialInterestIds: new[] { interestId });
+
+        var candidates = new (SocialScoringProfileEvidence Candidate, int? ApproximateDistanceKm)[]
+        {
+            (candStandard1, 40),
+            (candStrong1, 5),
+            (candStandard2, 40),
+            (candStrong2, 5)
+        };
+
+        var ranked = SocialRecommendationRankingPolicy.RankCandidates(caller, candidates, rotationOffset: rotationOffset);
+
+        Assert.Equal(4, ranked.Count);
+
+        // Strong recommendations MUST ALWAYS be at index 0 and 1
+        Assert.Equal(SocialRecommendationTier.Strong, ranked[0].Tier);
+        Assert.Equal(SocialRecommendationTier.Strong, ranked[1].Tier);
+
+        // Standard recommendations MUST ALWAYS be at index 2 and 3
+        Assert.Equal(SocialRecommendationTier.Standard, ranked[2].Tier);
+        Assert.Equal(SocialRecommendationTier.Standard, ranked[3].Tier);
+    }
+
+    [Fact]
+    public void RankCandidates_RotationDoesNotMoveLowerScoresAheadOfHigherScores()
+    {
+        var interestId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        var caller = new SocialScoringProfileEvidence(
+            Guid.NewGuid(),
+            25,
+            "male",
+            new SocialExplorePreferences(
+                new SocialExploreRangeFilters(20, 30, 0, 50),
+                "Women",
+                new[] { "English" },
+                new[] { "Dating" }),
+            confirmedLanguages: new[] { "English" },
+            confirmedConnectionGoals: new[] { "Dating" },
+            confirmedSocialInterestIds: new[] { interestId });
+
+        // Higher score candidate (distance 0 km)
+        var candHigherScore = CreateSimpleEvidence(confirmedSocialInterests: new[] { interestId });
+
+        // Two equal lower-score candidates (distance 15 km)
+        var candLowerScore1 = CreateSimpleEvidence(confirmedSocialInterests: new[] { interestId });
+        var candLowerScore2 = CreateSimpleEvidence(confirmedSocialInterests: new[] { interestId });
+
+        var candidates = new (SocialScoringProfileEvidence Candidate, int? ApproximateDistanceKm)[]
+        {
+            (candLowerScore1, 15),
+            (candHigherScore, 0),
+            (candLowerScore2, 15)
+        };
+
+        // Regardless of rotation offset, highest score remains at index 0
+        for (int offset = 0; offset <= 5; offset++)
+        {
+            var ranked = SocialRecommendationRankingPolicy.RankCandidates(caller, candidates, rotationOffset: offset);
+            Assert.Equal(3, ranked.Count);
+            Assert.Equal(candHigherScore.ProfileId, ranked[0].CandidateProfileId);
+        }
+    }
+
+    [Fact]
+    public void RankCandidates_MultipleIndependentTieGroupsRemainCorrectlyOrdered()
+    {
+        var interestId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        var caller = new SocialScoringProfileEvidence(
+            Guid.NewGuid(),
+            25,
+            "male",
+            new SocialExplorePreferences(
+                new SocialExploreRangeFilters(20, 30, 0, 50),
+                "Women",
+                new[] { "English" },
+                new[] { "Dating" }),
+            confirmedLanguages: new[] { "English" },
+            confirmedConnectionGoals: new[] { "Dating" },
+            confirmedSocialInterestIds: new[] { interestId });
+
+        // Strong tie group (2 candidates)
+        var strong1 = CreateSimpleEvidence(confirmedSocialInterests: new[] { interestId });
+        var strong2 = CreateSimpleEvidence(confirmedSocialInterests: new[] { interestId });
+
+        // Standard tie group (2 candidates)
+        var standard1 = new SocialScoringProfileEvidence(
+            Guid.NewGuid(), 25, "female",
+            new SocialExplorePreferences(new SocialExploreRangeFilters(18, 40, 0, 50), "Men", new[] { "French" }, new[] { "Dating" }),
+            confirmedLanguages: new[] { "French" }, confirmedConnectionGoals: new[] { "Dating" }, confirmedSocialInterestIds: new[] { interestId });
+        var standard2 = new SocialScoringProfileEvidence(
+            Guid.NewGuid(), 25, "female",
+            new SocialExplorePreferences(new SocialExploreRangeFilters(18, 40, 0, 50), "Men", new[] { "French" }, new[] { "Dating" }),
+            confirmedLanguages: new[] { "French" }, confirmedConnectionGoals: new[] { "Dating" }, confirmedSocialInterestIds: new[] { interestId });
+
+        var candidates = new (SocialScoringProfileEvidence Candidate, int? ApproximateDistanceKm)[]
+        {
+            (standard1, 40),
+            (strong1, 5),
+            (standard2, 40),
+            (strong2, 5)
+        };
+
+        var ranked = SocialRecommendationRankingPolicy.RankCandidates(caller, candidates, rotationOffset: 1);
+
+        Assert.Equal(4, ranked.Count);
+        Assert.Equal(SocialRecommendationTier.Strong, ranked[0].Tier);
+        Assert.Equal(SocialRecommendationTier.Strong, ranked[1].Tier);
+        Assert.Equal(SocialRecommendationTier.Standard, ranked[2].Tier);
+        Assert.Equal(SocialRecommendationTier.Standard, ranked[3].Tier);
+    }
+
+    [Fact]
+    public void DetermineTier_AndTierOrdering_UnscoredRemainsBehindAllScoredTiers()
+    {
+        var unscored = SocialCompatibilityScoreResult.Unscored(
+            new Dictionary<SocialCompatibilityFactor, SocialScoringFactorBreakdown>());
+
+        var tier = SocialRecommendationRankingPolicy.DetermineTier(unscored);
+        Assert.Equal(SocialRecommendationTier.Unscored, tier);
+
+        Assert.True((int)tier > (int)SocialRecommendationTier.OtherEligible);
+        Assert.True((int)tier > (int)SocialRecommendationTier.Standard);
+        Assert.True((int)tier > (int)SocialRecommendationTier.Strong);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(5)]
+    [InlineData(100)]
+    public void RankCandidates_LowerTierProfiles_RemainBehindAllHigherTierProfilesUnderRotation(int rotationOffset)
+    {
+        var interestId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+
+        var caller = new SocialScoringProfileEvidence(
+            Guid.NewGuid(),
+            25,
+            "male",
+            new SocialExplorePreferences(
+                new SocialExploreRangeFilters(20, 30, 0, 50),
+                "Women",
+                new[] { "English" },
+                new[] { "Dating" }),
+            confirmedLanguages: new[] { "English" },
+            confirmedConnectionGoals: new[] { "Dating" },
+            confirmedSocialInterestIds: new[] { interestId });
+
+        // Strong candidate (score ~96, coverage 84.6% -> Strong)
+        var strongCand = CreateSimpleEvidence(confirmedSocialInterests: new[] { interestId });
+
+        // Standard candidate (score ~52, coverage 84.6% -> Standard)
+        var standardCand = new SocialScoringProfileEvidence(
+            Guid.NewGuid(), 25, "female",
+            new SocialExplorePreferences(new SocialExploreRangeFilters(18, 40, 0, 50), "Men", new[] { "French" }, new[] { "Dating" }),
+            confirmedLanguages: new[] { "French" },
+            confirmedConnectionGoals: new[] { "Dating" },
+            confirmedSocialInterestIds: new[] { interestId });
+
+        // OtherEligible candidate (score ~3.6 -> OtherEligible)
+        var otherCand = new SocialScoringProfileEvidence(
+            Guid.NewGuid(), 25, "female",
+            new SocialExplorePreferences(new SocialExploreRangeFilters(18, 40, 0, 50), "Men", new[] { "French" }, new[] { "Friendship" }),
+            confirmedLanguages: new[] { "French" },
+            confirmedConnectionGoals: new[] { "Friendship" },
+            confirmedSocialInterestIds: new[] { Guid.NewGuid() });
+
+        var candidates = new (SocialScoringProfileEvidence Candidate, int? ApproximateDistanceKm)[]
+        {
+            (otherCand, 48),
+            (standardCand, 40),
+            (strongCand, 5)
+        };
+
+        var ranked = SocialRecommendationRankingPolicy.RankCandidates(caller, candidates, rotationOffset: rotationOffset);
+
+        Assert.Equal(3, ranked.Count);
+        Assert.Equal(SocialRecommendationTier.Strong, ranked[0].Tier);
+        Assert.Equal(SocialRecommendationTier.Standard, ranked[1].Tier);
+        Assert.Equal(SocialRecommendationTier.OtherEligible, ranked[2].Tier);
+        Assert.Equal(strongCand.ProfileId, ranked[0].CandidateProfileId);
+        Assert.Equal(standardCand.ProfileId, ranked[1].CandidateProfileId);
+        Assert.Equal(otherCand.ProfileId, ranked[2].CandidateProfileId);
+    }
 }
