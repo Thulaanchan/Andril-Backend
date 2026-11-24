@@ -23,6 +23,14 @@ internal sealed class MapContributionSubmissionService
     internal async Task<MapSubmissionResult> SubmitAsync(Guid attractionId, Guid captureSessionId,
         MapContributionLocationEvidence? reportedLocation, string? privatePhotoStorageObjectKey,
         string? description, CancellationToken cancellationToken = default)
+        => (await SubmitAttemptAsync(attractionId, captureSessionId, reportedLocation,
+            privatePhotoStorageObjectKey, description, cancellationToken)).Result;
+
+    // Optional internal handoff for subsequent read-only comparison. Legacy callers still
+    // receive only MapSubmissionResult, with the same cancellation and writer semantics.
+    internal async Task<MapSubmissionAttempt> SubmitAttemptAsync(Guid attractionId, Guid captureSessionId,
+        MapContributionLocationEvidence? reportedLocation, string? privatePhotoStorageObjectKey,
+        string? description, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
         MapContributionSubmissionPreflight.PreparedSubmission? prepared;
@@ -36,18 +44,20 @@ internal sealed class MapContributionSubmissionService
         catch (Exception)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return new(MapSubmissionOutcome.InfrastructureFailure);
+            return new(new(MapSubmissionOutcome.InfrastructureFailure), null);
         }
 
         if (prepared is null)
-            return new(MapSubmissionOutcome.Denied);
+            return new(new(MapSubmissionOutcome.Denied), null);
+
+        var originalEvidence = MapSubmissionOriginalEvidence.Capture(prepared);
 
         try
         {
             var result = await _writer.SubmitAsync(prepared, cancellationToken);
             // Never check cancellation after a writer result: commit may already have succeeded.
             // Preserve OutcomeUnknown; never retry, re-authorize or start another write here.
-            return result switch
+            var safeResult = result switch
             {
                 { Outcome: MapSubmissionOutcome.Created or MapSubmissionOutcome.ExistingAuthorized,
                     ContributionId: Guid id } when id != Guid.Empty => result,
@@ -55,12 +65,13 @@ internal sealed class MapContributionSubmissionService
                     or MapSubmissionOutcome.OutcomeUnknown } => new(result.Outcome),
                 _ => new(MapSubmissionOutcome.OutcomeUnknown)
             };
+            return new(safeResult, originalEvidence);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception)
         {
             // An unexpected writer failure does not establish rollback or non-commit.
-            return new(MapSubmissionOutcome.OutcomeUnknown);
+            return new(new(MapSubmissionOutcome.OutcomeUnknown), originalEvidence);
         }
     }
 }
