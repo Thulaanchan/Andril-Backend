@@ -33,12 +33,14 @@ public sealed class PersonalityEvaluationProfile
         PersonalityArchetypeConfirmation? confirmation = null,
         PersonalityPartnerPreferences? partnerPreferences = null)
     {
-        Answers = answers;
+        Answers = answers is null ? null : answers.ToArray();
         Version = version;
         Revision = revision;
         Confirmation = confirmation;
         PartnerPreferences = partnerPreferences ?? PersonalityPartnerPreferences.Default;
     }
+
+    public override string ToString() => "PersonalityEvaluationProfile [private]";
 }
 
 /// <summary>
@@ -91,8 +93,8 @@ public sealed class ReciprocalPersonalityCompatibilityResult
         new(false, null, null, null, 0, reason);
 
     public override string ToString() =>
-        IsAvailable ? $"Compatibility Score: {Score:F4} (S: {DetailedQuestionnaireSimilarity:F4}, R: {ReciprocalPreferenceAlignment?.ToString("F4") ?? "none"})"
-                    : $"Compatibility Unavailable: {ReasonUnavailable}";
+        IsAvailable ? $"ReciprocalPersonalityCompatibilityResult: Available (Score={Score:F4})"
+                    : "ReciprocalPersonalityCompatibilityResult: Unavailable [private]";
 }
 
 /// <summary>
@@ -252,7 +254,18 @@ public static class ReciprocalPersonalityCompatibilityEvaluator
             if (a is null) return null;
             if (string.IsNullOrWhiteSpace(a.QuestionId) || !ValidQuestionIds.Contains(a.QuestionId)) return null;
             if (map.ContainsKey(a.QuestionId)) return null;
-            if (!int.TryParse(a.OptionId, out var val) || val < 1 || val > 5) return null;
+
+            int val;
+            switch (a.OptionId)
+            {
+                case "1": val = 1; break;
+                case "2": val = 2; break;
+                case "3": val = 3; break;
+                case "4": val = 4; break;
+                case "5": val = 5; break;
+                default: return null;
+            }
+
             map[a.QuestionId] = val;
         }
 
