@@ -181,6 +181,10 @@ public sealed class PostgresSocialQuestionnaireReadAdapter : ISocialQuestionnair
 
             return matches.Count > 0;
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception)
         {
             return false;
