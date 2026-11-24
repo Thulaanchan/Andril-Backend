@@ -26,6 +26,7 @@ internal interface IControlledProfileAuthority
 
 internal sealed class ControlledModuleProfileOperations(ControlledModuleLifecycleStore store, ICurrentUser user,
     LifecycleProfileAuthorization authorization, IControlledProfileAuthority authority, IPrivateProfilePhotoObjectStorage? objects = null)
+    : IPrivateProfileCompletionReader
 {
     internal Task<PrivateProfileDto> CreateAsync(string module, CancellationToken ct = default) =>
         store.WithProfileAsync(user, module, PrivateProfileOperation.Create, authorization, authority, async (db, scope, profile) =>
@@ -57,6 +58,13 @@ internal sealed class ControlledModuleProfileOperations(ControlledModuleLifecycl
         return store.WithProfileAsync(user, module, PrivateProfileOperation.Read, authorization, authority,
             (_, _, profile) => Task.FromResult(Project(profile!)), release, ct);
     }
+
+    Task<ProfileCompletionStatus> IPrivateProfileCompletionReader.ReadAsync(string module, CancellationToken cancellationToken) =>
+        store.WithProfileAsync(user, module, PrivateProfileOperation.Read, authorization, authority,
+            (_, _, profile) => Task.FromResult(profile is null
+                ? new ProfileCompletionStatus("private_profile_missing")
+                : PrivateProfileCompletionReader.Evaluate(module, Project(profile))),
+            release: null, cancellationToken, checkCreateWhenMissing: true);
 
     internal Task ReservePhotoAsync(string module, Guid requestId, PhotoUploadEvidence evidence,
         Func<Guid, Guid, CancellationToken, Task> acceptReservation, CancellationToken ct = default)
@@ -130,7 +138,7 @@ internal sealed partial class ControlledModuleLifecycleStore
     internal async Task<T> WithProfileAsync<T>(ICurrentUser user, string module, PrivateProfileOperation operation,
         LifecycleProfileAuthorization authorization, IControlledProfileAuthority purposeAuthority,
         Func<AccountsDbContext, ModuleMembershipScope, PrivateModuleProfile?, Task<T>> access,
-        Func<T, CancellationToken, Task>? release, CancellationToken ct)
+        Func<T, CancellationToken, Task>? release, CancellationToken ct, bool checkCreateWhenMissing = false)
     {
         ct.ThrowIfCancellationRequested();
         if (!user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty || !ModuleNames.IsValid(module))
@@ -149,6 +157,9 @@ internal sealed partial class ControlledModuleLifecycleStore
             // are loaded before lifecycle and purpose authorization.
             var profileId = await db.PrivateProfiles.Where(x => x.AccountId == scope.AccountId && x.Module == module)
                 .Select(x => (Guid?)x.Id).SingleOrDefaultAsync(ct);
+            // Only the setup status projection can report a missing profile. It checks that
+            // creation is permitted, without creating a profile or changing ordinary read access.
+            var purpose = checkCreateWhenMissing && profileId is null ? PrivateProfileOperation.Create : operation;
             await ValidateAsync(eligibility, membership, profileId);
 
             var profile = profileId is null ? null
@@ -177,10 +188,10 @@ internal sealed partial class ControlledModuleLifecycleStore
                     throw new AccountStoreUnavailableException();
                 if (row?.Membership is not ActiveModuleMembership active)
                     throw new ProfileAccessDeniedException();
-                var permission = await purposeAuthority.ReadAsync(subject, scope, ownedId, operation,
+                var permission = await purposeAuthority.ReadAsync(subject, scope, ownedId, purpose,
                     active.Revision, evidence.CurrentEvidenceVersion, ct);
                 ct.ThrowIfCancellationRequested();
-                var outcome = authorization.DecideOwnedProfile(scope, operation, ownedId,
+                var outcome = authorization.DecideOwnedProfile(scope, purpose, ownedId,
                     new(evidence, active, permission.StandingAllowsAccess, permission.Purpose, permission.ValidUntilUtc));
                 if (outcome == ModuleAuthorizationOutcome.Unavailable)
                     throw new AccountStoreUnavailableException();

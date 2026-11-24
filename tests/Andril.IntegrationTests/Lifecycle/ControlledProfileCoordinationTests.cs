@@ -1,10 +1,12 @@
 using Andril.Common.Accounts.Lifecycle;
 using Andril.Common.Accounts.Onboarding;
 using Andril.Common.Accounts.Profiles;
+using Andril.Common.Accounts.StarterModules;
 using Andril.Common.DTOs;
 using Andril.Common.Interfaces;
 using Andril.IntegrationTests.Database;
 using Andril.Persistence.Accounts;
+using Andril.Persistence.Repositories.Common;
 using Andril.Shared.Authentication;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -15,6 +17,64 @@ namespace Andril.IntegrationTests.Lifecycle;
 [Collection("ControlledLifecyclePostgreSQL")]
 public sealed class ControlledProfileCoordinationTests
 {
+    [LocalPostgresFact]
+    public async Task ControlledOnboardingResumesFromCurrentLifecycleAndOwnedProfile()
+    {
+        const string module = "social";
+        await using var db = await ControlledLifecycleDatabase.CreateAsync();
+        db.Authority.SocialOptIn = true;
+        var actor = new Actor(db.Subject);
+        var store = db.Store(enableDeactivation: true);
+        var purpose = new PurposeAuthority();
+        var profiles = new ControlledModuleProfileOperations(store, actor, new(actor, actor, TimeProvider.System), purpose);
+        await using (var setup = db.Open())
+        {
+            var accounts = new AccountRepository(setup);
+            var starter = new StarterModuleService(actor, accounts, new StarterModuleRepository(setup),
+                db.Authority, TimeProvider.System);
+            await starter.SelectAsync(module, true);
+        }
+
+        async Task<OnboardingStatus> Resume()
+        {
+            await using var read = db.Open();
+            var accounts = new AccountRepository(read);
+            var starter = new StarterModuleService(actor, accounts, new StarterModuleRepository(read),
+                db.Authority, TimeProvider.System);
+            return await new OnboardingStatusService(actor, actor, accounts, starter)
+                .GetControlledAsync(new(actor, store), profiles);
+        }
+
+        Assert.Equal("activate_module", (await Resume()).NextStep);
+        await db.Service(store).ExecuteAsync(db.Subject, new(module, Guid.NewGuid(), true), Guid.NewGuid());
+
+        purpose.DeniedOperation = PrivateProfileOperation.Create;
+        await Assert.ThrowsAsync<OnboardingDependencyException>(Resume);
+        purpose.DeniedOperation = null;
+        Assert.Equal("create_private_profile", (await Resume()).NextStep);
+        await using (var read = db.Open())
+            Assert.Empty(await read.PrivateProfiles.ToListAsync());
+
+        var profile = await profiles.CreateAsync(module);
+        Assert.Equal("complete_module_setup", (await Resume()).NextStep);
+        await profiles.EditAsync(module, new("Social Learner", null, "private"));
+        var complete = await Resume();
+        Assert.Equal("onboarding_complete", complete.NextStep);
+        Assert.True(complete.OnboardingComplete);
+        Assert.False(complete.ModuleHomeAuthorized);
+
+        purpose.DeniedOperation = PrivateProfileOperation.Read;
+        await Assert.ThrowsAsync<OnboardingDependencyException>(Resume);
+        purpose.DeniedOperation = null;
+        await db.Service(store).ExecuteAsync(db.Subject,
+            new(module, Guid.NewGuid(), false, 1, ModuleLifecycleOperation.Deactivate, new(db.AccountId, module)), Guid.NewGuid());
+        var inactive = await Resume();
+        Assert.Equal("reactivate_module", inactive.NextStep);
+        Assert.False(inactive.OnboardingComplete);
+        await using var owner = db.Open();
+        Assert.Equal(profile.ProfileId, (await owner.PrivateProfiles.SingleAsync()).Id);
+    }
+
     [LocalPostgresFact]
     public async Task ActiveSetupIsUniqueAndInactiveAndForeignProfilesAreDenied()
     {
@@ -260,6 +320,7 @@ public sealed class ControlledProfileCoordinationTests
         private int checks;
         private Barrier? barrier;
         internal bool Unavailable { get; set; }
+        internal PrivateProfileOperation? DeniedOperation { get; set; }
 
         internal Barrier Pause(PrivateProfileOperation operation, bool secondCheck)
         {
@@ -277,7 +338,9 @@ public sealed class ControlledProfileCoordinationTests
                 gate.Entered.TrySetResult();
                 await gate.Release.Task.WaitAsync(ct);
             }
-            var outcome = Unavailable ? ModuleAuthorizationOutcome.Unavailable : ModuleAuthorizationOutcome.Satisfied;
+            var outcome = Unavailable ? ModuleAuthorizationOutcome.Unavailable
+                : operation == DeniedOperation ? ModuleAuthorizationOutcome.Denied
+                : ModuleAuthorizationOutcome.Satisfied;
             return new(true, new(scope, profileId, operation, revision, eligibilityVersion, outcome), DateTimeOffset.UtcNow.AddMinutes(1));
         }
     }

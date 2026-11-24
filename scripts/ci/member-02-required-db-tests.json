@@ -2,6 +2,7 @@
   "requiredM2": [
     "Andril.IntegrationTests.Lifecycle.LifecycleAuthorizationContractPersistenceTests.ControlledHttpPersistsRestrictedOwnerAndAbsentNoOpReceiptsWithoutProfileExposure",
     "Andril.IntegrationTests.Lifecycle.ControlledProfileCoordinationTests.ActiveSetupIsUniqueAndInactiveAndForeignProfilesAreDenied",
+    "Andril.IntegrationTests.Lifecycle.ControlledProfileCoordinationTests.ControlledOnboardingResumesFromCurrentLifecycleAndOwnedProfile",
     "Andril.IntegrationTests.Lifecycle.ControlledProfileCoordinationTests.EditBeforeDeactivationCommitsAndLaterEditCannotUseEarlierAuthorization",
     "Andril.IntegrationTests.Lifecycle.ControlledProfileCoordinationTests.ReadReleaseRunsUnderFenceAndAfterDeactivationDisclosesNothing",
     "Andril.IntegrationTests.Lifecycle.ControlledProfileCoordinationTests.DelayedPhotoCannotFinalizeWhenDeactivationHoldsTheFenceFirst",

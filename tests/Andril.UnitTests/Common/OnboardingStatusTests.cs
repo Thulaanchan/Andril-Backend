@@ -1,6 +1,7 @@
 
 using Andril.Common.Accounts;
 using Andril.Common.Accounts.Eligibility;
+using Andril.Common.Accounts.Lifecycle;
 using Andril.Common.Accounts.Onboarding;
 using Andril.Common.Accounts.Policies;
 using Andril.Common.Accounts.Profiles;
@@ -185,6 +186,94 @@ public sealed class OnboardingStatusTests
 
         Assert.Equal("profile_setup", results[0].NextStep);
         Assert.Equal("learning", results[0].SelectedModule);
+    }
+
+    [Theory]
+    [InlineData("social", nameof(ModuleNavigationState.NeverActivated), null, false, "activate_module")]
+    [InlineData("social", nameof(ModuleNavigationState.Inactive), null, false, "reactivate_module")]
+    [InlineData("social", nameof(ModuleNavigationState.Active), "private_profile_missing", false, "create_private_profile")]
+    [InlineData("social", nameof(ModuleNavigationState.Active), "social_display_name", false, "complete_module_setup")]
+    [InlineData("social", nameof(ModuleNavigationState.Active), null, true, "onboarding_complete")]
+    [InlineData("learning", nameof(ModuleNavigationState.Active), "approved_profile_contract", false, "complete_module_setup")]
+    [InlineData("hobbies", nameof(ModuleNavigationState.Active), "approved_profile_contract", false, "complete_module_setup")]
+    public async Task ControlledProgressUsesLifecycleAndScopedSetup(string module, string lifecycle,
+        string? dependency, bool complete, string expectedStep)
+    {
+        var fixture = new Fixture();
+        fixture.Ready();
+        fixture.Membership = StarterMembership.Create(fixture.Account.Id, module,
+            module == "social" ? true : null, fixture.Now);
+        var state = Enum.Parse<ModuleNavigationState>(lifecycle);
+        var evidence = new ControlledEvidence(fixture, module, state, new(dependency, complete));
+
+        var result = await fixture.Service().GetControlledAsync(new(fixture, evidence), evidence);
+
+        Assert.Equal(expectedStep, result.NextStep);
+        Assert.Equal(module, result.SelectedModule);
+        Assert.Equal(dependency, result.BlockingDependency);
+        Assert.Equal(complete, result.OnboardingComplete);
+        Assert.False(result.ModuleHomeAuthorized);
+        Assert.Equal(state == ModuleNavigationState.Active ? 1 : 0, evidence.ProfileReads);
+    }
+
+    [Fact]
+    public async Task ControlledProgressRechecksAuthorityAndCurrentConsentOnResume()
+    {
+        var fixture = new Fixture();
+        fixture.Ready();
+        fixture.Membership = StarterMembership.Create(fixture.Account.Id, "social", true, fixture.Now);
+        var evidence = new ControlledEvidence(fixture, "social", ModuleNavigationState.Active, new(null, true));
+        Task<OnboardingStatus> Resume() => fixture.Service().GetControlledAsync(new(fixture, evidence), evidence);
+
+        Assert.True((await Resume()).OnboardingComplete);
+        evidence.NavigationOutcome = ModuleAuthorizationOutcome.Unavailable;
+        await Assert.ThrowsAsync<OnboardingDependencyException>(Resume);
+        Assert.Equal(1, evidence.ProfileReads);
+
+        evidence.NavigationOutcome = ModuleAuthorizationOutcome.Satisfied;
+        evidence.ProfileRevoked = true;
+        await Assert.ThrowsAsync<OnboardingDependencyException>(Resume);
+
+        fixture.Policies.Clear();
+        var result = await Resume();
+        Assert.Equal("review_policies", result.NextStep);
+        Assert.False(result.OnboardingComplete);
+        Assert.Equal(2, evidence.ProfileReads);
+    }
+
+    private sealed class ControlledEvidence(Fixture fixture, string module, ModuleNavigationState state,
+        ProfileCompletionStatus completion) : IModuleNavigationReader, IPrivateProfileCompletionReader
+    {
+        private readonly Guid version = Guid.NewGuid();
+        internal ModuleAuthorizationOutcome NavigationOutcome = ModuleAuthorizationOutcome.Satisfied;
+        internal bool ProfileRevoked;
+        internal int ProfileReads;
+
+        public Task<ModuleNavigationSnapshot> ReadNavigationAsync(Guid subject, string requestedModule, CancellationToken ct)
+        {
+            Assert.Equal(module, requestedModule);
+            Assert.Equal(fixture.Account.SupabaseUserId, subject);
+            var scope = new ModuleMembershipScope(fixture.Account.Id, module);
+            var evidence = new ModuleActivationEvidence(scope, NavigationOutcome, fixture.Account, subject,
+                fixture.Demographics, fixture.Catalog, fixture.Policies, true, module == "social" ? true : null,
+                version, version, fixture.Now);
+            ModuleMembership? membership = state switch
+            {
+                ModuleNavigationState.Active => ActiveModuleMembership.Restore(scope, 1),
+                ModuleNavigationState.Inactive => new InactiveModuleMembership(scope, 2),
+                _ => null
+            };
+            return Task.FromResult(new ModuleNavigationSnapshot(evidence, membership));
+        }
+
+        public Task<ProfileCompletionStatus> ReadAsync(string requestedModule, CancellationToken ct = default)
+        {
+            Assert.Equal(module, requestedModule);
+            ProfileReads++;
+            if (ProfileRevoked)
+                throw new ProfileAccessDeniedException();
+            return Task.FromResult(completion);
+        }
     }
 
     // NEW TEST:
