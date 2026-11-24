@@ -132,6 +132,31 @@ public sealed class NotificationPushOrchestrationServiceTests
     }
 
     [Fact]
+    public async Task InvalidModule_ShouldDenyBeforeAccess()
+    {
+        var f = CreateFixture();
+
+        var result = await f.Service.TrySendAsync(
+            Guid.NewGuid(),
+            (NotificationModule)999,
+            Guid.NewGuid(),
+            Guid.NewGuid());
+
+        Assert.Equal(
+            NotificationPushOutcome.NotSent,
+            result.Outcome);
+
+        Assert.False(result.WasAccepted);
+        Assert.Equal(0, f.Access.Calls);
+
+        AssertNoDownstreamCalls(
+            f.Repository,
+            f.Preferences,
+            f.Devices,
+            f.Sender);
+    }
+
+    [Fact]
     public async Task DifferentModuleScope_ShouldDeny()
     {
         var f = CreateFixture();

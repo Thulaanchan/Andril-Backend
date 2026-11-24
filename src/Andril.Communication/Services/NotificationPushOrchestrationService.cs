@@ -44,7 +44,8 @@ public sealed class NotificationPushOrchestrationService
 
         if (authenticatedAccountId == Guid.Empty ||
             notificationId == Guid.Empty ||
-            deviceRegistrationId == Guid.Empty)
+            deviceRegistrationId == Guid.Empty ||
+            !Enum.IsDefined(module))
         {
             return Denied();
         }
