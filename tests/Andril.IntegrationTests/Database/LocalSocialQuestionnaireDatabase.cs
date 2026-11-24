@@ -1,9 +1,11 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Andril.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Npgsql;
+using Xunit;
 
 namespace Andril.IntegrationTests.Database;
 
@@ -12,6 +14,7 @@ namespace Andril.IntegrationTests.Database;
 /// Strictly restricted to local loopback connections against the 'postgres' maintenance database.
 /// Creates an unpredictable uniquely-named database with the 'andril_social_test_' prefix,
 /// executes migrations, and drops only that specific created database upon disposal.
+/// Cleanup failures are observable and never silently suppressed.
 /// </summary>
 public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
 {
@@ -20,15 +23,23 @@ public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
     private readonly string _adminConnection;
     private readonly string _connection;
     private readonly string _databaseName;
+    private readonly bool _databaseCreated;
+    private int _disposed;
 
     public string DatabaseName => _databaseName;
     public string ConnectionString => _connection;
+    public bool IsCreated => _databaseCreated;
 
-    private LocalSocialQuestionnaireDatabase(string adminConnection, string connection, string databaseName)
+    private LocalSocialQuestionnaireDatabase(
+        string adminConnection,
+        string connection,
+        string databaseName,
+        bool databaseCreated)
     {
         _adminConnection = adminConnection;
         _connection = connection;
         _databaseName = databaseName;
+        _databaseCreated = databaseCreated;
     }
 
     /// <summary>
@@ -75,7 +86,11 @@ public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
         }
 
         settings.Database = uniqueName;
-        var database = new LocalSocialQuestionnaireDatabase(admin, settings.ConnectionString, uniqueName);
+        var database = new LocalSocialQuestionnaireDatabase(
+            admin,
+            settings.ConnectionString,
+            uniqueName,
+            databaseCreated: true);
 
         try
         {
@@ -86,9 +101,20 @@ public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
 
             return database;
         }
-        catch
+        catch (Exception initEx)
         {
-            await database.DisposeAsync();
+            try
+            {
+                await database.DisposeAsync();
+            }
+            catch (Exception cleanupEx)
+            {
+                throw new AggregateException(
+                    "Disposable test database initialization failed and secondary cleanup failed.",
+                    initEx,
+                    cleanupEx);
+            }
+
             throw;
         }
     }
@@ -147,20 +173,68 @@ public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
 
     /// <summary>
     /// Drops the generated disposable database with FORCE. Guarantees that only the database
-    /// created by this instance is ever dropped.
+    /// created by this instance is ever dropped. Cleanup failures are observable and reported.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
-        try
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
-            await using var adminDb = new NpgsqlConnection(_adminConnection);
-            await adminDb.OpenAsync();
-            await using var dropCmd = new NpgsqlCommand($"DROP DATABASE \"{_databaseName}\" WITH (FORCE)", adminDb);
-            await dropCmd.ExecuteNonQueryAsync();
+            return;
         }
-        catch
+
+        if (!_databaseCreated)
         {
-            // Suppress secondary drop exceptions during cleanup
+            return;
         }
+
+        if (string.IsNullOrWhiteSpace(_databaseName) ||
+            !_databaseName.StartsWith(DatabasePrefix, StringComparison.Ordinal) ||
+            string.Equals(_databaseName, "postgres", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"Safety violation: Refusing to drop database with unsafe identifier '{_databaseName}'.");
+        }
+
+        await using var adminDb = new NpgsqlConnection(_adminConnection);
+        await adminDb.OpenAsync();
+        await using var dropCmd = new NpgsqlCommand($"DROP DATABASE \"{_databaseName}\" WITH (FORCE)", adminDb);
+        await dropCmd.ExecuteNonQueryAsync();
+    }
+}
+
+public sealed class LocalSocialQuestionnaireDatabaseSafetyTests
+{
+    [Theory]
+    [InlineData("db.supabase.co")]
+    [InlineData("192.168.1.100")]
+    [InlineData("10.0.0.1")]
+    [InlineData("remote-server.internal")]
+    public void ValidateSettings_RejectsRemoteHosts(string remoteHost)
+    {
+        var settings = new NpgsqlConnectionStringBuilder($"Host={remoteHost};Database=postgres;Username=postgres;Password=test");
+        var ex = Assert.Throws<InvalidOperationException>(() => LocalSocialQuestionnaireDatabase.ValidateSettings(settings));
+        Assert.Contains("Remote or non-loopback host", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("andril_prod")]
+    [InlineData("andril_dev")]
+    [InlineData("template1")]
+    [InlineData("social_db")]
+    public void ValidateSettings_RejectsNonPostgresMaintenanceDatabase(string invalidDb)
+    {
+        var settings = new NpgsqlConnectionStringBuilder($"Host=localhost;Database={invalidDb};Username=postgres;Password=test");
+        var ex = Assert.Throws<InvalidOperationException>(() => LocalSocialQuestionnaireDatabase.ValidateSettings(settings));
+        Assert.Contains("Maintenance database must be exactly 'postgres'", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("localhost")]
+    [InlineData("127.0.0.1")]
+    [InlineData("::1")]
+    public void ValidateSettings_AcceptsLoopbackHosts(string loopbackHost)
+    {
+        var settings = new NpgsqlConnectionStringBuilder($"Host={loopbackHost};Database=postgres;Username=postgres;Password=test");
+        LocalSocialQuestionnaireDatabase.ValidateSettings(settings);
     }
 }
