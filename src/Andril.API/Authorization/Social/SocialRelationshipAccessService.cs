@@ -82,6 +82,12 @@ public sealed class SocialRelationshipOperationResult
     public static SocialRelationshipOperationResult MatchEstablished(Guid matchId) =>
         new(success: true, matchCreated: true, matchId: matchId, visibleState: SocialRelationshipState.Matched);
 
+    /// <summary>
+    /// Creates a result representing a failed operation.
+    /// </summary>
+    public static SocialRelationshipOperationResult Failed(SocialRelationshipState state = SocialRelationshipState.None) =>
+        new(success: false, matchCreated: false, matchId: null, visibleState: state);
+
     /// <inheritdoc />
     public override string ToString() => "SocialRelationshipOperationResult [private]";
 }
@@ -230,6 +236,11 @@ public sealed class SocialRelationshipAccessService : ISocialRelationshipAccessS
 
             cancellationToken.ThrowIfCancellationRequested();
 
+            if (actorEvidence is null || candidateEvidence is null)
+            {
+                throw new ProfileAccessDeniedException();
+            }
+
             var pairKey = SocialProfilePairKey.Create(profile.ProfileId, targetProfileId);
 
             // 2. Evaluate deterministic transition policy preflight
@@ -258,9 +269,39 @@ public sealed class SocialRelationshipAccessService : ISocialRelationshipAccessS
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (txResult.MatchCreated && txResult.Match is not null)
+            if (txResult is null || !txResult.Success)
             {
+                return SocialRelationshipOperationResult.Failed();
+            }
+
+            if (txResult.MatchCreated)
+            {
+                if (txResult.Match is null || txResult.Match.MatchId == Guid.Empty)
+                {
+                    return SocialRelationshipOperationResult.Failed();
+                }
+
+                if (!pairKey.Equals(txResult.Match.PairKey))
+                {
+                    return SocialRelationshipOperationResult.Failed();
+                }
+
+                if (txResult.ResultingState != SocialRelationshipState.Matched)
+                {
+                    return SocialRelationshipOperationResult.Failed();
+                }
+
                 return SocialRelationshipOperationResult.MatchEstablished(txResult.Match.MatchId);
+            }
+
+            if (txResult.Match is not null || txResult.ResultingState == SocialRelationshipState.Matched)
+            {
+                return SocialRelationshipOperationResult.Failed();
+            }
+
+            if (txResult.ResultingState is not (SocialRelationshipState.PendingUnilateral or SocialRelationshipState.Passed))
+            {
+                return SocialRelationshipOperationResult.Failed();
             }
 
             // Unilateral privacy: never reveal whether the counterpart liked or passed
@@ -291,8 +332,18 @@ public sealed class SocialRelationshipAccessService : ISocialRelationshipAccessS
 
             cancellationToken.ThrowIfCancellationRequested();
 
+            if (snapshot is null || !pairKey.Equals(snapshot.PairKey))
+            {
+                return SocialRelationshipStatusResult.NotMatched();
+            }
+
             if (snapshot.State == SocialRelationshipState.Matched && snapshot.ActiveMatch is not null)
             {
+                if (snapshot.ActiveMatch.MatchId == Guid.Empty || !pairKey.Equals(snapshot.ActiveMatch.PairKey))
+                {
+                    return SocialRelationshipStatusResult.NotMatched();
+                }
+
                 return SocialRelationshipStatusResult.Matched(snapshot.ActiveMatch.MatchId, snapshot.ActiveMatch.CreatedAtUtc);
             }
 
@@ -322,6 +373,11 @@ public sealed class SocialRelationshipAccessService : ISocialRelationshipAccessS
             var revokeResult = await _transactionRepository.RevokeMatchAsync(pairKey, profile.ProfileId, DateTime.UtcNow, cancellationToken);
 
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (revokeResult is null || !revokeResult.Success || (!revokeResult.Success && revokeResult.MatchRevoked))
+            {
+                return new SocialRevocationOperationResult(success: false, matchRevoked: false);
+            }
 
             return new SocialRevocationOperationResult(revokeResult.Success, revokeResult.MatchRevoked);
         }, cancellationToken);
