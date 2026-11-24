@@ -201,6 +201,44 @@ public sealed class SocialQuestionnairePersistenceRepositoryTests
         var maliciousResponse = CreateTestResponse(otherProfileId, responseId);
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => repo.SaveAsync(otherProfileId, maliciousResponse));
+
+        // 5. Existing-Response Overwrite Rejection (P-04 Safety Gate)
+        var duplicateResponse = CreateTestResponse(profileId, responseId);
+        var overwriteEx = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repo.SaveAsync(profileId, duplicateResponse));
+        Assert.Contains("Unapproved questionnaire response overwrite rejected", overwriteEx.Message);
+
+        // 6. Existing Answers Preserved Without Mutation
+        var preserved = await repo.GetByIdAsync(profileId, responseId);
+        Assert.NotNull(preserved);
+        Assert.Equal(responseId, preserved.Id);
+        Assert.Equal(12, preserved.Answers.Count);
+    }
+
+    [LocalPostgresFact]
+    public async Task LivePostgres_SaveAsync_ExistingResponseReplacement_FailsClosedAndPreservesAnswers()
+    {
+        await using var database = await LocalSocialQuestionnaireDatabase.CreateAsync(applySocialMigrations: true);
+        await using var context = database.Open();
+
+        var repo = new SocialQuestionnairePersistenceRepository(context);
+        var profileId = Guid.NewGuid();
+        var responseId = Guid.NewGuid();
+
+        var response = CreateTestResponse(profileId, responseId);
+        await repo.SaveAsync(profileId, response);
+
+        var duplicateResponse = CreateTestResponse(profileId, responseId);
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repo.SaveAsync(profileId, duplicateResponse));
+
+        Assert.Contains("Unapproved questionnaire response overwrite rejected", ex.Message);
+        Assert.Contains("Decision P-04", ex.Message);
+
+        var preserved = await repo.GetByIdAsync(profileId, responseId);
+        Assert.NotNull(preserved);
+        Assert.Equal(responseId, preserved.Id);
+        Assert.Equal(12, preserved.Answers.Count);
     }
 
     private sealed class RejectConnections : DbConnectionInterceptor
