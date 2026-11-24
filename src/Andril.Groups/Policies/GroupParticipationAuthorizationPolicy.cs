@@ -43,7 +43,27 @@ public enum GroupParticipationAuthorizationStatus
     /// <summary>
     /// Target group is closed and does not permit participation or new joins.
     /// </summary>
-    ClosedGroup
+    ClosedGroup,
+
+    /// <summary>
+    /// Authoritative server-side evidence is missing or indeterminate.
+    /// </summary>
+    MissingEvidence,
+
+    /// <summary>
+    /// Profile or account is inactive, suspended, or under moderation restriction.
+    /// </summary>
+    AccountRestricted,
+
+    /// <summary>
+    /// Authoritative lifecycle evidence has expired or timestamp is invalid.
+    /// </summary>
+    StaleEvidence,
+
+    /// <summary>
+    /// Caller lacks the required privileged role capability for this operation.
+    /// </summary>
+    PrivilegeDenied
 }
 
 /// <summary>
@@ -255,4 +275,231 @@ public static class GroupParticipationAuthorizationPolicy
             groupScope.GroupKind,
             groupScope.Module);
     }
+
+    /// <summary>
+    /// Maximum allowable age of authoritative evidence before it is considered stale.
+    /// </summary>
+    public static readonly TimeSpan MaximumEvidenceAge = TimeSpan.FromMinutes(5);
+
+    /// <summary>
+    /// Strict authoritative evaluation requiring explicitly resolved server-side evidence.
+    /// Does not treat default values as authoritative. Fails closed on missing, contradictory, or stale evidence.
+    /// </summary>
+    /// <param name="profileEvidence">Authoritative profile identity and standing evidence.</param>
+    /// <param name="groupEvidence">Authoritative group existence and state evidence.</param>
+    /// <param name="requestedScope">The requested group module scope.</param>
+    /// <param name="requestedGroupId">The requested group identifier.</param>
+    /// <param name="currentUtc">Current trusted server UTC time.</param>
+    /// <param name="requiredCapability">Optional privileged capability required for the operation.</param>
+    /// <param name="membershipEvidence">Optional authoritative membership and capability evidence.</param>
+    /// <returns>A deterministic <see cref="GroupParticipationAuthorizationResult"/>.</returns>
+    public static GroupParticipationAuthorizationResult EvaluateStrictAuthorization(
+        AuthoritativeGroupProfileEvidence? profileEvidence,
+        AuthoritativeGroupStateEvidence? groupEvidence,
+        GroupModuleScope? requestedScope,
+        Guid requestedGroupId,
+        DateTimeOffset currentUtc,
+        GroupPrivilegedCapability requiredCapability = GroupPrivilegedCapability.None,
+        AuthoritativeGroupMembershipEvidence? membershipEvidence = null)
+    {
+        // 1. Missing authoritative evidence
+        if (profileEvidence is null || groupEvidence is null)
+        {
+            return new GroupParticipationAuthorizationResult(
+                GroupParticipationAuthorizationStatus.MissingEvidence,
+                requestedScope?.GroupKind ?? default,
+                requestedScope?.Module ?? string.Empty);
+        }
+
+        // 2. Verified private module-profile identity
+        if (profileEvidence.ProfileId == Guid.Empty || string.IsNullOrWhiteSpace(profileEvidence.Module))
+        {
+            return new GroupParticipationAuthorizationResult(
+                GroupParticipationAuthorizationStatus.InvalidProfile,
+                groupEvidence.Scope.GroupKind,
+                groupEvidence.Scope.Module);
+        }
+
+        // 3. Group identity and scope correlation
+        if (requestedGroupId == Guid.Empty || groupEvidence.GroupId == Guid.Empty || requestedGroupId != groupEvidence.GroupId)
+        {
+            return new GroupParticipationAuthorizationResult(
+                GroupParticipationAuthorizationStatus.InvalidGroup,
+                groupEvidence.Scope.GroupKind,
+                groupEvidence.Scope.Module);
+        }
+
+        if (requestedScope is null || !requestedScope.Equals(groupEvidence.Scope) || !GroupModuleScopePolicy.IsCompatible(groupEvidence.Scope.Module, groupEvidence.Scope.GroupKind))
+        {
+            return new GroupParticipationAuthorizationResult(
+                GroupParticipationAuthorizationStatus.InvalidScope,
+                groupEvidence.Scope.GroupKind,
+                groupEvidence.Scope.Module);
+        }
+
+        // 4. Freshness of lifecycle evidence
+        if (currentUtc < profileEvidence.EvidenceTimestampUtc || (currentUtc - profileEvidence.EvidenceTimestampUtc) > MaximumEvidenceAge ||
+            currentUtc < groupEvidence.EvidenceTimestampUtc || (currentUtc - groupEvidence.EvidenceTimestampUtc) > MaximumEvidenceAge)
+        {
+            return new GroupParticipationAuthorizationResult(
+                GroupParticipationAuthorizationStatus.StaleEvidence,
+                groupEvidence.Scope.GroupKind,
+                groupEvidence.Scope.Module);
+        }
+
+        if (membershipEvidence is not null)
+        {
+            if (currentUtc < membershipEvidence.EvidenceTimestampUtc || (currentUtc - membershipEvidence.EvidenceTimestampUtc) > MaximumEvidenceAge)
+            {
+                return new GroupParticipationAuthorizationResult(
+                    GroupParticipationAuthorizationStatus.StaleEvidence,
+                    groupEvidence.Scope.GroupKind,
+                    groupEvidence.Scope.Module);
+            }
+        }
+
+        // 5. Account and profile standing (active, not restricted/moderated)
+        if (!profileEvidence.IsActive || profileEvidence.IsRestricted)
+        {
+            return new GroupParticipationAuthorizationResult(
+                GroupParticipationAuthorizationStatus.AccountRestricted,
+                groupEvidence.Scope.GroupKind,
+                groupEvidence.Scope.Module);
+        }
+
+        // 6. Explicit authoritative group state (active)
+        if (!groupEvidence.IsActive)
+        {
+            return new GroupParticipationAuthorizationResult(
+                GroupParticipationAuthorizationStatus.InvalidGroup,
+                groupEvidence.Scope.GroupKind,
+                groupEvidence.Scope.Module);
+        }
+
+        // 7. Strict cross-module isolation
+        if (!string.Equals(profileEvidence.Module, groupEvidence.Scope.Module, StringComparison.OrdinalIgnoreCase))
+        {
+            return new GroupParticipationAuthorizationResult(
+                GroupParticipationAuthorizationStatus.ModuleMismatch,
+                groupEvidence.Scope.GroupKind,
+                groupEvidence.Scope.Module);
+        }
+
+        var moduleMatchesKind = groupEvidence.Scope.GroupKind switch
+        {
+            GroupKind.Classroom => string.Equals(profileEvidence.Module, LearningModule, StringComparison.OrdinalIgnoreCase),
+            GroupKind.Club => string.Equals(profileEvidence.Module, HobbiesModule, StringComparison.OrdinalIgnoreCase),
+            GroupKind.Zone => string.Equals(profileEvidence.Module, SocialModule, StringComparison.OrdinalIgnoreCase),
+            _ => false
+        };
+
+        if (!moduleMatchesKind)
+        {
+            return new GroupParticipationAuthorizationResult(
+                GroupParticipationAuthorizationStatus.ModuleMismatch,
+                groupEvidence.Scope.GroupKind,
+                groupEvidence.Scope.Module);
+        }
+
+        // 8. Verified adult eligibility for Social Zones (explicit age evidence required)
+        if (groupEvidence.Scope.GroupKind == GroupKind.Zone)
+        {
+            if (!profileEvidence.VerifiedAge.HasValue)
+            {
+                return new GroupParticipationAuthorizationResult(
+                    GroupParticipationAuthorizationStatus.MissingEvidence,
+                    groupEvidence.Scope.GroupKind,
+                    groupEvidence.Scope.Module);
+            }
+
+            if (profileEvidence.VerifiedAge.Value < SocialZoneMinimumAge)
+            {
+                return new GroupParticipationAuthorizationResult(
+                    GroupParticipationAuthorizationStatus.UnderageDenied,
+                    groupEvidence.Scope.GroupKind,
+                    groupEvidence.Scope.Module);
+            }
+        }
+
+        // 9. Closed group check
+        if (!groupEvidence.IsOpen)
+        {
+            return new GroupParticipationAuthorizationResult(
+                GroupParticipationAuthorizationStatus.ClosedGroup,
+                groupEvidence.Scope.GroupKind,
+                groupEvidence.Scope.Module);
+        }
+
+        // 10. Privileged capabilities for operations requiring specific roles/privileges
+        if (requiredCapability != GroupPrivilegedCapability.None)
+        {
+            if (membershipEvidence is null || !membershipEvidence.IsMember ||
+                membershipEvidence.GroupId != groupEvidence.GroupId ||
+                membershipEvidence.ProfileId != profileEvidence.ProfileId ||
+                !membershipEvidence.Capabilities.HasFlag(requiredCapability))
+            {
+                return new GroupParticipationAuthorizationResult(
+                    GroupParticipationAuthorizationStatus.PrivilegeDenied,
+                    groupEvidence.Scope.GroupKind,
+                    groupEvidence.Scope.Module);
+            }
+        }
+
+        // 11. Fully authorized
+        return new GroupParticipationAuthorizationResult(
+            GroupParticipationAuthorizationStatus.Authorized,
+            groupEvidence.Scope.GroupKind,
+            groupEvidence.Scope.Module);
+    }
 }
+
+/// <summary>
+/// Authoritative capabilities for privileged group operations.
+/// </summary>
+[Flags]
+public enum GroupPrivilegedCapability
+{
+    /// <summary>No privileged capability.</summary>
+    None = 0,
+
+    /// <summary>Authorized to approve or reject pending join requests.</summary>
+    ApproveJoinRequest = 1,
+
+    /// <summary>Authorized to manage group members.</summary>
+    ManageMembers = 2,
+
+    /// <summary>Authorized to manage group settings.</summary>
+    ManageGroup = 4
+}
+
+/// <summary>
+/// Authoritative server-resolved evidence of a private module-profile's standing and identity.
+/// </summary>
+public sealed record AuthoritativeGroupProfileEvidence(
+    Guid ProfileId,
+    string Module,
+    bool IsActive,
+    bool IsRestricted,
+    int? VerifiedAge,
+    DateTimeOffset EvidenceTimestampUtc);
+
+/// <summary>
+/// Authoritative server-resolved evidence of target group existence, module scope, and open status.
+/// </summary>
+public sealed record AuthoritativeGroupStateEvidence(
+    Guid GroupId,
+    GroupModuleScope Scope,
+    bool IsActive,
+    bool IsOpen,
+    DateTimeOffset EvidenceTimestampUtc);
+
+/// <summary>
+/// Authoritative server-resolved evidence of group membership standing and privileged capabilities.
+/// </summary>
+public sealed record AuthoritativeGroupMembershipEvidence(
+    Guid GroupId,
+    Guid ProfileId,
+    bool IsMember,
+    GroupPrivilegedCapability Capabilities,
+    DateTimeOffset EvidenceTimestampUtc);
+
