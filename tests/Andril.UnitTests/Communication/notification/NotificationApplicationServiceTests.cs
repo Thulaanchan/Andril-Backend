@@ -149,10 +149,14 @@ public sealed class NotificationApplicationServiceTests
         Assert.Equal(0, repository.ListCalls);
     }
 
-    [Fact]
-    public async Task AuthorizedList_ShouldReturnDtosAndCapPageSize()
+    [Theory]
+    [InlineData(NotificationModule.Learning)]
+    [InlineData(NotificationModule.Hobbies)]
+    [InlineData(NotificationModule.Social)]
+    public async Task AuthorizedList_ShouldReturnDtosAndCapPageSize(
+        NotificationModule module)
     {
-        var scope = CreateScope();
+        var scope = CreateScope(module);
         var access = new FakeAccessReader
         {
             Scope = scope
@@ -172,7 +176,7 @@ public sealed class NotificationApplicationServiceTests
 
         var results = await service.ListLatestAsync(
             Guid.NewGuid(),
-            NotificationModule.Social,
+            module,
             1000);
 
         Assert.Equal(2, results.Count);
@@ -433,6 +437,31 @@ public sealed class NotificationApplicationServiceTests
         Assert.Equal(
             TimeSpan.Zero,
             repository.LastReadAtUtc!.Value.Offset);
+    }
+
+    [Fact]
+    public async Task DefaultReadTime_ShouldSkipRepository()
+    {
+        var access = new FakeAccessReader
+        {
+            Scope = CreateScope()
+        };
+
+        var repository = new FakeRepository
+        {
+            MarkResult = true
+        };
+
+        var service = CreateService(access, repository);
+
+        var result = await service.TryMarkReadAsync(
+            Guid.NewGuid(),
+            NotificationModule.Social,
+            Guid.NewGuid(),
+            default);
+
+        Assert.False(result);
+        Assert.Equal(0, repository.MarkReadCalls);
     }
 
     [Fact]
