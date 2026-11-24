@@ -49,7 +49,7 @@ public sealed class NotificationDependencyInjectionTests
 
         var application = Assert.Single(
     services,
-    x => x.ServiceType == typeof(INotificationRepository));
+    x => x.ServiceType == typeof(NotificationApplicationService));
 
         Assert.Equal(
             ServiceLifetime.Scoped,
@@ -104,11 +104,11 @@ public sealed class NotificationDependencyInjectionTests
 
         Assert.Single(
     services,
-    x => x.ServiceType == typeof(INotificationRepository));
+    x => x.ServiceType == typeof(INotificationRecipientAccessReader));
 
         Assert.Single(
     services,
-    x => x.ServiceType == typeof(INotificationRepository));
+    x => x.ServiceType == typeof(NotificationApplicationService));
     }
 
     [Theory]
