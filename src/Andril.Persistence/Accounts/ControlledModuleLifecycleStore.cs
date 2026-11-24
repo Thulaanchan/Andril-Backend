@@ -17,6 +17,14 @@ internal interface IControlledLifecycleAuthority
     Task<LifecycleAuthorityState> ReadAsync(Guid subject, Guid account, string module, CancellationToken cancellationToken);
 }
 
+// Separate synthetic test-host authority. No production eligibility/revocation
+// decision is inferred from activation standing or consent.
+internal interface IControlledDeactivationAuthority
+{
+    Task<ModuleDeactivationEvidence> ReadAsync(Guid subject, ModuleMembershipScope scope,
+        DateTimeOffset databaseTime, CancellationToken cancellationToken);
+}
+
 internal sealed class UnavailableLifecycleAuthority : IControlledLifecycleAuthority
 {
     public Task<LifecycleAuthorityState> ReadAsync(Guid subject, Guid account, string module, CancellationToken cancellationToken) =>
@@ -25,15 +33,17 @@ internal sealed class UnavailableLifecycleAuthority : IControlledLifecycleAuthor
 
 // Deliberately internal and never registered by production startup. The only executable
 // composition lives in the integration test assembly, with a random disposable database.
-internal sealed class ControlledModuleLifecycleStore : IModuleLifecycleStore
+internal sealed partial class ControlledModuleLifecycleStore : IOfflineModuleDeactivationStore, IModuleNavigationReader
 {
     private readonly string connection;
     private readonly IOnboardingIdentity identity;
     private readonly IPolicyCatalogProvider policies;
     private readonly IControlledLifecycleAuthority authority;
+    private readonly IControlledDeactivationAuthority? deactivationAuthority;
 
     internal ControlledModuleLifecycleStore(string connection, IOnboardingIdentity identity,
-        IPolicyCatalogProvider policies, IControlledLifecycleAuthority? authority, bool explicitlyOptedIn)
+        IPolicyCatalogProvider policies, IControlledLifecycleAuthority? authority, bool explicitlyOptedIn,
+        IControlledDeactivationAuthority? deactivationAuthority = null)
     {
         var settings = new NpgsqlConnectionStringBuilder(connection);
         if (!explicitlyOptedIn || settings.Host is not ("localhost" or "127.0.0.1" or "::1")
@@ -46,6 +56,7 @@ internal sealed class ControlledModuleLifecycleStore : IModuleLifecycleStore
         this.identity = identity ?? throw new ArgumentNullException(nameof(identity));
         this.policies = policies ?? throw new ArgumentNullException(nameof(policies));
         this.authority = authority ?? new UnavailableLifecycleAuthority();
+        this.deactivationAuthority = deactivationAuthority;
     }
 
     public Task<ModuleLifecycleResult> WriteAsync(Guid subject, string module, Guid requestKey,
@@ -62,6 +73,17 @@ internal sealed class ControlledModuleLifecycleStore : IModuleLifecycleStore
         return snapshot;
     }
 
+    public async Task<ModuleNavigationSnapshot> ReadNavigationAsync(Guid subject, string module, CancellationToken ct)
+    {
+        await using var db = Open();
+        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
+        await db.Database.ExecuteSqlRawAsync("SET TRANSACTION READ ONLY", ct);
+        await SetSubject(db, subject, module, ct);
+        var (evidence, membership) = await ReadMembershipAsync(db, subject, module, ct);
+        await tx.CommitAsync(ct);
+        return new(evidence, membership?.Membership);
+    }
+
     private async Task<ModuleLifecycleResult> InTransaction(Guid subject, string module, Guid requestKey,
         Func<ModuleLifecycleSnapshot, ModuleLifecycleDecision> decide, CancellationToken ct)
     {
@@ -70,7 +92,7 @@ internal sealed class ControlledModuleLifecycleStore : IModuleLifecycleStore
         await SetSubject(db, subject, module, ct);
         // One transaction-scoped account lock precedes every module/receipt access. It also
         // covers an absent initial row; hash collisions only serialize unrelated requests.
-        await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({subject.ToString()}, 0))", ct);
+        await LockSubjectAsync(db, subject, ct);
         var snapshot = await Snapshot(db, subject, module, requestKey, ct);
         var decision = decide(snapshot);
         if (decision.Write is { } write)
@@ -80,31 +102,56 @@ internal sealed class ControlledModuleLifecycleStore : IModuleLifecycleStore
                 || write.Audit is { } a && a.Scope != scope
                 || write.ChangedMembership is { } m && m.Membership.Scope != scope)
                 throw new ModuleLifecycleException(ModuleLifecycleDenial.InvalidScope);
+            var r = write.Receipt;
+            var operation = OperationName(r.Operation);
+            var resultState = ReceiptResult(module, r.Operation, r.ExpectedRevision, r.Result.Revision, r.Result.StateChangedAtUtc);
+            if (r.Result.Module != module || r.Result != resultState || decision.Result != r.Result
+                || (write.ChangedMembership is null) != (write.Audit is null)
+                || write.Audit is { } journal && (journal.Operation != r.Operation || journal.Result != r.Result))
+                throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
             var account = scope.AccountId;
+            if (r.Operation == ModuleLifecycleOperation.Deactivate &&
+                ((r.Result.NoTransitionOutcome is null) != (write.ChangedMembership is not null) ||
+                 (r.Result.NoTransitionOutcome == "neverActivated" && snapshot.Current is not null) ||
+                 (r.Result.NoTransitionOutcome == "alreadyInactive" &&
+                  (snapshot.Current?.Membership is not InactiveModuleMembership inactive || inactive.Revision != r.Result.Revision ||
+                   snapshot.Current.StateChangedAtUtc != r.Result.StateChangedAtUtc))))
+                throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
             if (write.ChangedMembership is { } changed)
             {
                 var revision = changed.Membership.Revision;
                 var now = changed.StateChangedAtUtc;
+                var changedState = changed.Membership is InactiveModuleMembership ? "inactive" : "active";
+                if (changedState != resultState.State || revision != r.Result.Revision || now != r.Result.StateChangedAtUtc
+                    || snapshot.Current is { } previous && changed.FirstActivatedAtUtc != previous.FirstActivatedAtUtc)
+                    throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
                 int rows;
                 if (snapshot.Current is null)
+                {
+                    if (r.Operation != ModuleLifecycleOperation.Activate || revision != 1)
+                        throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
                     rows = await db.Database.ExecuteSqlInterpolatedAsync($"""
                         INSERT INTO andril_identity.account_module_lifecycles
                         (account_id,module,state,revision,first_activated_at_utc,state_changed_at_utc)
                         VALUES ({account},{module},'active',{revision},{now},{now})
                         ON CONFLICT (account_id,module) DO NOTHING
                         """, ct);
+                }
                 else
                 {
                     var oldRevision = snapshot.Current.Membership.Revision;
+                    var oldState = r.Operation == ModuleLifecycleOperation.Deactivate ? "active" : "inactive";
+                    if (r.Operation == ModuleLifecycleOperation.Activate || r.ExpectedRevision != oldRevision
+                        || oldRevision == long.MaxValue || revision != oldRevision + 1
+                        || write.Audit!.PreviousState != oldState)
+                        throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
                     rows = await db.Database.ExecuteSqlInterpolatedAsync($"""
-                        UPDATE andril_identity.account_module_lifecycles SET state='active',revision={revision},state_changed_at_utc={now}
-                        WHERE account_id={account} AND module={module} AND state='inactive' AND revision={oldRevision}
+                        UPDATE andril_identity.account_module_lifecycles SET state={resultState.State},revision={revision},state_changed_at_utc={now}
+                        WHERE account_id={account} AND module={module} AND state={oldState} AND revision={oldRevision}
                         """, ct);
                 }
                 if (rows != 1) throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
             }
-            var r = write.Receipt;
-            var operation = r.Operation == ModuleLifecycleOperation.Activate ? "activate" : "reactivate";
             await db.Database.ExecuteSqlInterpolatedAsync($"""
                 INSERT INTO andril_identity.account_module_lifecycle_receipts
                 (account_id,module,request_key,operation,expected_revision,intent_hash,revision,state_changed_at_utc,recorded_at_utc)
@@ -132,6 +179,25 @@ internal sealed class ControlledModuleLifecycleStore : IModuleLifecycleStore
 
     private async Task<ModuleLifecycleSnapshot> Snapshot(AccountsDbContext db, Guid subject, string module, Guid key, CancellationToken ct)
     {
+        var (evidence, current) = await ReadMembershipAsync(db, subject, module, ct);
+        var scope = evidence.Scope;
+        var stored = await db.Set<ModuleLifecycleReceiptRow>().AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == scope.AccountId && x.Module == module && x.RequestKey == key, ct);
+        var receipt = stored is null ? null : new ModuleLifecycleReceipt(scope, key,
+            ParseOperation(stored.Operation), stored.ExpectedRevision, stored.IntentHash,
+            ReceiptResult(module, ParseOperation(stored.Operation), stored.ExpectedRevision, stored.Revision, stored.StateChangedAtUtc), stored.RecordedAtUtc);
+        var deactivation = deactivationAuthority is null ? null
+            : await deactivationAuthority.ReadAsync(subject, scope, evidence.EvaluatedAtUtc, ct);
+        // The store supplies the clock and verifies identity. The synthetic authority
+        // supplies operation-specific standing/version evidence only.
+        if (deactivation is not null)
+            deactivation = deactivation with { EvaluatedAtUtc = evidence.EvaluatedAtUtc,
+                ConfirmedSubject = identity.IsConfirmedFor(subject) ? deactivation.ConfirmedSubject : Guid.Empty };
+        return new(evidence, current, receipt, deactivation);
+    }
+
+    private async Task<(ModuleActivationEvidence Evidence, StoredModuleMembership? Current)> ReadMembershipAsync(
+        AccountsDbContext db, Guid subject, string module, CancellationToken ct)
+    {
         var account = await db.Accounts.AsNoTracking().SingleOrDefaultAsync(x => x.SupabaseUserId == subject, ct)
             ?? throw new ModuleLifecycleException(ModuleLifecycleDenial.UnconfirmedAccount);
         await db.Database.ExecuteSqlInterpolatedAsync($"SELECT set_config('andril.account', {account.Id.ToString()}, true)", ct);
@@ -148,11 +214,48 @@ internal sealed class ControlledModuleLifecycleStore : IModuleLifecycleStore
             state.RestrictionsAllow, state.SocialOptIn, state.ObservedVersion, state.CurrentVersion, now);
         var row = await db.Set<ModuleLifecycleRow>().AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == account.Id && x.Module == module, ct);
         StoredModuleMembership? current = row is null ? null : new(row.State == "active"
-            ? ActiveModuleMembership.Restore(scope, row.Revision) : new InactiveModuleMembership(scope, row.Revision), row.StateChangedAtUtc);
-        var stored = await db.Set<ModuleLifecycleReceiptRow>().AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == account.Id && x.Module == module && x.RequestKey == key, ct);
-        var receipt = stored is null ? null : new ModuleLifecycleReceipt(scope, key,
-            stored.Operation == "activate" ? ModuleLifecycleOperation.Activate : ModuleLifecycleOperation.Reactivate,
-            stored.ExpectedRevision, stored.IntentHash, new(module, stored.Revision, stored.StateChangedAtUtc), stored.RecordedAtUtc);
-        return new(evidence, current, receipt);
+            ? ActiveModuleMembership.Restore(scope, row.Revision) : new InactiveModuleMembership(scope, row.Revision), row.StateChangedAtUtc, row.FirstActivatedAtUtc);
+        return (evidence, current);
     }
+
+    private static string OperationName(ModuleLifecycleOperation operation) => operation switch
+    {
+        ModuleLifecycleOperation.Activate => "activate",
+        ModuleLifecycleOperation.Reactivate => "reactivate",
+        ModuleLifecycleOperation.Deactivate => "deactivate",
+        _ => throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition)
+    };
+
+    private static ModuleLifecycleOperation ParseOperation(string operation) => operation switch
+    {
+        "activate" => ModuleLifecycleOperation.Activate,
+        "reactivate" => ModuleLifecycleOperation.Reactivate,
+        "deactivate" => ModuleLifecycleOperation.Deactivate,
+        _ => throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition)
+    };
+
+    internal async Task<Andril.Common.Accounts.Account?> FindScopedAccountAsync(Guid subject, string module, CancellationToken ct)
+    {
+        await using var db = Open();
+        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        await SetSubject(db, subject, module, ct);
+        var account = await db.Accounts.AsNoTracking().SingleOrDefaultAsync(x => x.SupabaseUserId == subject, ct);
+        await tx.CommitAsync(ct);
+        return account;
+    }
+
+    private static Task LockSubjectAsync(AccountsDbContext db, Guid subject, CancellationToken ct) =>
+        db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({subject.ToString()}, 0))", ct);
+
+    private static ModuleLifecycleResult ReceiptResult(string module, ModuleLifecycleOperation operation, long? expected,
+        long revision, DateTimeOffset changedAt)
+    {
+        if (operation != ModuleLifecycleOperation.Deactivate)
+            return new(module, revision, changedAt);
+        return revision == 0
+            ? new(module, revision, changedAt) { State = "neverActivated", NoTransitionOutcome = "neverActivated" }
+            : new(module, revision, changedAt) { State = "inactive",
+                NoTransitionOutcome = revision == expected ? "alreadyInactive" : null };
+    }
+
 }

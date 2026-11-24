@@ -47,6 +47,25 @@ public sealed class LearningPreferences
         LearningSkills = nextLearning;
     }
 
+    /// <summary>
+    /// Validate proposed replacement skill lists against a supplied offline catalogue snapshot,
+    /// then replace all selections together. Snapshot caller sequences once so validation and
+    /// replacement use the same values. Interests remain independent of the skill catalogue.
+    /// This explicit operation does not automatically revalidate or remap historical selections.
+    /// A supplied snapshot proves neither catalogue authority/freshness nor profile ownership,
+    /// completion or production access; future protected callers must establish those separately.
+    /// </summary>
+    public void UpdateSelections(IEnumerable<Guid> interests, IEnumerable<Guid> teachingSkills,
+        IEnumerable<Guid> learningSkills, LearningSkillCatalogue catalogue)
+    {
+        ArgumentNullException.ThrowIfNull(catalogue);
+        var nextInterests = Snapshot(interests, nameof(interests));
+        var nextTeaching = Snapshot(teachingSkills, nameof(teachingSkills));
+        var nextLearning = Snapshot(learningSkills, nameof(learningSkills));
+        catalogue.ValidateNewSelections(nextTeaching, nextLearning);
+        UpdateSelections(nextInterests, nextTeaching, nextLearning);
+    }
+
     public PersonalGoal CreateGoal(string text)
     {
         RequireGoalText(text);

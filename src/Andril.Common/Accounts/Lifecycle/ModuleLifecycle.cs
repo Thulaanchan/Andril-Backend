@@ -41,7 +41,7 @@ internal abstract class ModuleMembership(ModuleMembershipScope scope, long revis
     public long Revision { get; } = revision;
 }
 
-// Supplied by an offline fixture. The domain has no transition that produces this state.
+// Materialized from storage or produced by the offline deactivation transition.
 internal sealed class InactiveModuleMembership(ModuleMembershipScope scope, long revision)
     : ModuleMembership(scope, revision);
 
@@ -56,7 +56,7 @@ internal sealed class ActiveModuleMembership : ModuleMembership
     internal static ActiveModuleMembership Activate(ModuleMembershipScope scope, ModuleActivationEvidence evidence,
         ModuleMembership? current = null)
     {
-        Validate(scope, evidence, current);
+        ValidateEvidence(scope, evidence, current);
         return current switch
         {
             null => new(scope, 1),
@@ -68,7 +68,7 @@ internal sealed class ActiveModuleMembership : ModuleMembership
     internal static ActiveModuleMembership Reactivate(ModuleMembershipScope scope, ModuleActivationEvidence evidence,
         ModuleMembership? current, long expectedRevision)
     {
-        Validate(scope, evidence, current);
+        ValidateEvidence(scope, evidence, current);
         if (expectedRevision is <= 0 or long.MaxValue)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
 
@@ -80,7 +80,11 @@ internal sealed class ActiveModuleMembership : ModuleMembership
         };
     }
 
-    private static void Validate(ModuleMembershipScope scope, ModuleActivationEvidence evidence, ModuleMembership? current)
+    internal static void ValidateEvidence(ModuleMembershipScope scope, ModuleActivationEvidence evidence, ModuleMembership? current) =>
+        ValidatePrerequisites(scope, evidence, current, evidence.RestrictionsAllowActivation);
+
+    internal static void ValidatePrerequisites(ModuleMembershipScope scope, ModuleActivationEvidence evidence,
+        ModuleMembership? current, bool? standingAllowsOperation)
     {
         if (scope.AccountId == Guid.Empty || !ModuleNames.IsValid(scope.Module)
             || evidence.Scope != scope || (current is not null && current.Scope != scope))
@@ -99,9 +103,9 @@ internal sealed class ActiveModuleMembership : ModuleMembership
             || account.SupabaseUserId == Guid.Empty || account.SupabaseUserId != evidence.ConfirmedSubject)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.UnconfirmedAccount);
 
-        if (evidence.RestrictionsAllowActivation is null)
+        if (standingAllowsOperation is null)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.EvidenceUnavailable);
-        if (evidence.RestrictionsAllowActivation == false)
+        if (standingAllowsOperation == false)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.AccountRestricted);
 
         if (scope.Module == ModuleNames.Social ? evidence.SocialOptIn != true : evidence.SocialOptIn == true)
@@ -157,7 +161,9 @@ internal enum ModuleLifecycleDenial
     InvalidOptIn,
     IneligibleAge,
     MissingCurrentPolicies,
-    ConflictingTransition
+    ConflictingTransition,
+    MembershipMissing,
+    AlreadyInactive
 }
 
 internal sealed class ModuleLifecycleException(ModuleLifecycleDenial denial) : Exception

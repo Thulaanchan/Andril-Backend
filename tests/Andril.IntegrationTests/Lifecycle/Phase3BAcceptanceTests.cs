@@ -13,6 +13,7 @@ using Xunit;
 
 namespace Andril.IntegrationTests.Lifecycle;
 
+[Collection("ControlledLifecyclePostgreSQL")]
 public sealed class Phase3BAcceptanceTests
 {
     private static ModuleLifecycleCommand Command(string module = "learning", Guid? key = null, long? revision = null) =>
@@ -244,7 +245,16 @@ public sealed class Phase3BAcceptanceTests
         foreach (var table in Tables)
         {
             sql.CommandText = $"SELECT count(*) FROM andril_identity.{table}";
-            Assert.Equal(0L, await sql.ExecuteScalarAsync());
+            // The runtime has INSERT-only audit access. A denied SELECT aborts the
+            // transaction, so isolate that expected privilege denial with a savepoint.
+            if (table == "account_module_lifecycle_audit")
+            {
+                await tx.SaveAsync("audit_probe");
+                var denied = await Assert.ThrowsAsync<PostgresException>(() => sql.ExecuteScalarAsync());
+                Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, denied.SqlState);
+                await tx.RollbackAsync("audit_probe");
+            }
+            else Assert.Equal(0L, await sql.ExecuteScalarAsync());
         }
         // Even substituting every GUC cannot escape the disposable role's fixed
         // account binding. GUCs alone are not an authentication mechanism.
@@ -263,7 +273,10 @@ public sealed class Phase3BAcceptanceTests
         sql.CommandText = "INSERT INTO andril_identity.account_module_lifecycles(account_id,module,state,revision) VALUES (@account,'learning','active',1)";
         sql.Parameters.AddWithValue("account", foreign);
         Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, (await Assert.ThrowsAsync<PostgresException>(() => sql.ExecuteNonQueryAsync())).SqlState);
+        await tx.RollbackAsync();
         Assert.Equal(2, await db.Count("account_module_lifecycles"));
+        Assert.Equal(1L, await db.Count("account_module_lifecycle_receipts"));
+        Assert.Equal(1L, await db.Count("account_module_lifecycle_audit"));
     }
     [LocalPostgresFact, Trait("M6", "P3B-QA-17")]
     public async Task QA17_SingleConnectionPoolClearsCommittedAndRolledBackIdentity()

@@ -19,8 +19,13 @@ public sealed class PrivateProfilePhotoStore(AccountsDbContext db) : IPrivatePro
         SafeAsync(() => Scoped(scope).AsNoTracking().SingleOrDefaultAsync(x => x.RequestId == requestId, ct));
 
     public Task<PrivateProfilePhoto> ReserveAsync(PhotoScope scope, Guid requestId, string originalHash,
-        PhotoUploadEvidence? evidence, CancellationToken ct) => InScopeTransactionAsync(scope, async () =>
+        PhotoUploadEvidence? evidence, CancellationToken ct) => InScopeTransactionAsync(scope,
+        () => ReserveUnderProfileLockAsync(scope, requestId, originalHash, evidence, ct), ct);
+
+    internal async Task<PrivateProfilePhoto> ReserveUnderProfileLockAsync(PhotoScope scope, Guid requestId, string originalHash,
+        PhotoUploadEvidence? evidence, CancellationToken ct)
     {
+        if (db.Database.CurrentTransaction is null) throw new PhotoDependencyException();
         var now = await DatabaseUtcNowAsync(ct);
         var existing = await Scoped(scope).SingleOrDefaultAsync(x => x.RequestId == requestId, ct);
         if (existing is not null)
@@ -48,7 +53,7 @@ public sealed class PrivateProfilePhotoStore(AccountsDbContext db) : IPrivatePro
         db.PrivateProfilePhotos.Add(candidate);
         await db.SaveChangesAsync(ct);
         return candidate;
-    }, ct);
+    }
 
     public Task<bool> OwnsLeaseAsync(PhotoScope scope, Guid id, Guid token, CancellationToken ct) => SafeAsync(async () =>
     {

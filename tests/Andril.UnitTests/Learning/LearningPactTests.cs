@@ -288,7 +288,7 @@ public sealed class LearningPactTests
     }
 
     [Fact]
-    public void PublicSurface_HasNoMutableStateOrUnapprovedProgressCompletionMembershipOrRewardOperations()
+    public void PublicSurface_HasNoMutableStateAndOnlyApprovedCompletionAndWithdrawalOperations()
     {
         foreach (var type in new[] { typeof(LearningPact), typeof(LearningPactParticipant), typeof(LearningPact.Participation), typeof(LearningPact.Commitment) })
         {
@@ -298,10 +298,10 @@ public sealed class LearningPactTests
         Assert.Empty(typeof(LearningPact).GetConstructors());
         Assert.Empty(typeof(LearningPact.Participation).GetConstructors());
         Assert.Empty(typeof(LearningPact.Commitment).GetConstructors());
-        Assert.Equal(new[] { "AcceptInvitation", "Cancel", "DeclineInvitation", "IsParticipant", "ToString" },
+        Assert.Equal(new[] { "AcceptInvitation", "Cancel", "ConfirmCompletion", "DeclineInvitation", "IsParticipant", "ToString", "Withdraw" },
             typeof(LearningPact).GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.Instance)
                 .Where(method => !method.IsSpecialName).Select(method => method.Name).Order(StringComparer.Ordinal));
-        Assert.Equal(new[] { LearningPactStatus.Pending, LearningPactStatus.Active, LearningPactStatus.Cancelled }, Enum.GetValues<LearningPactStatus>());
+        Assert.Equal(new[] { LearningPactStatus.Pending, LearningPactStatus.Active, LearningPactStatus.Cancelled, LearningPactStatus.Completed }, Enum.GetValues<LearningPactStatus>());
     }
 
     [Fact]
@@ -320,6 +320,201 @@ public sealed class LearningPactTests
         }
     }
 
+    [Theory]
+    [InlineData(2, false)]
+    [InlineData(2, true)]
+    [InlineData(3, false)]
+    [InlineData(3, true)]
+    [InlineData(5, false)]
+    [InlineData(5, true)]
+    public void Completion_RequiresEveryExplicitReportIncludingProposer(int count, bool reverse)
+    {
+        var pact = CreateActive(count); var terms = pact.Commitments; var initial = pact.Participants;
+        Assert.All(initial, item => Assert.False(item.CompletionConfirmed));
+        var order = reverse ? initial.Reverse().ToArray() : initial.ToArray();
+        for (var i = 0; i < order.Length; i++)
+        {
+            var before = pact.Participants;
+            var participant = order[i].Participant;
+            pact.ConfirmCompletion(participant);
+            Assert.Equal(i == order.Length - 1 ? LearningPactStatus.Completed : LearningPactStatus.Active, pact.Status);
+            Assert.Equal(i + 1, pact.Participants.Count(item => item.CompletionConfirmed));
+            Assert.All(pact.Participants, item => Assert.Equal(PactInvitationDecision.Accepted, item.Decision));
+            for (var j = 0; j < before.Count; j++)
+            {
+                if (before[j].Participant == participant)
+                {
+                    Assert.False(before[j].CompletionConfirmed); Assert.True(pact.Participants[j].CompletionConfirmed);
+                    Assert.NotSame(before[j], pact.Participants[j]);
+                }
+                else Assert.Same(before[j], pact.Participants[j]);
+            }
+            Assert.Same(terms, pact.Commitments);
+        }
+        Assert.All(initial, item => Assert.False(item.CompletionConfirmed));
+        Assert.Equal("learning", pact.Module);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void DuplicateConfirmation_CannotInflateReportsOrChangeState(int selected)
+    {
+        var pact = CreateActive(); var participant = pact.Participants[selected].Participant;
+        pact.ConfirmCompletion(participant); var before = Snapshot(pact);
+        Assert.Throws<InvalidOperationException>(() => pact.ConfirmCompletion(
+            new(participant.AccountId, participant.LearningProfileId)));
+        Assert.Equal(before, Snapshot(pact));
+        Assert.Equal(1, pact.Participants.Count(item => item.CompletionConfirmed));
+        Assert.Equal(LearningPactStatus.Active, pact.Status);
+        foreach (var other in pact.Participants.Where(item => !item.CompletionConfirmed).ToArray())
+            pact.ConfirmCompletion(other.Participant);
+        Assert.Equal(LearningPactStatus.Completed, pact.Status);
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(0, true)]
+    [InlineData(1, false)]
+    [InlineData(1, true)]
+    [InlineData(2, false)]
+    [InlineData(2, true)]
+    public void ActiveParticipantWithdrawal_CancelsWithoutChangingTermsOrReports(int selected, bool partial)
+    {
+        var pact = CreateActive();
+        if (partial) pact.ConfirmCompletion(pact.Participants[(selected + 1) % 3].Participant);
+        var participants = pact.Participants; var commitments = pact.Commitments;
+        pact.Withdraw(participants[selected].Participant);
+        Assert.Equal(LearningPactStatus.Cancelled, pact.Status);
+        Assert.Same(participants, pact.Participants); Assert.Same(commitments, pact.Commitments);
+        Assert.Equal(partial ? 1 : 0, pact.Participants.Count(item => item.CompletionConfirmed));
+    }
+
+    [Theory]
+    [InlineData("confirm")]
+    [InlineData("withdraw")]
+    public void PendingPact_RejectsCompletionAndWithdrawalWithoutChangingState(string action)
+    {
+        var pact = Create(); var before = Snapshot(pact);
+        Assert.Throws<InvalidOperationException>(() => Act(pact, action, pact.Proposer));
+        Assert.Equal(before, Snapshot(pact));
+        Assert.All(pact.Participants, item => Assert.False(item.CompletionConfirmed));
+    }
+
+    [Theory]
+    [InlineData("confirm", "outsider")]
+    [InlineData("confirm", "account")]
+    [InlineData("confirm", "profile")]
+    [InlineData("confirm", "mixed")]
+    [InlineData("confirm", "null")]
+    [InlineData("withdraw", "outsider")]
+    [InlineData("withdraw", "account")]
+    [InlineData("withdraw", "profile")]
+    [InlineData("withdraw", "mixed")]
+    [InlineData("withdraw", "null")]
+    public void CompletionAndWithdrawal_RejectNonparticipantReferences(string action, string defect)
+    {
+        var pact = CreateActive(); var person = pact.Participants[1].Participant;
+        var actor = defect switch
+        {
+            "null" => null!,
+            "account" => new LearningPactParticipant(person.AccountId, Guid.NewGuid()),
+            "profile" => new LearningPactParticipant(Guid.NewGuid(), person.LearningProfileId),
+            "mixed" => new LearningPactParticipant(person.AccountId, pact.Proposer.LearningProfileId),
+            _ => Person()
+        };
+        var before = Snapshot(pact);
+        Assert.Throws<UnauthorizedAccessException>(() => Act(pact, action, actor));
+        Assert.Equal(before, Snapshot(pact));
+        Assert.All(pact.Participants, item => Assert.False(item.CompletionConfirmed));
+    }
+
+    [Theory]
+    [InlineData("completed")]
+    [InlineData("cancelled-pending")]
+    [InlineData("cancelled-active")]
+    public void TerminalPact_RejectsAllInvitationCompletionAndWithdrawalOperations(string terminal)
+    {
+        var pact = terminal == "cancelled-pending" ? Create() : CreateActive();
+        if (terminal == "completed")
+            foreach (var person in pact.Participants.ToArray()) pact.ConfirmCompletion(person.Participant);
+        else if (terminal == "cancelled-active") pact.Withdraw(pact.Proposer);
+        else pact.Cancel(pact.Proposer);
+        var before = Snapshot(pact);
+        foreach (var action in new[] { "accept", "decline", "cancel", "confirm", "withdraw" })
+        {
+            var actor = action is "accept" or "decline" ? pact.Participants[1].Participant : pact.Proposer;
+            Assert.Throws<InvalidOperationException>(() => Act(pact, action, actor));
+            Assert.Equal(before, Snapshot(pact));
+        }
+    }
+
+    [Fact]
+    public void CompletionReports_AreImmutableAndDoNotShareStateAcrossPactsWithMatchingReferences()
+    {
+        var pact = CreateActive(); var people = pact.Participants.Select(item => item.Participant).ToArray();
+        var other = LearningPact.Propose(pact.Id, pact.Proposer, people, []);
+        foreach (var person in people.Skip(1)) other.AcceptInvitation(person);
+        var old = pact.Participants;
+        pact.ConfirmCompletion(pact.Proposer);
+        Assert.All(old, item => Assert.False(item.CompletionConfirmed));
+        Assert.All(other.Participants, item => Assert.False(item.CompletionConfirmed));
+        Assert.Throws<NotSupportedException>(() => ((IList<LearningPact.Participation>)pact.Participants).Clear());
+        Assert.Throws<NotSupportedException>(() => ((IList<LearningPact.Participation>)pact.Participants)[0] = old[0]);
+        other.Withdraw(other.Proposer);
+        Assert.Equal(LearningPactStatus.Active, pact.Status); Assert.Equal(LearningPactStatus.Cancelled, other.Status);
+        // Fully matching supplied references still do not authenticate or authorize a production caller.
+    }
+
+    [Fact]
+    public async Task ConcurrentFinalConfirmationAndWithdrawal_CannotOverwriteATerminalOutcome()
+    {
+        var pact = CreateActive();
+        foreach (var person in pact.Participants.Take(2).ToArray()) pact.ConfirmCompletion(person.Participant);
+        var before = pact.Participants; var last = before[2].Participant;
+        var outcomes = await Task.WhenAll(
+            Task.Run(() => Record.Exception(() => pact.ConfirmCompletion(last))),
+            Task.Run(() => Record.Exception(() => pact.Withdraw(last))));
+        Assert.Single(outcomes, error => error is null);
+        Assert.IsType<InvalidOperationException>(Assert.Single(outcomes, error => error is not null));
+        Assert.Contains(pact.Status, new[] { LearningPactStatus.Completed, LearningPactStatus.Cancelled });
+        Assert.Equal(pact.Status == LearningPactStatus.Completed ? 3 : 2,
+            pact.Participants.Count(item => item.CompletionConfirmed));
+        Assert.False(before[2].CompletionConfirmed);
+    }
+
+    [Fact]
+    public async Task ConcurrentDuplicateConfirmations_CountTheParticipantOnce()
+    {
+        var pact = CreateActive(); var person = pact.Proposer;
+        var outcomes = await Task.WhenAll(
+            Task.Run(() => Record.Exception(() => pact.ConfirmCompletion(person))),
+            Task.Run(() => Record.Exception(() => pact.ConfirmCompletion(person))));
+        Assert.Single(outcomes, error => error is null);
+        Assert.IsType<InvalidOperationException>(Assert.Single(outcomes, error => error is not null));
+        Assert.Equal(1, pact.Participants.Count(item => item.CompletionConfirmed));
+        Assert.Equal(LearningPactStatus.Active, pact.Status);
+    }
+
+    [Fact]
+    public async Task ConcurrentDistinctConfirmations_PreserveEveryReportAndCompleteUnanimously()
+    {
+        var pact = CreateActive(); var before = pact.Participants;
+        await Task.WhenAll(before.Select(item => Task.Run(() => pact.ConfirmCompletion(item.Participant))));
+        Assert.Equal(LearningPactStatus.Completed, pact.Status);
+        Assert.All(pact.Participants, item => Assert.True(item.CompletionConfirmed));
+        Assert.All(before, item => Assert.False(item.CompletionConfirmed));
+    }
+
+    private static LearningPact CreateActive(int count = 3)
+    {
+        var pact = Create(count);
+        foreach (var person in pact.Participants.Where(item => item.Participant != pact.Proposer).ToArray())
+            pact.AcceptInvitation(person.Participant);
+        return pact;
+    }
+
     private static object Snapshot(LearningPact pact) => (pact.Id, pact.Module, pact.Proposer, pact.Status, pact.Participants, pact.Commitments);
     private static void Act(LearningPact pact, string action, LearningPactParticipant actor)
     {
@@ -328,6 +523,8 @@ public sealed class LearningPactTests
             case "accept": pact.AcceptInvitation(actor); break;
             case "decline": pact.DeclineInvitation(actor); break;
             case "cancel": pact.Cancel(actor); break;
+            case "confirm": pact.ConfirmCompletion(actor); break;
+            case "withdraw": pact.Withdraw(actor); break;
             default: throw new ArgumentException("Unknown test action.");
         }
     }

@@ -68,6 +68,11 @@ public sealed class PrivateProfileCompletionReader(IPrivateProfileService profil
         // within the profile repository transaction. Do not replace it with a raw profile lookup.
         try { profile = await profiles.GetAsync(module, cancellationToken); }
         catch (ProfileMissingException) { return new("private_profile_missing"); }
+        return Evaluate(module, profile);
+    }
+
+    internal static ProfileCompletionStatus Evaluate(string module, PrivateProfileDto profile)
+    {
         if (module == ModuleNames.Social)
         {
             if (profile.Module != module || profile.ProfileId == Guid.Empty) throw new ProfileAccessDeniedException();

@@ -23,11 +23,11 @@ The [CI NuGet configuration](../scripts/ci/NuGet.Member02.config) selects NuGet.
 
 ## Disposable database verification
 
-The Docker Official Image for PostgreSQL 17.12 Bookworm is pinned by digest. Docker publishes its port on runner IPv4 loopback only. A container health check waits for the server. The job authenticates through that exact published port and verifies the server version, the maintenance database postgres, and the ability to create and force-drop a random database, create and grant a role, transfer ownership, set role and clean up. The container administrator only provisions the fixture login. The login uses a random per-job password and has CREATEDB and CREATEROLE with neither superuser nor RLS-bypass rights. Application permission assertions use the restricted runtime and client-like roles. The existing fixture drops its databases and explicitly cleans up uniquely named cluster roles. The runner discards the entire cluster after the job. [Docker Official Image provenance](https://hub.docker.com/layers/library/postgres/17.12-bookworm/images/sha256-8d174ddfb292f26b6ec8d97f55d944ccab547fa8bfe9e4fd3c24afdc819ee423)
+The Docker Official Image for PostgreSQL 17.12 Bookworm is pinned by digest. Docker publishes its port on runner IPv4 loopback only. A container health check waits for the server. The job authenticates through that exact published port and verifies the server version, the maintenance database postgres, and the ability to create and force-drop a random database, create and grant a role, transfer ownership, set role and clean up. The service administrator provisions the fixture login and reads bounded, sanitized diagnostics from the job-local service. The login uses a random per-job password and has CREATEDB and CREATEROLE with neither superuser nor RLS-bypass rights. Application permission assertions use the restricted runtime and client-like roles. The existing fixture drops its databases and explicitly cleans up uniquely named cluster roles. The runner discards the entire cluster after the job. [Docker Official Image provenance](https://hub.docker.com/layers/library/postgres/17.12-bookworm/images/sha256-8d174ddfb292f26b6ec8d97f55d944ccab547fa8bfe9e4fd3c24afdc819ee423)
 
 Only the relational test step supplies ANDRIL_M2_TEST_POSTGRES and enables ANDRIL_M2_TEST_POSTGRES_ALLOW_ROLES. ANDRIL_M3_TEST_POSTGRES stays unset. The offline step clears all three variables and its job has no database service.
 
-The [exact test manifest](../scripts/ci/member-02-required-db-tests.json) lists the 36 M2 relational facts derived from 35 LocalPostgresFact and one IsolatedRolePostgresFact declaration. It reconciles with actual offline VSTest identifiers. The 44 MapCapturePostgresFact cases listed separately are expected offline skips and excluded from the M2 database filter. The current list has no parameterized cases.
+The [exact test manifest](../scripts/ci/member-02-required-db-tests.json) supplies 88 mandatory M2 identities at the remediation baseline. The runner derives two disjoint partitions from the method namespaces and runs them sequentially. The 171 separately declared database methods are expected offline skips and are outside this M2 invocation. The nine additional Gallery and Map declarations remain with M3 and M6. The current M2 list has no parameterized cases.
 
 | Test class in Andril.IntegrationTests.Database | Required M2 cases |
 | --- | ---: |
@@ -35,15 +35,27 @@ The [exact test manifest](../scripts/ci/member-02-required-db-tests.json) lists 
 | AccountPersistenceTests | 4 |
 | AccountPolicyPersistenceTests | 3 |
 | LanguagePreferencePersistenceTests | 4 |
-| OnboardingResumePersistenceTests | 1 |
+| OnboardingResumePersistenceTests | 2 |
 | PrivateProfilePersistenceTests | 4 |
 | PrivateProfilePhotoPersistenceTests | 12 |
 | StarterModulePersistenceTests | 5 |
-| **Total** | **36** |
+| **Non-lifecycle partition** | **37** |
+| **Lifecycle and controlled authorization partition** | **51** |
+| **Total** | **88** |
 
 The Accounts fixture applies all eight Accounts migrations through 20261120152336_AddPrivateProfilePhotos. The offline gate requires the Accounts and photo model checks to pass. These check snapshot consistency, migration order, additive forward and rollback SQL, relationship and index definitions, state and cleanup checks, and RLS setup. The relational cases cover rollback/reapply, constraints, ownership, uniqueness, replacement, idempotency, concurrent reservations, cleanup claims and retry scheduling. The restricted runtime case verifies upload, replacement and retrieval and denies schema edits, migration history access, metadata deletion, unauthorized account fields and client access. Hosted grants are outside this verification.
 
 The TRX checker joins executions to test definitions using fully qualified method identifiers. Every required case must appear with the expected outcome. Invalid or missing TRX, missing cases, unexpected selections, unsuccessful results and unexpected skips fail. For a future theory, put the method and exact display names in the manifest's cases list, repeating a name for identical rows. The verifier checks multiplicity and distinct execution IDs. Update the manifest alongside new database tests and check it against the adapter's actual discovery.
+
+### First instrumented PostgreSQL run
+
+The job retains its 35-minute limit. Run #21 spent 68 seconds from job start to the relational step. The step has a 30-minute outer limit and uses one 27-minute monotonic budget across probes and both partitions. The internal limit leaves up to three minutes in the step for reconciliation and cleanup. The remaining job time covers setup and artifact upload. The runner requests process-tree termination and waits up to eight seconds for the launched process. GitHub tears down the isolated service even when step cancellation prevents normal fixture cleanup. Cleanup evidence reports observed counts for fixture databases and roles, or unavailable evidence.
+
+VSTest detailed console completion lines are projected to approved method identities and outcomes in `relational-progress.jsonl`. Console progress is diagnostic. Exact acceptance uses completed TRX. VSTest hang detection uses a three-minute inactivity timeout with dump type `none`. The runner records available allowlisted start and completion evidence from the blame sequence on an aborted run. VSTest console output supplies no live per-test start event. For a small subset with no usable sequence, run one exact method per invocation in the approved diagnostic environment to establish the active test.
+
+Bounded PostgreSQL snapshots record wait categories, lock types, modes, grant status, session IDs and blockers in the disposable service. Each query has a two-second statement timeout and four-second client deadline before termination is requested. Raw output and blame XML stay outside the artifact tree. Each partition writes its expected identities before launch and then checkpoints its outcome, actual counts, and missing cases. Completed partition TRX and failure reports use the existing sanitizers. Interrupted, unstarted, or missing results cannot satisfy the Report job.
+
+After the first run, compare completed partition durations with the shared budget and inspect cancellation, lock, and cleanup evidence. Fix any demonstrated stall. Consider increasing the job limit only if successful partition durations show the 35-minute limit is insufficient after cleanup and upload margins are included. The approved ceiling is 60 minutes.
 
 ## Coverage, secret findings and reports
 
@@ -133,7 +145,7 @@ After owner review and M6 coordination, publish the approved QA commit on Member
 The offline job requires a separate audited restore, licensed Release build and unfiltered run of the standalone processor tests. Only `Andril.ProfilePhotoProcessor` directly references ImageSharp 4.1.3. The test project uses the transitive reference. The production API still resolves the unavailable inspector.
 
 1. The owner configured the `SIXLABORS_LICENSE_KEY` Actions repository secret. Keep its complete licensed value current and valid for `Andril.ProfilePhotoProcessor`. Only the licensed build and test step receives the secret.
-2. `ProcessorRestore` restores the standalone graph with the same audited NuGet configuration and flags as the solution, with a separate job-local package cache. It does not receive the license.
+2. `ProcessorRestore` restores the standalone graph with the same audited NuGet configuration and flags as the solution, with a separate job-local package cache. It receives no license. It can run after the completed offline suite step reports failure, provided the earlier trusted build and verifier steps allowed the offline suite to run and the job has not been cancelled. The original offline failure still fails the job.
 3. `Processor` removes the secret from its environment before invoking any child process. On Linux it writes the value to a temporary mode-0600 file under a mode-0700 directory outside the checkout and artifact roots. The non-incremental Release build receives only the path through `SixLaborsLicenseFile`. Build output is discarded. The file is removed in a `finally` block before tests run, with outer cleanup for the private directory. Forced runner termination relies on runner teardown.
 4. Tests run without build, restore or a filter. The existing verifier requires a nonempty, valid TRX and zero unsuccessful or skipped cases. Only sanitized test reports and safe summaries are published under the existing retention policy. A missing secret, license error, build failure or verification failure fails the offline job.
 5. Local validation can use `ProcessorRestore` with a private `RUNNER_TEMP` and `Processor -ProcessorLicenseFile <external-path>`. The script never copies or removes that local license. GitHub runs require the step secret and reject the local override.

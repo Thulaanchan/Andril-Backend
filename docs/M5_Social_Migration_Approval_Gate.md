@@ -26,20 +26,18 @@ This gate confirms that:
 
 ## 2. Governance Invariant Verification Matrix
 
-| Gate # | Governance Dimension | Verification Standard | Audit Finding | Gate Status |
+| Gate # | Governance Dimension | Verification Standard | Audit Finding & Actual Source State | Gate Status |
 | :---: | :--- | :--- | :--- | :---: |
-| **G-01** | **Dedicated Schema Namespace** | Dedicated schema `andril_social` completely partitioned from `andril_identity` and `andril_hobbies`. | `SocialDbContext.Schema` is constant `"andril_social"`. Generated DDL and mappings target only `andril_social`. | **PASSED** |
-| **G-02** | **Migrations History Isolation** | Migration tracking table isolated within `andril_social` to prevent cross-module collisions. | Configured via `SocialDbContextFactory` to `andril_social.__EFMigrationsHistory_Social`. Verified by unit tests. | **PASSED** |
-| **G-03** | **Decision P-04 Neutrality** | Migration does not embed unapproved retention timers, automated purging routines, or hardcoded overwrite/append triggers. | Schema maps pure structural snapshot entities (`social_questionnaire_responses` and `social_questionnaire_answers`). | **PASSED** |
-| **G-04** | **Identity Profile Integrity** | Foreign key references `andril_identity.private_module_profiles(id)` with cascading deletion. | Foreign key constraint `fk_social_questionnaire_profile` maps to parent identity profile without mutating identity schema. | **PASSED** |
-| **G-05** | **Offline Scaffolding Safety** | Design-time factory cannot connect to live or staging network endpoints. | `SocialDbContextFactory` installs `OfflineConnectionGuard` throwing `InvalidOperationException` on any connection attempt. | **PASSED** |
-| **G-06** | **Zero Production Mutation** | Implementation does not execute live migration against production Supabase instances. | Scope restricted to source code migrations and ephemeral local test fixtures. | **PASSED** |
+| **G-01** | **Dedicated Schema Namespace** | Dedicated schema `andril_social` completely partitioned from `andril_identity` and `andril_hobbies`. | `SocialDbContext.Schema` is constant `"andril_social"`. Generated DDL and mappings target only `andril_social`. | **PASSED** (Implemented) |
+| **G-02** | **Migrations History Isolation** | Migration tracking table isolated within `andril_social` to prevent cross-module collisions. | Configured via `SocialDbContextFactory` to `andril_social.__EFMigrationsHistory_Social`. Verified by unit tests. | **PASSED** (Implemented) |
+| **G-03** | **Decision P-04 Neutrality** | Migration does not embed unapproved retention timers, automated purging routines, or hardcoded overwrite/append triggers. | Schema maps pure structural snapshot entities. Repository rejects destructive overwrites pending P-04. | **PASSED** (Implemented) |
+| **G-04** | **Identity Profile Integrity** | Foreign key references `andril_identity.private_module_profiles(id)` with cascading deletion. | Column `profile_id` is enforced via non-empty check constraint `ck_questionnaire_profile_id`. Physical FK constraint is pending M2 establishing a unique alternate key on `(id, module)` in `andril_identity.private_module_profiles`. | **PENDING M2 SPEC** (Design Approved, Schema Pending) |
+| **G-05** | **Offline Scaffolding Safety** | Design-time factory cannot connect to live or staging network endpoints. | `SocialDbContextFactory` installs `OfflineConnectionGuard` throwing `InvalidOperationException` on any connection attempt. | **PASSED** (Implemented) |
+| **G-06** | **Zero Production Mutation** | Implementation does not execute live migration against production Supabase instances. | Scope restricted to source code migrations and ephemeral local test fixtures. | **PASSED** (Implemented) |
 
 ---
 
 ## 3. Physical Schema Specification Sign-Off
-
-The forthcoming initial migration (`InitialSocialQuestionnaire`) is approved to scaffold the following physical database structures:
 
 ### 3.1 Schema: `andril_social`
 
@@ -50,11 +48,11 @@ CREATE SCHEMA IF NOT EXISTS andril_social;
 ### 3.2 Table: `andril_social.social_questionnaire_responses`
 - **Columns:**
   - `id` (UUID, Primary Key, Non-empty check constraint `ck_questionnaire_response_id`)
-  - `profile_id` (UUID, Foreign Key to `andril_identity.private_module_profiles(id)` ON DELETE CASCADE, Non-empty check constraint `ck_questionnaire_profile_id`)
+  - `profile_id` (UUID, Non-empty check constraint `ck_questionnaire_profile_id`; physical composite FK to `andril_identity.private_module_profiles(id, module)` pending M2 key coordination)
   - `version` (VARCHAR(32), Non-null)
   - `status` (VARCHAR(32), Enum conversion, Non-null)
   - `created_at_utc` (TIMESTAMPTZ, Finite check constraint `ck_questionnaire_timestamp`)
-  - `row_version` (BYTEA, Optimistic Concurrency Token)
+  - `row_version` (BYTEA in Initial migration; native PostgreSQL concurrency via Npgsql `xmin` pending additive migration R05)
 - **Indexes:**
   - `ix_social_questionnaire_profile_version` ON `(profile_id, version)`
 
