@@ -1,5 +1,6 @@
 
 using System.Transactions;
+using Andril.Hobbies.DTOs;
 using Andril.Hobbies.Entities;
 using Andril.Hobbies.Interfaces;
 using Microsoft.EntityFrameworkCore;
@@ -8,7 +9,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 namespace Andril.Persistence.Repositories.Hobbies;
 
 public sealed class GalleryRepository<TDbContext>
-    : IGalleryRepository
+    : IGalleryRepository, IGalleryPageRepository
     where TDbContext : DbContext
 {
     private const string HobbiesModule = "Hobbies";
@@ -39,6 +40,11 @@ public sealed class GalleryRepository<TDbContext>
             .ToListAsync(cancellationToken);
     }
 
+    Task<GalleryPage> IGalleryPageRepository.GetOwnerGalleryPageAsync(
+        Guid authorizedOwnerModuleProfileId, int pageSize, int trustedTestOnlyMaximum,
+        GalleryPagePosition? after, CancellationToken cancellationToken) =>
+        GetOwnerGalleryPageAsync(authorizedOwnerModuleProfileId, pageSize, trustedTestOnlyMaximum, after, cancellationToken);
+
     // Offline-only additive operation. Not exposed through IGalleryRepository or runtime callers.
     // A future protected caller must freshly authorize the owner on EVERY page request.
     // trustedTestOnlyMaximum is supplied by offline tests, not an approved Product limit.
@@ -49,18 +55,7 @@ public sealed class GalleryRepository<TDbContext>
         GalleryPagePosition? after = null,
         CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-        if (authorizedOwnerModuleProfileId == Guid.Empty)
-            throw new ArgumentException("A trusted owner scope is required.", nameof(authorizedOwnerModuleProfileId));
-        if (trustedTestOnlyMaximum <= 0 || trustedTestOnlyMaximum == int.MaxValue)
-            throw new ArgumentOutOfRangeException(nameof(trustedTestOnlyMaximum));
-        if (pageSize <= 0 || pageSize > trustedTestOnlyMaximum)
-            throw new ArgumentOutOfRangeException(nameof(pageSize));
-        if (after is not null && (after.OwnerModuleProfileId != authorizedOwnerModuleProfileId
-            || after.Module != HobbiesModule || after.Id == Guid.Empty
-            || after.Timestamp.Offset != TimeSpan.Zero || after.Timestamp == DateTimeOffset.MinValue
-            || after.Timestamp == DateTimeOffset.MaxValue || after.Timestamp.Ticks % 10 != 0))
-            throw new ArgumentException("The continuation position is invalid for this scope.", nameof(after));
+        GalleryPaging.Validate(authorizedOwnerModuleProfileId, pageSize, trustedTestOnlyMaximum, after, cancellationToken);
 
         var query = _context.Set<GalleryMedia>().AsNoTracking().Where(media =>
             media.OwnerModuleProfileId == authorizedOwnerModuleProfileId

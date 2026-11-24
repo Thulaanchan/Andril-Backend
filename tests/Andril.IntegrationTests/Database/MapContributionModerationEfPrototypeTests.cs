@@ -319,6 +319,63 @@ public sealed class MapContributionModerationEfPrototypeTests(ITestOutputHelper 
         await h.AssertStoredAsync(1, 1, 0);
     });
 
+    [MapCapturePostgresFact]
+    public Task AuditConsistency_RestorationAndReplayRejectMismatchedContribution() => AssertRejectedAuditMismatchAsync("contribution");
+
+    [MapCapturePostgresFact]
+    public Task AuditConsistency_RestorationAndReplayRejectMismatchedReviewer() => AssertRejectedAuditMismatchAsync("reviewer");
+
+    [MapCapturePostgresFact]
+    public Task AuditConsistency_RestorationAndReplayRejectMismatchedAcceptanceTimestamp() => AssertRejectedAuditMismatchAsync("timestamp");
+
+    private static Task AssertRejectedAuditMismatchAsync(string mismatch) => EachStrategy(async (h, strategy) =>
+    {
+        var request = h.Request(); var key = Guid.NewGuid(); var auditId = Guid.NewGuid();
+        var auditContribution = h.Contribution.ContributionId;
+        await using (var context = h.NewContext())
+        await using (var transaction = await context.Database.BeginTransactionAsync())
+        {
+            // Insert the contradiction before immutability triggers apply; do not disable them.
+            if (mismatch == "contribution")
+            {
+                auditContribution = Guid.NewGuid();
+                context.States.Add(new StateRow { Id = auditContribution, OwnerId = Guid.NewGuid(),
+                    AttractionId = Guid.NewGuid(), SessionId = Guid.NewGuid() });
+                await context.SaveChangesAsync();
+            }
+            var state = await context.States.SingleAsync(row => row.Id == request.ContributionId);
+            state.Status = 2; state.Revision = 2; state.DecisionId = request.DecisionId;
+            await context.SaveChangesAsync();
+            context.Receipts.Add(h.Receipt(request, key, auditId));
+            await context.SaveChangesAsync();
+            var audit = Harness.Audit(request, auditId);
+            audit.ContributionId = auditContribution;
+            if (mismatch == "reviewer") audit.Reviewer = "different-synthetic-reviewer";
+            if (mismatch == "timestamp") audit.AcceptedAt = AcceptedAt.AddSeconds(1);
+            context.Audits.Add(audit);
+            await context.SaveChangesAsync();
+            await transaction.CommitAsync(); // Demonstrates that unchanged DDL permits this contradiction.
+        }
+        await using (var verify = h.NewContext())
+        {
+            var audit = await verify.Audits.AsNoTracking().SingleAsync();
+            Assert.Equal(auditContribution, audit.ContributionId);
+            Assert.Equal(mismatch == "reviewer" ? "different-synthetic-reviewer" : request.ReviewerSubject, audit.Reviewer);
+            Assert.Equal(mismatch == "timestamp" ? AcceptedAt.AddSeconds(1) : AcceptedAt, audit.AcceptedAt);
+        }
+        var restore = await Assert.ThrowsAsync<InvalidOperationException>(() => h.RestoreAsync());
+        var replay = await Assert.ThrowsAsync<InvalidOperationException>(() => h.DecideAsync(request, key, strategy));
+        Assert.Equal("Experimental accepted evidence is incomplete.", restore.Message);
+        Assert.Equal(restore.Message, replay.Message);
+        Assert.DoesNotContain(request.ReviewerSubject, restore.Message);
+        Assert.DoesNotContain(h.Contribution.PrivatePhotoStorageObjectKey, restore.Message);
+        await using var unchanged = h.NewContext();
+        var stored = await unchanged.States.AsNoTracking().SingleAsync(row => row.Id == request.ContributionId);
+        Assert.Equal(2, stored.Status); Assert.Equal(2, stored.Revision);
+        Assert.Equal(request.DecisionId, stored.DecisionId);
+        Assert.Equal(1, await unchanged.Receipts.CountAsync()); Assert.Equal(1, await unchanged.Audits.CountAsync());
+    });
+
     private static async Task Observe(Task task) { try { await task; } catch { /* Cleanup only; test body observes expected failures. */ } }
     private static async Task EachStrategy(Func<Harness, Strategy, Task> test)
     {

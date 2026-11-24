@@ -302,6 +302,41 @@ public sealed class MapContributionModerationPersistencePrototypeTests
         await h.AssertStoredAsync(1, 1, 0);
     });
 
+    [MapCapturePostgresFact]
+    public Task AuditConsistency_RawRestorationAndReplayRejectMismatchedContribution() => AssertRawRejectsAuditMismatchAsync("contribution");
+
+    [MapCapturePostgresFact]
+    public Task AuditConsistency_RawRestorationAndReplayRejectMismatchedReviewer() => AssertRawRejectsAuditMismatchAsync("reviewer");
+
+    [MapCapturePostgresFact]
+    public Task AuditConsistency_RawRestorationAndReplayRejectMismatchedAcceptanceTimestamp() => AssertRawRejectsAuditMismatchAsync("timestamp");
+
+    private static async Task AssertRawRejectsAuditMismatchAsync(string mismatch)
+    {
+        var failures = new List<string>();
+        await EachStrategy(async (h, strategy) =>
+        {
+            var (request, key) = await h.SeedContradictoryAuditAsync(mismatch);
+            Result? replay = null;
+            var restorationError = await Record.ExceptionAsync(async () => { _ = await h.RestoreAsync(); });
+            var replayError = await Record.ExceptionAsync(async () => { replay = await h.DecideAsync(request, key, strategy); });
+            if (restorationError is not InvalidOperationException || replayError is not InvalidOperationException)
+                failures.Add($"{strategy}: contradictory audit {mismatch}; restoration={restorationError?.GetType().Name ?? "ACCEPTED"}; replay={replay?.Outcome.ToString() ?? replayError?.GetType().Name}.");
+        });
+        // Exercise both strategies, then report every acceptance. Never turn the known gap into a passing assertion.
+        Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
+    }
+
+    [MapCapturePostgresFact]
+    public Task AuditConsistency_DatabaseRejectsModuleActionAndReceiptRevision() => EachStrategy(async (h, strategy) =>
+    {
+        await h.DecideAsync(h.Request(), Guid.NewGuid(), strategy);
+        await h.AssertReceiptErrorAsync("module", "receipts_module_check", PostgresErrorCodes.CheckViolation);
+        await h.AssertReceiptErrorAsync("action", null, PostgresErrorCodes.CheckViolation);
+        await h.AssertReceiptErrorAsync("result_revision", null, PostgresErrorCodes.CheckViolation);
+        await h.AssertStoredAsync(2, 2, 1);
+    });
+
     private static async Task Observe(Task task) { try { await task; } catch { /* Cleanup only; assertions observe expected outcomes above. */ } }
     private static async Task EachStrategy(Func<Harness, Strategy, Task> test)
     {
@@ -414,18 +449,39 @@ public sealed class MapContributionModerationPersistencePrototypeTests
             await insert.ExecuteNonQueryAsync(token);
         }
 
+        // Fixed test-only SQL shared by restoration and replay. Validate the initial evidence,
+        // not just its existence: immutable rows can still have been inserted inconsistently.
+        private const string AcceptedEvidenceMatches = """
+            EXISTS (
+                SELECT 1 FROM m3_moderation_prototype.audit a
+                JOIN m3_moderation_prototype.contributions c ON c.contribution_id=r.contribution_id
+                WHERE a.audit_id=r.audit_id AND a.decision_id=r.decision_id
+                  AND a.contribution_id=r.contribution_id AND a.reviewer=r.reviewer AND a.accepted_at=r.accepted_at
+                  AND c.decision_id=r.decision_id AND c.status=r.result_status AND c.revision=r.result_revision
+                  AND c.owner_id=r.owner_id AND c.attraction_id=r.attraction_id
+                  AND c.session_id=r.session_id AND c.module=r.module)
+            """;
+
+        private static void RequireConsistentAcceptedEvidence(NpgsqlDataReader reader, int ordinal)
+        {
+            if (!reader.GetBoolean(ordinal))
+                throw new InvalidOperationException("Experimental accepted evidence is incomplete.");
+        }
+
         private async Task<Result?> ReplayAsync(NpgsqlConnection database, NpgsqlTransaction transaction,
             MapContributionReviewRequest request, Guid key, CancellationToken token)
         {
-            await using var query = Command(database, transaction, """
-                SELECT decision_id,action,expected_revision,result_revision,reviewer,accepted_at,result_status
-                FROM m3_moderation_prototype.receipts WHERE contribution_id=$1 AND idempotency_key=$2
+            await using var query = Command(database, transaction, $"""
+                SELECT decision_id,action,expected_revision,result_revision,reviewer,accepted_at,result_status,
+                    {AcceptedEvidenceMatches}
+                FROM m3_moderation_prototype.receipts r WHERE contribution_id=$1 AND idempotency_key=$2
                 """, request.ContributionId, key);
             await using var reader = await query.ExecuteReaderAsync(token);
             if (!await reader.ReadAsync(token)) return null;
             var saved = new MapContributionReviewRequest(reader.GetGuid(0), request.ContributionId,
                 (MapContributionReviewAction)reader.GetInt32(1), reader.GetInt64(2), reader.GetString(4));
             if (saved != request) return new(Outcome.Conflict);
+            RequireConsistentAcceptedEvidence(reader, 7);
             var evidence = new MapContributionReviewDecision(saved, reader.GetFieldValue<DateTimeOffset>(5));
             return new(Outcome.Replay, MapContributionModeration.Restore(_contribution,
                 Snapshot(reader.GetInt64(3), evidence), saved.Action).Snapshot);
@@ -439,15 +495,18 @@ public sealed class MapContributionModerationPersistencePrototypeTests
             await using var context = new PrototypeContext(new DbContextOptionsBuilder<PrototypeContext>().UseNpgsql(connection).Options);
             await context.Database.OpenConnectionAsync();
             var database = (NpgsqlConnection)context.Database.GetDbConnection();
-            await using var query = Command(database, null, """
-                SELECT r.decision_id,r.action,r.expected_revision,r.result_revision,r.reviewer,r.accepted_at
+            await using var query = Command(database, null, $"""
+                SELECT r.decision_id,r.action,r.expected_revision,r.result_revision,r.reviewer,r.accepted_at,
+                    {AcceptedEvidenceMatches}
                 FROM m3_moderation_prototype.receipts r
                 JOIN m3_moderation_prototype.contributions c ON c.decision_id=r.decision_id AND c.revision=r.result_revision
                 JOIN m3_moderation_prototype.audit a ON a.audit_id=r.audit_id AND a.decision_id=r.decision_id
                 WHERE c.contribution_id=$1 AND c.owner_id=$2 AND c.attraction_id=$3 AND c.session_id=$4 AND c.module='hobbies'
                 """, _contribution.ContributionId, Scope.Owner, Scope.Attraction, Scope.Session);
             await using var reader = await query.ExecuteReaderAsync();
-            Assert.True(await reader.ReadAsync());
+            if (!await reader.ReadAsync())
+                throw new InvalidOperationException("Experimental accepted evidence is incomplete.");
+            RequireConsistentAcceptedEvidence(reader, 6);
             var request = new MapContributionReviewRequest(reader.GetGuid(0), _contribution.ContributionId,
                 (MapContributionReviewAction)reader.GetInt32(1), reader.GetInt64(2), reader.GetString(4));
             return MapContributionModeration.Restore(_contribution, Snapshot(reader.GetInt64(3),
@@ -489,7 +548,46 @@ public sealed class MapContributionModerationPersistencePrototypeTests
             Assert.True(reader.GetBoolean(8)); // No production schema, ledger, rewards or publication are created.
         }
 
-        internal async Task AssertReceiptErrorAsync(string duplicate, string constraint, string sqlState)
+        internal async Task<(MapContributionReviewRequest Request, Guid Key)> SeedContradictoryAuditAsync(string mismatch)
+        {
+            var request = Request(); var key = Guid.NewGuid(); var auditId = Guid.NewGuid();
+            var auditContribution = _contribution.ContributionId;
+            await using var database = await OpenAsync();
+            await using var transaction = await database.BeginTransactionAsync();
+            if (mismatch == "contribution")
+            {
+                auditContribution = Guid.NewGuid();
+                await using var other = Command(database, transaction,
+                    "INSERT INTO m3_moderation_prototype.contributions VALUES ($1,$2,$3,$4,'hobbies',1,1,NULL)",
+                    auditContribution, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+                await other.ExecuteNonQueryAsync();
+            }
+            await using (var update = Command(database, transaction,
+                "UPDATE m3_moderation_prototype.contributions SET status=2,revision=2,decision_id=$1 WHERE contribution_id=$2",
+                request.DecisionId, request.ContributionId))
+                Assert.Equal(1, await update.ExecuteNonQueryAsync());
+            await InsertReceiptAsync(database, transaction, request, key, auditId, 2);
+            await using (var audit = Command(database, transaction,
+                "INSERT INTO m3_moderation_prototype.audit VALUES ($1,$2,$3,$4,$5)",
+                auditId, request.DecisionId, auditContribution,
+                mismatch == "reviewer" ? "different-synthetic-reviewer" : request.ReviewerSubject,
+                mismatch == "timestamp" ? AcceptedAt.AddSeconds(1) : AcceptedAt))
+                await audit.ExecuteNonQueryAsync();
+            await transaction.CommitAsync(); // The original schema is deliberately unchanged.
+            await using var verify = Command(database, null, """
+                SELECT c.status,c.revision,a.contribution_id,a.reviewer,a.accepted_at
+                FROM m3_moderation_prototype.contributions c JOIN m3_moderation_prototype.receipts r ON c.decision_id=r.decision_id
+                JOIN m3_moderation_prototype.audit a ON r.audit_id=a.audit_id WHERE c.contribution_id=$1
+                """, request.ContributionId);
+            await using var reader = await verify.ExecuteReaderAsync();
+            Assert.True(await reader.ReadAsync()); Assert.Equal(2, reader.GetInt32(0)); Assert.Equal(2, reader.GetInt64(1));
+            Assert.Equal(auditContribution, reader.GetGuid(2));
+            Assert.Equal(mismatch == "reviewer" ? "different-synthetic-reviewer" : request.ReviewerSubject, reader.GetString(3));
+            Assert.Equal(mismatch == "timestamp" ? AcceptedAt.AddSeconds(1) : AcceptedAt, reader.GetFieldValue<DateTimeOffset>(4));
+            return (request, key);
+        }
+
+        internal async Task AssertReceiptErrorAsync(string duplicate, string? constraint, string sqlState)
         {
             await using var database = await OpenAsync();
             await using var transaction = await database.BeginTransactionAsync();
@@ -499,14 +597,33 @@ public sealed class MapContributionModerationPersistencePrototypeTests
             var key = duplicate == "idempotency_key" ? "idempotency_key" : "gen_random_uuid()";
             var expected = duplicate == "expected_revision" ? "expected_revision" : "expected_revision+1";
             var owner = duplicate == "scope" ? "gen_random_uuid()" : "owner_id";
+            var module = duplicate == "module" ? "'learning'" : "module";
+            var action = duplicate == "action" ? "2" : "action";
+            var resultRevision = duplicate == "result_revision" ? expected : $"{expected}+1";
             await using var insert = new NpgsqlCommand($"""
                 INSERT INTO m3_moderation_prototype.receipts
-                SELECT {id},{key},contribution_id,{owner},attraction_id,session_id,module,action,
-                    {expected},{expected}+1,result_status,reviewer,accepted_at,gen_random_uuid(),1
+                SELECT {id},{key},contribution_id,{owner},attraction_id,session_id,{module},{action},
+                    {expected},{resultRevision},result_status,reviewer,accepted_at,gen_random_uuid(),1
                 FROM m3_moderation_prototype.receipts
                 """, database, transaction);
             var error = await Assert.ThrowsAsync<PostgresException>(() => insert.ExecuteNonQueryAsync());
-            Assert.Equal(sqlState, error.SqlState); Assert.Equal(constraint, error.ConstraintName);
+            Assert.Equal(sqlState, error.SqlState);
+            if (constraint is not null) Assert.Equal(constraint, error.ConstraintName);
+            else
+            {
+                // These checks were unnamed in the original DDL. Verify the actual failing
+                // constraint's catalog definition, rather than guessing PostgreSQL's generated name.
+                Assert.NotNull(error.ConstraintName);
+                await using var catalog = await OpenAsync();
+                await using var check = Command(catalog, null, """
+                    SELECT pg_get_constraintdef(oid) FROM pg_constraint
+                    WHERE conrelid='m3_moderation_prototype.receipts'::regclass AND conname=$1 AND contype='c'
+                    """, error.ConstraintName);
+                var definition = Assert.IsType<string>(await check.ExecuteScalarAsync());
+                foreach (var column in duplicate == "action"
+                    ? new[] { "result_status", "action" } : new[] { "result_revision", "expected_revision" })
+                    Assert.Contains(column, definition, StringComparison.Ordinal);
+            }
         }
 
         internal async Task AssertMissingAuditCommitFailsAsync()
