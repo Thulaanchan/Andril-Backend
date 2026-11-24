@@ -238,4 +238,77 @@ public sealed class ReciprocalPersonalityCompatibilityEvaluatorTests
         Assert.False(result.IsAvailable);
         Assert.Null(result.Score);
     }
+
+    [Fact]
+    public void Profile_Answers_IsDefensivelyCopied()
+    {
+        var answers = CreateCustomAnswers(3);
+        var profile = new PersonalityEvaluationProfile(answers, "v1");
+
+        answers[0] = new QuestionnaireAnswer("q01", "5");
+
+        Assert.Equal("3", profile.Answers![0].OptionId);
+    }
+
+    [Theory]
+    [InlineData(" 1 ")]
+    [InlineData("+1")]
+    [InlineData("01")]
+    [InlineData("1.0")]
+    [InlineData("6")]
+    [InlineData("invalid")]
+    public void Evaluate_NonCanonicalOptionValue_ReturnsUnavailable(string nonCanonicalOption)
+    {
+        var answersA = CreateCustomAnswers(4);
+        answersA[0] = new QuestionnaireAnswer("q01", nonCanonicalOption);
+        var answersB = CreateCustomAnswers(4);
+
+        var pA = new PersonalityEvaluationProfile(answersA, "v1");
+        var pB = new PersonalityEvaluationProfile(answersB, "v1");
+
+        var result = ReciprocalPersonalityCompatibilityEvaluator.Evaluate(pA, pB);
+
+        Assert.False(result.IsAvailable);
+        Assert.Null(result.Score);
+    }
+
+    [Fact]
+    public void Evaluate_StaleConfirmationRevision_ExcludesUnresolvedAxisFromPreferences()
+    {
+        var neutralAnswers = CreateCustomAnswers(3);
+        var staleConfirmation = new PersonalityArchetypeConfirmation(
+            "old-rev",
+            SocialConfirmation: SocialEngagementTendency.Outgoing);
+
+        var pA = new PersonalityEvaluationProfile(
+            neutralAnswers, "v1", revision: "new-rev", confirmation: staleConfirmation);
+
+        var pB = new PersonalityEvaluationProfile(
+            CreateAnswersForArchetype(PersonalityArchetype.AP01),
+            "v1",
+            partnerPreferences: new PersonalityPartnerPreferences(Social: SocialEngagementPreference.Outgoing));
+
+        var result = ReciprocalPersonalityCompatibilityEvaluator.Evaluate(pA, pB);
+
+        Assert.True(result.IsAvailable);
+        Assert.Null(result.ReciprocalPreferenceAlignment);
+        Assert.Equal(0, result.EvaluablePreferenceCount);
+    }
+
+    [Fact]
+    public void Result_And_Profile_ToString_ProtectsInternalPrivacy()
+    {
+        var validAnswers = CreateCustomAnswers(4);
+        var pA = new PersonalityEvaluationProfile(validAnswers, "v1");
+        var pB = new PersonalityEvaluationProfile(null, "v1");
+
+        Assert.Equal("PersonalityEvaluationProfile [private]", pA.ToString());
+
+        var unavailableResult = ReciprocalPersonalityCompatibilityEvaluator.Evaluate(pA, pB);
+        Assert.Equal("ReciprocalPersonalityCompatibilityResult: Unavailable [private]", unavailableResult.ToString());
+
+        var availableResult = ReciprocalPersonalityCompatibilityEvaluator.Evaluate(pA, pA);
+        Assert.Contains("ReciprocalPersonalityCompatibilityResult: Available", availableResult.ToString());
+        Assert.DoesNotContain("DetailedQuestionnaireSimilarity", availableResult.ToString());
+    }
 }
