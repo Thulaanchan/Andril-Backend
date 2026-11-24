@@ -30,10 +30,22 @@ public sealed class SocialQuestionnairePersistenceRepositoryTests
         return new SocialDbContext(builder.Options);
     }
 
-    private static QuestionnaireResponseEntity CreateTestResponse(Guid profileId, Guid responseId, string optionValue = "3")
+    private static DateTimeOffset CreateDeterministicPostgresTimestamp(DateTimeOffset? source = null)
+    {
+        var ts = source ?? DateTimeOffset.UtcNow;
+        // PostgreSQL timestamptz stores timestamps with microsecond precision (1 tick = 100ns; 10 ticks = 1 microsecond)
+        var utcTicks = ts.UtcDateTime.Ticks;
+        return new DateTimeOffset(utcTicks - (utcTicks % 10), TimeSpan.Zero);
+    }
+
+    private static QuestionnaireResponseEntity CreateTestResponse(
+        Guid profileId,
+        Guid responseId,
+        string optionValue = "3",
+        DateTimeOffset? timestamp = null)
     {
         var definition = QuestionnaireV1Definition.Create();
-        var now = DateTimeOffset.UtcNow;
+        var now = CreateDeterministicPostgresTimestamp(timestamp);
         var answers = definition.Questions.Select(q =>
             new QuestionnaireAnswerEntity(Guid.NewGuid(), responseId, q.Id, optionValue, now)).ToList();
 
@@ -191,6 +203,9 @@ public sealed class SocialQuestionnairePersistenceRepositoryTests
         Assert.NotNull(retrieved);
         Assert.Equal(responseId, retrieved.Id);
         Assert.Equal(profileId, retrieved.ProfileId);
+        Assert.Equal(response.CreatedAtUtc, retrieved.CreatedAtUtc);
+        Assert.Equal(response.Status, retrieved.Status);
+        Assert.Equal(response.Version, retrieved.Version);
         Assert.Equal(12, retrieved.Answers.Count);
 
         // 3. Cross-profile Isolation (cannot read from foreign profile)
@@ -225,8 +240,9 @@ public sealed class SocialQuestionnairePersistenceRepositoryTests
         var profileId = Guid.NewGuid();
         var responseId = Guid.NewGuid();
 
-        // 1. Persist original response with option value "3"
+        // 1. Persist original response with option value "3" and deterministic microsecond timestamp
         var originalResponse = CreateTestResponse(profileId, responseId, optionValue: "3");
+        var originalAnswersById = originalResponse.Answers.ToDictionary(a => a.Id);
         var originalAnswerIds = originalResponse.Answers.Select(a => a.Id).ToHashSet();
         var originalCreatedAt = originalResponse.CreatedAtUtc;
         var originalStatus = originalResponse.Status;
@@ -262,13 +278,21 @@ public sealed class SocialQuestionnairePersistenceRepositoryTests
         Assert.Equal(originalStatus, reloaded.Status);
         Assert.Equal(originalVersion, reloaded.Version);
 
-        // 6. Verify original answer IDs and values remain unchanged (option "3", not "5")
-        Assert.Equal(12, reloaded.Answers.Count);
+        // 6. Verify complete original answer set: identities, question associations, values, and timestamps
+        Assert.Equal(originalResponse.Answers.Count, reloaded.Answers.Count);
+        var reloadedQuestions = new HashSet<string>();
         foreach (var answer in reloaded.Answers)
         {
-            Assert.Contains(answer.Id, originalAnswerIds);
+            Assert.True(originalAnswersById.TryGetValue(answer.Id, out var expected),
+                $"Reloaded answer ID {answer.Id} was not in the original answer set.");
+            Assert.Equal(expected.QuestionId, answer.QuestionId);
+            Assert.Equal(expected.OptionId, answer.OptionId);
             Assert.Equal("3", answer.OptionId);
+            Assert.Equal(responseId, answer.ResponseId);
+            Assert.Equal(expected.AnsweredAtUtc, answer.AnsweredAtUtc);
+            reloadedQuestions.Add(answer.QuestionId);
         }
+        Assert.Equal(originalResponse.Answers.Count, reloadedQuestions.Count);
 
         // 7. Verify no additional answer rows were created in the database
         var totalAnswerRows = await independentContext.QuestionnaireAnswers.CountAsync();
