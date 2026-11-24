@@ -98,7 +98,7 @@ public sealed class ControlledProfileCoordinationTests
     public async Task EditBeforeDeactivationCommitsAndLaterEditCannotUseEarlierAuthorization()
     {
         await using var db = await ControlledLifecycleDatabase.CreateAsync();
-        var f = new Fixture(db, singleConnection: true);
+        var f = new Fixture(db);
         await f.Activate();
         await f.Profiles.CreateAsync("learning");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -120,7 +120,7 @@ public sealed class ControlledProfileCoordinationTests
     public async Task ReadReleaseRunsUnderFenceAndAfterDeactivationDisclosesNothing()
     {
         await using var db = await ControlledLifecycleDatabase.CreateAsync();
-        var f = new Fixture(db, singleConnection: true);
+        var f = new Fixture(db);
         await f.Activate();
         var profile = await f.Profiles.CreateAsync("learning");
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
@@ -289,6 +289,7 @@ public sealed class ControlledProfileCoordinationTests
 
         internal async Task ObserveWaitingLockAsync(CancellationToken ct)
         {
+            // The lock holder and contender need distinct sessions while this observer checks pg_locks.
             await using var observer = new NpgsqlConnection(Connection);
             await observer.OpenAsync(ct);
             await using var command = new NpgsqlCommand("""
