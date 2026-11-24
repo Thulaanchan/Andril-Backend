@@ -1,5 +1,12 @@
 {
   "requiredM2": [
+    "Andril.IntegrationTests.Lifecycle.LifecycleAuthorizationContractPersistenceTests.ControlledHttpPersistsRestrictedOwnerAndAbsentNoOpReceiptsWithoutProfileExposure",
+    "Andril.IntegrationTests.Lifecycle.ControlledProfileCoordinationTests.ActiveSetupIsUniqueAndInactiveAndForeignProfilesAreDenied",
+    "Andril.IntegrationTests.Lifecycle.ControlledProfileCoordinationTests.EditBeforeDeactivationCommitsAndLaterEditCannotUseEarlierAuthorization",
+    "Andril.IntegrationTests.Lifecycle.ControlledProfileCoordinationTests.ReadReleaseRunsUnderFenceAndAfterDeactivationDisclosesNothing",
+    "Andril.IntegrationTests.Lifecycle.ControlledProfileCoordinationTests.DelayedPhotoCannotFinalizeWhenDeactivationHoldsTheFenceFirst",
+    "Andril.IntegrationTests.Lifecycle.ControlledProfileCoordinationTests.PhotoFinalizationVerifiesLeaseIntegrityAndFreshPermissionBeforeCommit",
+    "Andril.IntegrationTests.Lifecycle.ControlledProfileCoordinationTests.ControlledRoleCannotReadUnscopedProfileOrChangeOwnershipOnPoolReuse",
     "Andril.IntegrationTests.Lifecycle.LifecycleAuthorizationContractPersistenceTests.DeactivationContractReplaysOnceAndStatusReadsLeaveOtherModulesUnchanged",
     "Andril.IntegrationTests.Lifecycle.LifecycleAuthorizationContractPersistenceTests.FreshInactiveEvidenceDeniesReadOfRetainedOwnedProfile",
     "Andril.IntegrationTests.Lifecycle.ModuleNavigationPersistenceTests.ScopedStatusReadsLeaveMembershipJournalsStarterAndProfilesUnchanged",
@@ -8,7 +15,7 @@
     "Andril.IntegrationTests.Lifecycle.DeactivationPersistenceTests.ChangedIntentAndSupersededReceiptCannotClaimCurrentState",
     "Andril.IntegrationTests.Lifecycle.DeactivationPersistenceTests.DeactivationAuthorityFailsClosedIndependentlyOfActivationEligibility",
     "Andril.IntegrationTests.Lifecycle.DeactivationPersistenceTests.ForeignScopeOrSubjectCannotMutateAnyJournal",
-    "Andril.IntegrationTests.Lifecycle.DeactivationPersistenceTests.MissingInactiveAndOverflowRemainDistinctAndNeverPartiallyWrite",
+    "Andril.IntegrationTests.Lifecycle.DeactivationPersistenceTests.MissingInactiveAndOverflowRemainDistinctAndNoOpsPreserveMembership",
     "Andril.IntegrationTests.Lifecycle.DeactivationPersistenceTests.ConcurrentIdenticalDeactivationHasOneRevisionReceiptAndAudit",
     "Andril.IntegrationTests.Lifecycle.DeactivationPersistenceTests.ConcurrentDifferentKeysHaveOneEffectiveDeactivation",
     "Andril.IntegrationTests.Lifecycle.DeactivationPersistenceTests.DeactivationAndReactivationSerializeInBothDatabaseLockOrders",

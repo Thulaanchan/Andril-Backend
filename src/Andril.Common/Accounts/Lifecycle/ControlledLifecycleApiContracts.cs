@@ -43,12 +43,17 @@ internal sealed record LifecycleModuleStatuses(
     [property: JsonPropertyName("hobbies")] LifecycleModuleStatus Hobbies,
     [property: JsonPropertyName("social")] LifecycleModuleStatus Social);
 
-// Isolated handlers for contract testing. HTTP mappings and the aggregate status projection
-// are provisional. There is no route registration or new authority, store, or journal here.
+internal sealed record LifecycleDeactivationResponse(
+    string Module, string State,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Revision,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] DateTimeOffset? StateChangedAtUtc,
+    string Outcome);
+
+// Controlled handlers. The actor and account lookup are supplied by the test host.
 internal sealed class ControlledLifecycleApiContracts(ICurrentUser user, IOnboardingIdentity identity,
-    IAccountRepository accounts, OfflineModuleLifecycleService transitions, ModuleNavigationService navigation)
+    Func<Guid, string, CancellationToken, Task<Account?>> findAccount, OfflineModuleLifecycleService transitions, ModuleNavigationService navigation)
 {
-    internal async Task<LifecycleApiResult<ModuleLifecycleResult>> DeactivateAsync(string module,
+    internal async Task<LifecycleApiResult<LifecycleDeactivationResponse>> DeactivateAsync(string module,
         IReadOnlyList<string> idempotencyKeys, JsonElement body, Guid correlationId, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
@@ -63,7 +68,7 @@ internal sealed class ControlledLifecycleApiContracts(ICurrentUser user, IOnboar
 
         try
         {
-            var account = await accounts.FindBySubjectAsync(subject, ct);
+            var account = await findAccount(subject, module, ct);
             ct.ThrowIfCancellationRequested();
             if (account is null || account.Id == Guid.Empty || account.SupabaseUserId != subject ||
                 GetSubject() != subject || !identity.IsConfirmedFor(subject))
@@ -73,7 +78,10 @@ internal sealed class ControlledLifecycleApiContracts(ICurrentUser user, IOnboar
                 new(module, key, false, request.ExpectedRevision, ModuleLifecycleOperation.Deactivate,
                     new(account.Id, module)), correlationId, ct);
             return GetSubject() == subject && identity.IsConfirmedFor(subject)
-                ? new(HttpStatusCode.OK, result) : new(HttpStatusCode.Forbidden);
+                ? new(HttpStatusCode.OK, new(result.Module, result.State,
+                    result.Revision > 0 ? result.Revision : null, result.Revision > 0 ? result.StateChangedAtUtc : null,
+                    result.NoTransitionOutcome ?? "deactivated"))
+                : new(HttpStatusCode.Forbidden);
         }
         catch (ModuleLifecycleException error)
         {
@@ -105,19 +113,22 @@ internal sealed class ControlledLifecycleApiContracts(ICurrentUser user, IOnboar
         var statuses = new List<LifecycleModuleStatus>(3);
         foreach (var module in new[] { ModuleNames.Learning, ModuleNames.Hobbies, ModuleNames.Social })
         {
-            var status = await navigation.ReadAsync(module, ct);
+            var status = await navigation.ReadOwnStatusAsync(module, ct);
             ct.ThrowIfCancellationRequested();
             if (GetSubject() != subject || !identity.IsConfirmedFor(subject))
                 return new(HttpStatusCode.Forbidden);
             if (status.State == ModuleNavigationState.Unavailable)
                 return new(HttpStatusCode.ServiceUnavailable);
 
+            if (status.State == ModuleNavigationState.Denied)
+                return new(HttpStatusCode.Forbidden);
+
             statuses.Add(status.State switch
             {
                 ModuleNavigationState.Active => new("active", status.Revision),
                 ModuleNavigationState.Inactive => new("inactive", status.Revision),
                 ModuleNavigationState.NeverActivated => new("neverActivated"),
-                _ => new("denied")
+                _ => throw new InvalidOperationException("Unknown module status.")
             });
         }
         return new(HttpStatusCode.OK, new(statuses[0], statuses[1], statuses[2]));

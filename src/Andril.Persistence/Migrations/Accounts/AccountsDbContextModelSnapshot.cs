@@ -486,6 +486,14 @@ namespace Andril.Persistence.Migrations.Accounts
                         .HasColumnType("uuid")
                         .HasColumnName("account_id");
 
+                    b.Property<string>("MembershipModule")
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("membership_module")
+                        .HasComputedColumnSql(AddControlledDeactivationOutcomes.MembershipModuleSql, true)
+                        .UseCollation("C");
+
                     b.Property<string>("Module")
                         .HasMaxLength(16)
                         .HasColumnType("character varying(16)")
@@ -530,13 +538,18 @@ namespace Andril.Persistence.Migrations.Accounts
 
                     b.HasKey("AccountId", "Module", "RequestKey");
 
+                    b.HasIndex("AccountId", "MembershipModule")
+                        .HasDatabaseName("ix_lifecycle_receipts_result_membership");
+
                     b.ToTable("account_module_lifecycle_receipts", "andril_identity", t =>
                         {
                             t.HasCheckConstraint("ck_lifecycle_receipt_intent", "intent_hash COLLATE \"C\" ~ '^[0-9A-F]{64}$'");
 
                             t.HasCheckConstraint("ck_lifecycle_receipt_key", "request_key <> '00000000-0000-0000-0000-000000000000'");
 
-                            t.HasCheckConstraint("ck_lifecycle_receipt_revision", "revision > 0 AND ((operation = 'activate' AND expected_revision IS NULL) OR (operation = 'reactivate' AND expected_revision IS NOT NULL AND expected_revision > 0 AND expected_revision < 9223372036854775807) OR (operation = 'deactivate' AND expected_revision IS NOT NULL AND expected_revision > 0 AND expected_revision < 9223372036854775807 AND revision = expected_revision + 1))");
+                            t.HasCheckConstraint("ck_lifecycle_receipt_module", "module IN ('learning', 'hobbies', 'social')");
+
+                            t.HasCheckConstraint("ck_lifecycle_receipt_revision", AddControlledDeactivationOutcomes.RevisionCheck);
 
                             t.HasCheckConstraint("ck_lifecycle_receipt_time", "isfinite(recorded_at_utc) AND isfinite(state_changed_at_utc) AND recorded_at_utc >= state_changed_at_utc");
                         });
@@ -665,11 +678,18 @@ namespace Andril.Persistence.Migrations.Accounts
 
             modelBuilder.Entity("Andril.Persistence.Accounts.ModuleLifecycleReceiptRow", b =>
                 {
+                    b.HasOne("Andril.Common.Accounts.Account", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired()
+                        .HasConstraintName("fk_lifecycle_receipts_accounts");
+
                     b.HasOne("Andril.Persistence.Accounts.ModuleLifecycleRow", null)
                         .WithMany()
-                        .HasForeignKey("AccountId", "Module")
+                        .HasForeignKey("AccountId", "MembershipModule")
                         .OnDelete(DeleteBehavior.Restrict)
-                        .IsRequired();
+                        .HasConstraintName("fk_lifecycle_receipts_result_membership");
                 });
 
             modelBuilder.Entity("Andril.Persistence.Accounts.ModuleLifecycleRow", b =>

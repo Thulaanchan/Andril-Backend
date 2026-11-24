@@ -136,8 +136,30 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
                     CREATE POLICY test_policies ON andril_identity.account_policy_records FOR SELECT TO {fixture.runtimeRole}
                     USING (account_id = '{fixture.AccountId}'::uuid AND account_id = nullif(current_setting('andril.account', true), '')::uuid);
                     GRANT SELECT, INSERT ON andril_identity.account_module_lifecycles,
-                        andril_identity.account_module_lifecycle_receipts, andril_identity.account_module_lifecycle_audit TO {fixture.runtimeRole};
+                        andril_identity.account_module_lifecycle_receipts TO {fixture.runtimeRole};
+                    GRANT INSERT ON andril_identity.account_module_lifecycle_audit TO {fixture.runtimeRole};
                     GRANT UPDATE (state, revision, state_changed_at_utc) ON andril_identity.account_module_lifecycles TO {fixture.runtimeRole};
+                    GRANT SELECT, INSERT ON andril_identity.private_module_profiles, andril_identity.private_profile_photos TO {fixture.runtimeRole};
+                    GRANT UPDATE (display_name, bio, visibility) ON andril_identity.private_module_profiles TO {fixture.runtimeRole};
+                    GRANT UPDATE (state, reason, is_current, cleanup_pending, lease_token, lease_until_utc,
+                        superseded_at_utc, updated_at_utc, next_cleanup_attempt_at_utc, late_write_risk)
+                        ON andril_identity.private_profile_photos TO {fixture.runtimeRole};
+                    CREATE POLICY test_controlled_profiles ON andril_identity.private_module_profiles TO {fixture.runtimeRole}
+                    USING (account_id = '{fixture.AccountId}'::uuid AND account_id = nullif(current_setting('andril.account', true), '')::uuid
+                        AND module = current_setting('andril.module', true)
+                        AND EXISTS (SELECT 1 FROM andril_identity.accounts a WHERE a.id = private_module_profiles.account_id
+                            AND a.supabase_user_id = nullif(current_setting('andril.subject', true), '')::uuid))
+                    WITH CHECK (account_id = '{fixture.AccountId}'::uuid AND account_id = nullif(current_setting('andril.account', true), '')::uuid
+                        AND module = current_setting('andril.module', true)
+                        AND EXISTS (SELECT 1 FROM andril_identity.accounts a WHERE a.id = private_module_profiles.account_id
+                            AND a.supabase_user_id = nullif(current_setting('andril.subject', true), '')::uuid));
+                    CREATE POLICY test_controlled_photos ON andril_identity.private_profile_photos TO {fixture.runtimeRole}
+                    USING (module = current_setting('andril.module', true)
+                        AND EXISTS (SELECT 1 FROM andril_identity.private_module_profiles p
+                            WHERE p.id = private_profile_photos.profile_id AND p.module = private_profile_photos.module))
+                    WITH CHECK (module = current_setting('andril.module', true)
+                        AND EXISTS (SELECT 1 FROM andril_identity.private_module_profiles p
+                            WHERE p.id = private_profile_photos.profile_id AND p.module = private_profile_photos.module));
                     """);
 #pragma warning restore EF1002
                 foreach (var table in new[] { "account_module_lifecycles", "account_module_lifecycle_receipts", "account_module_lifecycle_audit" })
@@ -148,7 +170,8 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
         catch { await fixture.DisposeAsync(); throw; }
     }
 
-    internal ControlledModuleLifecycleStore Store() => new(RuntimeConnection, Authority, Authority, Authority, true);
+    internal ControlledModuleLifecycleStore Store(bool enableDeactivation = false) =>
+        new(RuntimeConnection, Authority, Authority, Authority, true, enableDeactivation ? DeactivationAuthority : null);
     internal OfflineModuleLifecycleService Service(IModuleLifecycleStore? store = null) => new(store ?? Store());
     internal AccountsDbContext Open() => new(new DbContextOptionsBuilder<AccountsDbContext>()
         .UseNpgsql(MigrationConnection, o => o.MigrationsHistoryTable("__EFMigrationsHistory", "andril_identity")).Options);

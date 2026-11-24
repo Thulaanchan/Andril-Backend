@@ -130,6 +130,81 @@ public sealed class ControlledLifecycleOfflineHttpTests
     }
 
     [Fact]
+    public async Task DeactivationAndStatusHonorNoOpsConflictsAndAuthorityPrecedence()
+    {
+        var store = new OfflineStore();
+        var confirmed = true;
+        await using var host = await ControlledLifecycleHost.StartAsync(() => store, () => confirmed,
+            statusReader: () => store, findAccount: store.FindAccountAsync);
+        using var anonymous = await host.Client.GetAsync(Root);
+        Assert.Equal(HttpStatusCode.Unauthorized, anonymous.StatusCode);
+
+        host.Authenticate(Subject);
+        var absentKey = Guid.NewGuid().ToString("D");
+        const string revisionOne = """{"expectedRevision":1}""";
+        const string revisionTwo = """{"expectedRevision":2}""";
+        using var absent = await Post(host, "deactivation", revisionOne, absentKey);
+        Assert.Equal(HttpStatusCode.OK, absent.StatusCode);
+        var absentJson = await absent.Content.ReadAsStringAsync();
+        Assert.Equal("""{"module":"learning","state":"neverActivated","outcome":"neverActivated"}""", absentJson);
+        using var replayAbsent = await Post(host, "deactivation", revisionOne, absentKey);
+        Assert.Equal(absentJson, await replayAbsent.Content.ReadAsStringAsync());
+        using var conflictAbsent = await Post(host, "deactivation", revisionTwo, absentKey);
+        Assert.Equal(HttpStatusCode.Conflict, conflictAbsent.StatusCode);
+        Assert.Equal(0, store.EffectiveWrites);
+
+        using var activation = await Post(host, "activation", "{}");
+        Assert.Equal(HttpStatusCode.OK, activation.StatusCode);
+        store.Restricted = true;
+        using var activeStatus = await host.Client.GetAsync(Root);
+        Assert.Equal(HttpStatusCode.OK, activeStatus.StatusCode);
+        Assert.True(activeStatus.Headers.CacheControl?.NoStore);
+        Assert.Equal("""{"learning":{"state":"active","revision":1},"hobbies":{"state":"neverActivated"},"social":{"state":"neverActivated"}}""",
+            await activeStatus.Content.ReadAsStringAsync());
+
+        store.DeactivationOutcome = ModuleAuthorizationOutcome.Denied;
+        using var prohibited = await Post(host, "deactivation", revisionTwo);
+        Assert.Equal(HttpStatusCode.Forbidden, prohibited.StatusCode);
+        Assert.DoesNotContain("revision", await prohibited.Content.ReadAsStringAsync());
+        store.DeactivationOutcome = ModuleAuthorizationOutcome.Unavailable;
+        using var unavailable = await Post(host, "deactivation", revisionOne);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, unavailable.StatusCode);
+        store.DeactivationOutcome = ModuleAuthorizationOutcome.Satisfied;
+
+        using var changed = await Post(host, "deactivation", revisionOne);
+        Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
+        using var changedJson = JsonDocument.Parse(await changed.Content.ReadAsStringAsync());
+        Assert.Equal("deactivated", changedJson.RootElement.GetProperty("outcome").GetString());
+        using var stale = await Post(host, "deactivation", revisionOne);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        var inactiveKey = Guid.NewGuid().ToString("D");
+        using var unchanged = await Post(host, "deactivation", revisionTwo, inactiveKey);
+        using var inactiveJson = JsonDocument.Parse(await unchanged.Content.ReadAsStringAsync());
+        Assert.Equal(HttpStatusCode.OK, unchanged.StatusCode);
+        Assert.Equal("alreadyInactive", inactiveJson.RootElement.GetProperty("outcome").GetString());
+        Assert.Equal(changedJson.RootElement.GetProperty("revision").GetInt64(), inactiveJson.RootElement.GetProperty("revision").GetInt64());
+        Assert.Equal(changedJson.RootElement.GetProperty("stateChangedAtUtc").GetString(), inactiveJson.RootElement.GetProperty("stateChangedAtUtc").GetString());
+        using var replayInactive = await Post(host, "deactivation", revisionTwo, inactiveKey);
+        Assert.Equal(await unchanged.Content.ReadAsStringAsync(), await replayInactive.Content.ReadAsStringAsync());
+        Assert.Equal(2, store.EffectiveWrites);
+
+        using var ineligibleReactivate = await Post(host, "reactivation", revisionTwo);
+        Assert.Equal(HttpStatusCode.Forbidden, ineligibleReactivate.StatusCode);
+        confirmed = false;
+        using var revoked = await Post(host, "deactivation", revisionTwo, inactiveKey);
+        Assert.Equal(HttpStatusCode.Forbidden, revoked.StatusCode);
+        confirmed = true;
+        store.StatusOutcome = ModuleAuthorizationOutcome.Unavailable;
+        using var noPartial = await host.Client.GetAsync(Root);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, noPartial.StatusCode);
+        Assert.DoesNotContain("learning", await noPartial.Content.ReadAsStringAsync());
+        store.StatusOutcome = ModuleAuthorizationOutcome.Satisfied;
+        host.Authenticate(Guid.NewGuid());
+        using var foreign = await host.Client.GetAsync(Root);
+        Assert.Equal(HttpStatusCode.Forbidden, foreign.StatusCode);
+    }
+
+    [Fact]
     public async Task ControlledOpenApiAndProductionStartupRemainIsolated()
     {
         await using var host = await ControlledLifecycleHost.StartAsync(
@@ -137,11 +212,16 @@ public sealed class ControlledLifecycleOfflineHttpTests
         using var document = JsonDocument.Parse(await host.Client.GetStringAsync("/openapi/v1.json"));
         var paths = document.RootElement.GetProperty("paths").EnumerateObject()
             .Where(path => path.Name.StartsWith(Root, StringComparison.Ordinal));
-        Assert.Equal(new[] { Root + "/{module}/activation", Root + "/{module}/reactivation" },
+        Assert.Equal(new[] { Root, Root + "/{module}/activation", Root + "/{module}/deactivation", Root + "/{module}/reactivation" },
             paths.Select(path => path.Name).Order(StringComparer.Ordinal));
         foreach (var path in paths)
         {
             var post = Assert.Single(path.Value.EnumerateObject());
+            if (path.Name == Root)
+            {
+                Assert.Equal("get", post.Name);
+                continue;
+            }
             Assert.Equal("post", post.Name);
             var requirement = post.Value.GetProperty("parameters").EnumerateArray();
             Assert.Contains(requirement, parameter => parameter.GetProperty("name").GetString() == "Idempotency-Key" &&
@@ -190,13 +270,16 @@ public sealed class ControlledLifecycleOfflineHttpTests
         }
     }
 
-    private sealed class OfflineStore : IModuleLifecycleStore
+    private sealed class OfflineStore : IOfflineModuleDeactivationStore, IModuleNavigationReader
     {
         private readonly Account account = Account.Create(Subject, Now);
         private StoredModuleMembership? current;
         private readonly Dictionary<Guid, ModuleLifecycleReceipt> receipts = [];
         private ModuleMembershipScope Scope => new(account.Id, "learning");
         internal int EffectiveWrites { get; private set; }
+        internal ModuleAuthorizationOutcome DeactivationOutcome { get; set; } = ModuleAuthorizationOutcome.Satisfied;
+        internal bool Restricted { get; set; }
+        internal ModuleAuthorizationOutcome StatusOutcome { get; set; } = ModuleAuthorizationOutcome.Satisfied;
 
         internal void SeedInactive() => current = new(new InactiveModuleMembership(Scope, 2), Now, Now);
 
@@ -206,16 +289,10 @@ public sealed class ControlledLifecycleOfflineHttpTests
             cancellationToken.ThrowIfCancellationRequested();
             Assert.Equal(Subject, subject);
             Assert.Equal("learning", module);
-            var version = Guid.NewGuid();
-            var policy = new PolicyDocument("current-test-version", "https://example.invalid", "en");
-            var evidence = new ModuleActivationEvidence(Scope, ModuleAuthorizationOutcome.Satisfied, account, subject,
-                AccountDemographics.Create(account.Id, new DateOnly(2000, 1, 1), "prefer_not_to_say", Now),
-                new(policy, policy, policy),
-                [
-                    AccountPolicyRecord.Create(account.Id, PolicyActions.TermsAgreed, policy.Version, Now),
-                    AccountPolicyRecord.Create(account.Id, PolicyActions.PrivacyAcknowledged, policy.Version, Now)
-                ], true, false, version, version, Now);
-            var decision = decide(new(evidence, current, receipts.GetValueOrDefault(requestKey)));
+            var evidence = MakeEvidence(module);
+            var version = evidence.CurrentEvidenceVersion;
+            var decision = decide(new(evidence, current, receipts.GetValueOrDefault(requestKey),
+                new(Scope, subject, DeactivationOutcome, version, version, Now)));
             if (decision.Write is { } write)
             {
                 receipts.Add(requestKey, write.Receipt);
@@ -227,6 +304,25 @@ public sealed class ControlledLifecycleOfflineHttpTests
             }
             return Task.FromResult(decision.Result);
         }
+
+        private ModuleActivationEvidence MakeEvidence(string module)
+        {
+            var version = Guid.NewGuid();
+            var policy = new PolicyDocument("current-test-version", "https://example.invalid", "en");
+            return new ModuleActivationEvidence(new(account.Id, module), StatusOutcome, account, Subject,
+                AccountDemographics.Create(account.Id, new DateOnly(2000, 1, 1), "prefer_not_to_say", Now),
+                new(policy, policy, policy),
+                [
+                    AccountPolicyRecord.Create(account.Id, PolicyActions.TermsAgreed, policy.Version, Now),
+                    AccountPolicyRecord.Create(account.Id, PolicyActions.PrivacyAcknowledged, policy.Version, Now)
+                ], !Restricted, false, version, version, Now);
+        }
+
+        internal Task<Account?> FindAccountAsync(Guid subject, string module, CancellationToken ct) =>
+            Task.FromResult(subject == Subject ? account : null);
+
+        public Task<ModuleNavigationSnapshot> ReadNavigationAsync(Guid subject, string module, CancellationToken ct) =>
+            Task.FromResult(new ModuleNavigationSnapshot(MakeEvidence(module), module == "learning" ? current?.Membership : null));
 
         public Task<ModuleLifecycleSnapshot> ReadAsync(Guid subject, string module, Guid requestKey, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("The offline fixture does not simulate database commit ambiguity.");

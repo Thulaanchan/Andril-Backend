@@ -35,7 +35,8 @@ internal sealed class ModuleLifecycleReceiptConfiguration : IEntityTypeConfigura
         b.ToTable("account_module_lifecycle_receipts", "andril_identity", t =>
         {
             t.HasCheckConstraint("ck_lifecycle_receipt_intent", "intent_hash COLLATE \"C\" ~ '^[0-9A-F]{64}$'");
-            t.HasCheckConstraint("ck_lifecycle_receipt_revision", "revision > 0 AND ((operation = 'activate' AND expected_revision IS NULL) OR (operation = 'reactivate' AND expected_revision IS NOT NULL AND expected_revision > 0 AND expected_revision < 9223372036854775807) OR (operation = 'deactivate' AND expected_revision IS NOT NULL AND expected_revision > 0 AND expected_revision < 9223372036854775807 AND revision = expected_revision + 1))");
+            t.HasCheckConstraint("ck_lifecycle_receipt_module", "module IN ('learning', 'hobbies', 'social')");
+            t.HasCheckConstraint("ck_lifecycle_receipt_revision", Andril.Persistence.Migrations.Accounts.AddControlledDeactivationOutcomes.RevisionCheck);
             t.HasCheckConstraint("ck_lifecycle_receipt_time", "isfinite(recorded_at_utc) AND isfinite(state_changed_at_utc) AND recorded_at_utc >= state_changed_at_utc");
             t.HasCheckConstraint("ck_lifecycle_receipt_key", "request_key <> '00000000-0000-0000-0000-000000000000'");
         });
@@ -49,7 +50,13 @@ internal sealed class ModuleLifecycleReceiptConfiguration : IEntityTypeConfigura
         b.Property(x => x.Revision).HasColumnName("revision");
         b.Property(x => x.StateChangedAtUtc).HasColumnName("state_changed_at_utc");
         b.Property(x => x.RecordedAtUtc).HasColumnName("recorded_at_utc").HasDefaultValueSql("statement_timestamp()");
-        b.HasOne<ModuleLifecycleRow>().WithMany().HasForeignKey(x => new { x.AccountId, x.Module }).OnDelete(DeleteBehavior.Restrict);
+        b.Property<string>("MembershipModule").HasColumnName("membership_module").HasMaxLength(16).UseCollation("C")
+            .HasComputedColumnSql(Andril.Persistence.Migrations.Accounts.AddControlledDeactivationOutcomes.MembershipModuleSql, stored: true);
+        b.HasIndex("AccountId", "MembershipModule").HasDatabaseName("ix_lifecycle_receipts_result_membership");
+        b.HasOne<ModuleLifecycleRow>().WithMany().HasForeignKey("AccountId", "MembershipModule")
+            .OnDelete(DeleteBehavior.Restrict).HasConstraintName("fk_lifecycle_receipts_result_membership");
+        b.HasOne<Andril.Common.Accounts.Account>().WithMany().HasForeignKey(x => x.AccountId)
+            .OnDelete(DeleteBehavior.Restrict).HasConstraintName("fk_lifecycle_receipts_accounts");
     }
 }
 

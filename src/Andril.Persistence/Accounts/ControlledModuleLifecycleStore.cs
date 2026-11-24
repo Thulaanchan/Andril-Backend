@@ -33,7 +33,7 @@ internal sealed class UnavailableLifecycleAuthority : IControlledLifecycleAuthor
 
 // Deliberately internal and never registered by production startup. The only executable
 // composition lives in the integration test assembly, with a random disposable database.
-internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivationStore, IModuleNavigationReader
+internal sealed partial class ControlledModuleLifecycleStore : IOfflineModuleDeactivationStore, IModuleNavigationReader
 {
     private readonly string connection;
     private readonly IOnboardingIdentity identity;
@@ -92,7 +92,7 @@ internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivatio
         await SetSubject(db, subject, module, ct);
         // One transaction-scoped account lock precedes every module/receipt access. It also
         // covers an absent initial row; hash collisions only serialize unrelated requests.
-        await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({subject.ToString()}, 0))", ct);
+        await LockSubjectAsync(db, subject, ct);
         var snapshot = await Snapshot(db, subject, module, requestKey, ct);
         var decision = decide(snapshot);
         if (decision.Write is { } write)
@@ -104,18 +104,25 @@ internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivatio
                 throw new ModuleLifecycleException(ModuleLifecycleDenial.InvalidScope);
             var r = write.Receipt;
             var operation = OperationName(r.Operation);
-            var resultState = ResultState(r.Operation);
-            if (r.Result.Module != module || r.Result.State != resultState || decision.Result != r.Result
+            var resultState = ReceiptResult(module, r.Operation, r.ExpectedRevision, r.Result.Revision, r.Result.StateChangedAtUtc);
+            if (r.Result.Module != module || r.Result != resultState || decision.Result != r.Result
                 || (write.ChangedMembership is null) != (write.Audit is null)
                 || write.Audit is { } journal && (journal.Operation != r.Operation || journal.Result != r.Result))
                 throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
             var account = scope.AccountId;
+            if (r.Operation == ModuleLifecycleOperation.Deactivate &&
+                ((r.Result.NoTransitionOutcome is null) != (write.ChangedMembership is not null) ||
+                 (r.Result.NoTransitionOutcome == "neverActivated" && snapshot.Current is not null) ||
+                 (r.Result.NoTransitionOutcome == "alreadyInactive" &&
+                  (snapshot.Current?.Membership is not InactiveModuleMembership inactive || inactive.Revision != r.Result.Revision ||
+                   snapshot.Current.StateChangedAtUtc != r.Result.StateChangedAtUtc))))
+                throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
             if (write.ChangedMembership is { } changed)
             {
                 var revision = changed.Membership.Revision;
                 var now = changed.StateChangedAtUtc;
                 var changedState = changed.Membership is InactiveModuleMembership ? "inactive" : "active";
-                if (changedState != resultState || revision != r.Result.Revision || now != r.Result.StateChangedAtUtc
+                if (changedState != resultState.State || revision != r.Result.Revision || now != r.Result.StateChangedAtUtc
                     || snapshot.Current is { } previous && changed.FirstActivatedAtUtc != previous.FirstActivatedAtUtc)
                     throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
                 int rows;
@@ -139,7 +146,7 @@ internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivatio
                         || write.Audit!.PreviousState != oldState)
                         throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
                     rows = await db.Database.ExecuteSqlInterpolatedAsync($"""
-                        UPDATE andril_identity.account_module_lifecycles SET state={resultState},revision={revision},state_changed_at_utc={now}
+                        UPDATE andril_identity.account_module_lifecycles SET state={resultState.State},revision={revision},state_changed_at_utc={now}
                         WHERE account_id={account} AND module={module} AND state={oldState} AND revision={oldRevision}
                         """, ct);
                 }
@@ -177,7 +184,7 @@ internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivatio
         var stored = await db.Set<ModuleLifecycleReceiptRow>().AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == scope.AccountId && x.Module == module && x.RequestKey == key, ct);
         var receipt = stored is null ? null : new ModuleLifecycleReceipt(scope, key,
             ParseOperation(stored.Operation), stored.ExpectedRevision, stored.IntentHash,
-            new(module, stored.Revision, stored.StateChangedAtUtc) { State = ResultState(ParseOperation(stored.Operation)) }, stored.RecordedAtUtc);
+            ReceiptResult(module, ParseOperation(stored.Operation), stored.ExpectedRevision, stored.Revision, stored.StateChangedAtUtc), stored.RecordedAtUtc);
         var deactivation = deactivationAuthority is null ? null
             : await deactivationAuthority.ReadAsync(subject, scope, evidence.EvaluatedAtUtc, ct);
         // The store supplies the clock and verifies identity. The synthetic authority
@@ -227,13 +234,28 @@ internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivatio
         _ => throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition)
     };
 
-    // Journal operation is an immutable state discriminator. Historical constraints
-    // admit only activate/reactivate (both active); deactivate always means inactive.
-    // Reconstructing this avoids redundant columns and any historical-data backfill.
-    private static string ResultState(ModuleLifecycleOperation operation) => operation switch
+    internal async Task<Andril.Common.Accounts.Account?> FindScopedAccountAsync(Guid subject, string module, CancellationToken ct)
     {
-        ModuleLifecycleOperation.Activate or ModuleLifecycleOperation.Reactivate => "active",
-        ModuleLifecycleOperation.Deactivate => "inactive",
-        _ => throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition)
-    };
+        await using var db = Open();
+        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, ct);
+        await SetSubject(db, subject, module, ct);
+        var account = await db.Accounts.AsNoTracking().SingleOrDefaultAsync(x => x.SupabaseUserId == subject, ct);
+        await tx.CommitAsync(ct);
+        return account;
+    }
+
+    private static Task LockSubjectAsync(AccountsDbContext db, Guid subject, CancellationToken ct) =>
+        db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({subject.ToString()}, 0))", ct);
+
+    private static ModuleLifecycleResult ReceiptResult(string module, ModuleLifecycleOperation operation, long? expected,
+        long revision, DateTimeOffset changedAt)
+    {
+        if (operation != ModuleLifecycleOperation.Deactivate)
+            return new(module, revision, changedAt);
+        return revision == 0
+            ? new(module, revision, changedAt) { State = "neverActivated", NoTransitionOutcome = "neverActivated" }
+            : new(module, revision, changedAt) { State = "inactive",
+                NoTransitionOutcome = revision == expected ? "alreadyInactive" : null };
+    }
+
 }

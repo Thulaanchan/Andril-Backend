@@ -12,6 +12,7 @@ internal enum ModuleLifecycleOperation { Activate, Reactivate, Deactivate }
 internal sealed record ModuleLifecycleResult(string Module, long Revision, DateTimeOffset StateChangedAtUtc)
 {
     public string State { get; init; } = "active";
+    internal string? NoTransitionOutcome { get; init; }
 }
 
 internal sealed record StoredModuleMembership(ModuleMembership Membership, DateTimeOffset StateChangedAtUtc,
@@ -159,16 +160,41 @@ internal sealed class OfflineModuleLifecycleService(IModuleLifecycleStore store)
         {
             if (receipt.Scope != scope || receipt.RequestKey != command.RequestKey
                 || receipt.Operation != ModuleLifecycleOperation.Deactivate || receipt.ExpectedRevision != command.ExpectedRevision
-                || receipt.IntentHash != intentHash || receipt.Result.Module != scope.Module || receipt.Result.State != "inactive"
-                || receipt.Result.Revision != command.ExpectedRevision!.Value + 1
-                || snapshot.Current?.Membership is not InactiveModuleMembership current
-                || current.Revision != receipt.Result.Revision || snapshot.Current.StateChangedAtUtc != receipt.Result.StateChangedAtUtc)
+                || receipt.IntentHash != intentHash || receipt.Result.Module != scope.Module)
+                throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
+            var matchesCurrent = snapshot.Current is null
+                ? receipt.Result is { State: "neverActivated", NoTransitionOutcome: "neverActivated", Revision: 0 }
+                : snapshot.Current.Membership is InactiveModuleMembership && receipt.Result.State == "inactive" &&
+                    receipt.Result.Revision == snapshot.Current.Membership.Revision &&
+                    receipt.Result.StateChangedAtUtc == snapshot.Current.StateChangedAtUtc &&
+                    receipt.Result.Revision == command.ExpectedRevision!.Value + (receipt.Result.NoTransitionOutcome is null ? 1 : 0);
+            if (!matchesCurrent)
                 throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
             return new(receipt.Result);
         }
+
+        var now = evidence.EvaluatedAtUtc.ToUniversalTime();
+        if (snapshot.Current is null)
+        {
+            var absent = new ModuleLifecycleResult(scope.Module, 0, now)
+                { State = "neverActivated", NoTransitionOutcome = "neverActivated" };
+            return new(absent, new(null, new(scope, command.RequestKey, ModuleLifecycleOperation.Deactivate,
+                command.ExpectedRevision, intentHash, absent, now), null));
+        }
+        if (snapshot.Current.Membership is InactiveModuleMembership alreadyInactive)
+        {
+            if (alreadyInactive.Revision != command.ExpectedRevision)
+                throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
+            if (now < snapshot.Current.StateChangedAtUtc)
+                throw new ModuleLifecycleException(ModuleLifecycleDenial.StaleEvidence);
+            var unchanged = new ModuleLifecycleResult(scope.Module, alreadyInactive.Revision, snapshot.Current.StateChangedAtUtc)
+                { State = "inactive", NoTransitionOutcome = "alreadyInactive" };
+            return new(unchanged, new(null, new(scope, command.RequestKey, ModuleLifecycleOperation.Deactivate,
+                command.ExpectedRevision, intentHash, unchanged, now), null));
+        }
+
         var inactive = ModuleDeactivation.Deactivate(scope, subject, evidence, snapshot.Current?.Membership,
             command.ExpectedRevision!.Value);
-        var now = evidence.EvaluatedAtUtc.ToUniversalTime();
         if (now < snapshot.Current!.StateChangedAtUtc)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.StaleEvidence);
         var result = new ModuleLifecycleResult(scope.Module, inactive.Revision, now) { State = "inactive" };

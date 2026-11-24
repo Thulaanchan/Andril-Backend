@@ -18,7 +18,13 @@ internal interface IModuleNavigationReader
 
 internal sealed class ModuleNavigationService(ICurrentUser user, IModuleNavigationReader reader)
 {
-    public async Task<ModuleNavigationStatus> ReadAsync(string module, CancellationToken cancellationToken = default)
+    public Task<ModuleNavigationStatus> ReadAsync(string module, CancellationToken cancellationToken = default) =>
+        ReadAsync(module, checkEligibility: true, cancellationToken);
+
+    internal Task<ModuleNavigationStatus> ReadOwnStatusAsync(string module, CancellationToken cancellationToken) =>
+        ReadAsync(module, checkEligibility: false, cancellationToken);
+
+    private async Task<ModuleNavigationStatus> ReadAsync(string module, bool checkEligibility, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (!ModuleNames.IsValid(module) || !user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty)
@@ -36,7 +42,20 @@ internal sealed class ModuleNavigationService(ICurrentUser user, IModuleNavigati
             if (evidence.ConfirmedSubject != subject && evidence.SourceOutcome == ModuleAuthorizationOutcome.Satisfied)
                 return new(ModuleNavigationState.Denied);
 
-            ActiveModuleMembership.ValidateEvidence(new(evidence.Scope.AccountId, module), evidence, membership);
+            if (checkEligibility)
+                ActiveModuleMembership.ValidateEvidence(new(evidence.Scope.AccountId, module), evidence, membership);
+            else
+            {
+                if (evidence.SourceOutcome == ModuleAuthorizationOutcome.Denied)
+                    return new(ModuleNavigationState.Denied);
+                if (evidence.SourceOutcome != ModuleAuthorizationOutcome.Satisfied ||
+                    evidence.CurrentEvidenceVersion == Guid.Empty || evidence.ObservedEvidenceVersion != evidence.CurrentEvidenceVersion)
+                    return new(ModuleNavigationState.Unavailable);
+                if (evidence.Account is not { } account || account.Id == Guid.Empty || account.SupabaseUserId != subject ||
+                    evidence.Scope != new ModuleMembershipScope(account.Id, module) ||
+                    (membership is not null && membership.Scope != evidence.Scope))
+                    return new(ModuleNavigationState.Denied);
+            }
             if (membership is { Revision: <= 0 })
                 return new(ModuleNavigationState.Unavailable);
 

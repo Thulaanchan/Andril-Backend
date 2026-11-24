@@ -4,7 +4,7 @@ using Andril.Shared.Authentication;
 
 namespace Andril.Common.Accounts.Profiles;
 
-internal enum PrivateProfileOperation { Create, Read, Edit, ReadMedia, WriteMedia }
+internal enum PrivateProfileOperation { Create, Read, Edit, ReadMedia, ReadMediaContent, WriteMedia, FinalizeMedia }
 
 internal sealed record PrivateProfilePurposeEvidence(
     ModuleMembershipScope Scope, Guid? ProfileId, PrivateProfileOperation Operation,
@@ -21,6 +21,15 @@ internal sealed class LifecycleProfileAuthorization(ICurrentUser user, IOnboardi
 {
     internal ModuleAuthorizationOutcome Decide(ModuleMembershipScope scope, PrivateProfileOperation operation,
         PrivateModuleProfile? profile, LifecycleProfileEvidence evidence)
+    {
+        if (profile is not null && (profile.AccountId != scope.AccountId || profile.Module != scope.Module))
+            return ModuleAuthorizationOutcome.Denied;
+        return DecideOwnedProfile(scope, operation, profile?.Id, evidence);
+    }
+
+    // The repository derives ownedProfileId from an exact account/module lookup in the coordinated transaction.
+    internal ModuleAuthorizationOutcome DecideOwnedProfile(ModuleMembershipScope scope, PrivateProfileOperation operation,
+        Guid? ownedProfileId, LifecycleProfileEvidence evidence)
     {
         if (!user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty ||
             !identity.IsConfirmedFor(subject) || !Enum.IsDefined(operation) ||
@@ -51,9 +60,8 @@ internal sealed class LifecycleProfileAuthorization(ICurrentUser user, IOnboardi
         if (evidence.Membership is not ActiveModuleMembership { Revision: > 0 } membership ||
             evidence.Purpose.MembershipRevision != membership.Revision ||
             evidence.Purpose.EvidenceVersion != evidence.Eligibility.CurrentEvidenceVersion ||
-            (profile is null ? operation != PrivateProfileOperation.Create :
-                profile.AccountId != scope.AccountId || profile.Module != scope.Module || profile.Id == Guid.Empty) ||
-            evidence.Purpose.ProfileId != profile?.Id)
+            (ownedProfileId is null ? operation != PrivateProfileOperation.Create : ownedProfileId == Guid.Empty) ||
+            evidence.Purpose.ProfileId != ownedProfileId)
             return ModuleAuthorizationOutcome.Denied;
 
         // Undefined outcomes fail closed even if a caller constructs malformed evidence.

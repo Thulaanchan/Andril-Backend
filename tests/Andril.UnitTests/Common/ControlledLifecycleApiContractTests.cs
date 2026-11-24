@@ -73,7 +73,7 @@ public sealed class ControlledLifecycleApiContractTests
         var f = new Fixture();
         var first = await f.Stop();
         Assert.Equal(HttpStatusCode.OK, first.Status);
-        Assert.Equal(new ModuleLifecycleResult("learning", 2, Now) { State = "inactive" }, first.Body);
+        Assert.Equal(new LifecycleDeactivationResponse("learning", "inactive", 2, Now, "deactivated"), first.Body);
         Assert.Equal(first, await f.Stop());
         Assert.Single(f.Audits);
         Assert.Equal(Correlation, f.Audits[0].CorrelationId);
@@ -87,18 +87,16 @@ public sealed class ControlledLifecycleApiContractTests
     }
 
     [Theory]
-    [InlineData("missing", HttpStatusCode.NotFound)]
     [InlineData("inactive", HttpStatusCode.Conflict)]
     [InlineData("revision", HttpStatusCode.Conflict)]
     [InlineData("stale", HttpStatusCode.ServiceUnavailable)]
     [InlineData("unavailable", HttpStatusCode.ServiceUnavailable)]
     [InlineData("denied", HttpStatusCode.Forbidden)]
-    public async Task ProvisionalFailuresAreSanitizedAndLeaveStateUnchanged(string fault, HttpStatusCode expected)
+    public async Task FailuresAreSanitizedAndLeaveStateUnchanged(string fault, HttpStatusCode expected)
     {
         var f = new Fixture();
         f.Snapshot = fault switch
         {
-            "missing" => f.Snapshot with { Current = null },
             "inactive" => f.Snapshot with { Current = new(new InactiveModuleMembership(f.Scope, 2), Now) },
             "revision" => f.Snapshot with { Current = new(ActiveModuleMembership.Restore(f.Scope, 3), Now) },
             "stale" => f.Snapshot with { DeactivationEvidence = f.Snapshot.DeactivationEvidence! with { CurrentVersion = Guid.NewGuid() } },
@@ -119,7 +117,7 @@ public sealed class ControlledLifecycleApiContractTests
         var f = new Fixture();
         var response = await f.Api.ReadStatusesAsync();
         Assert.Equal(HttpStatusCode.OK, response.Status);
-        Assert.Equal("""{"learning":{"state":"active","revision":1},"hobbies":{"state":"neverActivated"},"social":{"state":"denied"}}""",
+        Assert.Equal("""{"learning":{"state":"active","revision":1},"hobbies":{"state":"neverActivated"},"social":{"state":"neverActivated"}}""",
             JsonSerializer.Serialize(response.Body));
         Assert.Equal(new[] { "learning", "hobbies", "social" }, f.StatusReads);
         Assert.Equal("no-store", response.CacheControl);
@@ -186,7 +184,7 @@ public sealed class ControlledLifecycleApiContractTests
         {
             Snapshot = new(Evidence("learning"), new(ActiveModuleMembership.Restore(Scope, 1), Now), null,
                 new(Scope, Subject, ModuleAuthorizationOutcome.Satisfied, Version, Version, Now));
-            Api = new(this, this, this, new(this), new(this, this));
+            Api = new(this, this, (subject, _, ct) => FindBySubjectAsync(subject, ct), new(this), new(this, this));
         }
 
         private ModuleActivationEvidence Evidence(string module)
@@ -201,7 +199,7 @@ public sealed class ControlledLifecycleApiContractTests
                 ], true, false, Version, Version, Now);
         }
 
-        internal async Task<LifecycleApiResult<ModuleLifecycleResult>> Stop(string body = Valid, string module = "learning",
+        internal async Task<LifecycleApiResult<LifecycleDeactivationResponse>> Stop(string body = Valid, string module = "learning",
             string[]? keys = null, CancellationToken ct = default)
         {
             using var json = JsonDocument.Parse(body);
@@ -229,8 +227,8 @@ public sealed class ControlledLifecycleApiContractTests
             var decision = decide(Snapshot);
             if (decision.Write is { } write)
             {
-                Snapshot = Snapshot with { Current = write.ChangedMembership, Receipt = write.Receipt };
-                Audits.Add(Assert.IsType<ModuleLifecycleAudit>(write.Audit));
+                Snapshot = Snapshot with { Current = write.ChangedMembership ?? Snapshot.Current, Receipt = write.Receipt };
+                if (write.Audit is { } audit) Audits.Add(audit);
             }
             if (ChangeSubjectOnWrite)
                 UserId = Guid.NewGuid();

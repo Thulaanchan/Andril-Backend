@@ -132,17 +132,26 @@ public sealed class DeactivationPersistenceTests
     }
 
     [LocalPostgresFact]
-    public async Task MissingInactiveAndOverflowRemainDistinctAndNeverPartiallyWrite()
+    public async Task MissingInactiveAndOverflowRemainDistinctAndNoOpsPreserveMembership()
     {
         await using var db = await ControlledLifecycleDatabase.CreateAsync();
-        Assert.Equal(ModuleLifecycleDenial.MembershipMissing,
-            (await Assert.ThrowsAsync<ModuleLifecycleException>(() => Execute(db, Stop(db)))).Denial);
-        Assert.Equal(0, await db.Count("account_module_lifecycle_receipts"));
+        var missing = Stop(db);
+        var absent = await Execute(db, missing);
+        Assert.Equal("neverActivated", absent.NoTransitionOutcome);
+        Assert.Equal(absent, await Execute(db, missing));
+        Assert.Equal(0, await db.Count("account_module_lifecycles"));
+        Assert.Equal(1, await db.Count("account_module_lifecycle_receipts"));
+        Assert.Equal(0, await db.Count("account_module_lifecycle_audit"));
         await Execute(db, Start());
-        await Execute(db, Stop(db));
+        var changed = await Execute(db, Stop(db));
+        var stop = Stop(db, 2);
+        var unchanged = await Execute(db, stop);
+        Assert.Equal("alreadyInactive", unchanged.NoTransitionOutcome);
+        Assert.Equal(changed.Revision, unchanged.Revision);
+        Assert.Equal(changed.StateChangedAtUtc, unchanged.StateChangedAtUtc);
+        Assert.Equal(unchanged, await Execute(db, stop));
+        Assert.Equal(2, await db.Count("account_module_lifecycle_audit"));
         var before = await Artifacts(db);
-        Assert.Equal(ModuleLifecycleDenial.AlreadyInactive,
-            (await Assert.ThrowsAsync<ModuleLifecycleException>(() => Execute(db, Stop(db, 2)))).Denial);
         await Assert.ThrowsAsync<ArgumentException>(() => Execute(db, Stop(db, long.MaxValue)));
         Assert.Equal(before, await Artifacts(db));
     }
@@ -168,7 +177,7 @@ public sealed class DeactivationPersistenceTests
         var outcomes = await Task.WhenAll(Enumerable.Range(0, 8).Select(async _ =>
         {
             try { await Execute(db, Stop(db)); return true; }
-            catch (ModuleLifecycleException e) when (e.Denial == ModuleLifecycleDenial.AlreadyInactive) { return false; }
+            catch (ModuleLifecycleException e) when (e.Denial == ModuleLifecycleDenial.ConflictingTransition) { return false; }
         }));
         Assert.Equal(1, outcomes.Count(x => x));
         Assert.Equal(2, await db.Count("account_module_lifecycle_receipts"));

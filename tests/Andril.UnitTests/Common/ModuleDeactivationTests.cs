@@ -60,12 +60,25 @@ public sealed class ModuleDeactivationTests
     }
 
     [Fact]
-    public async Task MissingAndAlreadyInactiveHaveDistinctOfflineClassifications()
+    public async Task MissingAndAlreadyInactivePreserveMembershipAndJournalOnlyTheIntent()
     {
         var missing = new Store { Current = null };
-        await RejectUnchanged(missing, Command, ModuleLifecycleDenial.MembershipMissing);
+        var absent = await Execute(missing);
+        Assert.Equal("neverActivated", absent.NoTransitionOutcome);
+        Assert.Equal(absent, await Execute(missing));
+        Assert.Null(missing.Current);
+        Assert.Single(missing.Receipts);
+        Assert.Empty(missing.Audits);
         var inactive = new Store { Current = new(new InactiveModuleMembership(Scope, 4), Now.AddDays(-1), Now.AddDays(-5)) };
-        await RejectUnchanged(inactive, Command, ModuleLifecycleDenial.AlreadyInactive);
+        var saved = inactive.Current;
+        var unchanged = await Execute(inactive);
+        Assert.Equal("alreadyInactive", unchanged.NoTransitionOutcome);
+        Assert.Equal(saved!.StateChangedAtUtc, unchanged.StateChangedAtUtc);
+        Assert.Equal(saved.Membership.Revision, unchanged.Revision);
+        Assert.Equal(unchanged, await Execute(inactive));
+        Assert.Same(saved, inactive.Current);
+        Assert.Single(inactive.Receipts);
+        Assert.Empty(inactive.Audits);
     }
 
     [Theory]
@@ -240,9 +253,9 @@ public sealed class ModuleDeactivationTests
                 if (UnknownBeforeCommit) throw new ModuleLifecycleCommitUnknownException();
                 if (decision.Write is { } write)
                 {
-                    Current = write.ChangedMembership!;
+                    Current = write.ChangedMembership ?? Current;
                     Receipts.Add(key, write.Receipt);
-                    Audits.Add(write.Audit!);
+                    if (write.Audit is { } audit) Audits.Add(audit);
                     Commits++;
                 }
                 if (LoseAcknowledgement) throw new ModuleLifecycleCommitUnknownException();
