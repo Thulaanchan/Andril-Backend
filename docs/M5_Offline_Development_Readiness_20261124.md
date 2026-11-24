@@ -27,7 +27,7 @@ Every change in this batch was executed strictly adhering to the **one-file-per-
 | **Task 115** | CF-07 Zones | `tests/Andril.SecurityTests/ModuleIsolation/SocialZonesAuthorizationBoundaryTests.cs` | [#352](https://github.com/Thulaanchan/Andril-Backend/pull/352) | `f710d35` | Passed | 16 passed |
 | **Task 116** | Groups Lifecycle | `tests/Andril.UnitTests/Groups/GroupLifecycleAuthorizationContractTests.cs` | [#353](https://github.com/Thulaanchan/Andril-Backend/pull/353) | `ccf46eb` | Passed | 8 passed |
 | **Task 117** | M4 Chat Readiness | `docs/M5_M4_Social_Match_Communication_Readiness_20261124.md` | [#354](https://github.com/Thulaanchan/Andril-Backend/pull/354) | `e6ad39f` | Passed | Docs contract |
-| **Task 118** | Activation Report | `docs/M5_Offline_Development_Readiness_20261124.md` | PR Active | Pending | Pending | Consolidated report |
+| **Task 118** | Activation Report | `docs/M5_Offline_Development_Readiness_20261124.md` | [#355](https://github.com/Thulaanchan/Andril-Backend/pull/355) | `cd989d6` | Passed | Consolidated report |
 
 ---
 
