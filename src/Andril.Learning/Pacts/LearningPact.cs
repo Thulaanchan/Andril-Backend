@@ -17,7 +17,7 @@ public sealed record LearningPactParticipant
     public override string ToString() => "Learning Pact participant [private references omitted]";
 }
 
-public enum LearningPactStatus { Pending = 1, Active = 2, Cancelled = 3 }
+public enum LearningPactStatus { Pending = 1, Active = 2, Cancelled = 3, Completed = 4 }
 public enum PactInvitationDecision { Pending = 1, Accepted = 2, Declined = 3 }
 
 /// <summary>
@@ -25,11 +25,14 @@ public enum PactInvitationDecision { Pending = 1, Accepted = 2, Declined = 3 }
 /// Protected callers must establish voluntary authenticated proposer/invitee intent, resolve active
 /// Learning accounts/profiles, and check current M2 eligibility/privacy/blocking for each operation.
 /// IDs and possession of this sensitive domain instance are not credentials. Never expose it directly
-/// as an API response. Persistence, current private access and transaction/concurrency control are absent.
-/// No progress, completion, XP, connections, communication grants or notification actions are supplied.
+/// as an API response. Persistence, current private access and transaction coordination are absent.
+/// DEC-M1-03 adds explicit unanimous completion and active withdrawal with serialized local transitions.
+/// Completion records participant reports only; no verified achievement, XP, reward or penalty is granted.
+/// No progress, connections, communication grants or notification actions are supplied.
 /// </summary>
 public sealed class LearningPact
 {
+    private readonly object transitionGate = new();
     public Guid Id { get; }
     public string Module => "learning";
     public LearningPactParticipant Proposer { get; }
@@ -85,28 +88,71 @@ public sealed class LearningPact
 
     private void Respond(LearningPactParticipant participant, PactInvitationDecision decision)
     {
-        var index = FindParticipant(participant);
-        if (participant == Proposer) throw new InvalidOperationException("The proposer has already agreed through proposal creation.");
-        RequirePending();
-        if (Participants[index].Decision != PactInvitationDecision.Pending)
-            throw new InvalidOperationException("An invitation decision is already recorded.");
+        lock (transitionGate)
+        {
+            var index = FindParticipant(participant);
+            if (participant == Proposer) throw new InvalidOperationException("The proposer has already agreed through proposal creation.");
+            RequirePending();
+            if (Participants[index].Decision != PactInvitationDecision.Pending)
+                throw new InvalidOperationException("An invitation decision is already recorded.");
 
-        var next = Participants.ToArray();
-        next[index] = new Participation(Participants[index].Participant, decision);
-        var snapshot = Array.AsReadOnly(next);
-        var nextStatus = next.All(item => item.Decision == PactInvitationDecision.Accepted)
-            ? LearningPactStatus.Active : LearningPactStatus.Pending;
-        // All validation/allocation finishes before publishing either state change.
-        Participants = snapshot;
-        Status = nextStatus;
+            var next = Participants.ToArray();
+            next[index] = new Participation(Participants[index].Participant, decision);
+            var snapshot = Array.AsReadOnly(next);
+            var nextStatus = next.All(item => item.Decision == PactInvitationDecision.Accepted)
+                ? LearningPactStatus.Active : LearningPactStatus.Pending;
+            // All validation/allocation finishes before publishing either state change.
+            Participants = snapshot;
+            Status = nextStatus;
+        }
     }
 
     public void Cancel(LearningPactParticipant participant)
     {
-        if (participant is null || participant != Proposer)
-            throw new UnauthorizedAccessException("Only the designated Pact proposer may cancel.");
-        RequirePending();
-        Status = LearningPactStatus.Cancelled;
+        lock (transitionGate)
+        {
+            if (participant is null || participant != Proposer)
+                throw new UnauthorizedAccessException("Only the designated Pact proposer may cancel.");
+            RequirePending();
+            Status = LearningPactStatus.Cancelled;
+        }
+    }
+
+    /// <summary>
+    /// Record this active participant's explicit completion report, independently of invitation
+    /// acceptance. Every participant, including the proposer, must confirm; duplicates are rejected.
+    /// Local matching references do not authenticate the actor or establish current permission.
+    /// Protected integration must freshly authorize and coordinate persistence through commit.
+    /// </summary>
+    public void ConfirmCompletion(LearningPactParticipant participant)
+    {
+        lock (transitionGate)
+        {
+            var index = FindParticipant(participant);
+            RequireActive();
+            if (Participants[index].CompletionConfirmed)
+                throw new InvalidOperationException("Completion confirmation is already recorded.");
+            var next = Participants.ToArray();
+            next[index] = new Participation(Participants[index].Participant, Participants[index].Decision, true);
+            var snapshot = Array.AsReadOnly(next);
+            var nextStatus = next.All(item => item.CompletionConfirmed)
+                ? LearningPactStatus.Completed : LearningPactStatus.Active;
+            Participants = snapshot;
+            Status = nextStatus;
+        }
+    }
+
+    /// <summary>Any active participant may explicitly withdraw, cancelling this Pact without
+    /// changing its agreed terms or existing reports. No automatic reward, penalty or deletion.
+    /// Completed/cancelled Pacts cannot be withdrawn or reopened. Identity checks remain external.</summary>
+    public void Withdraw(LearningPactParticipant participant)
+    {
+        lock (transitionGate)
+        {
+            FindParticipant(participant);
+            RequireActive();
+            Status = LearningPactStatus.Cancelled;
+        }
     }
 
     private int FindParticipant(LearningPactParticipant participant)
@@ -121,15 +167,22 @@ public sealed class LearningPact
         if (Status != LearningPactStatus.Pending) throw new InvalidOperationException("Only a pending Pact proposal supports this operation.");
     }
 
+    private void RequireActive()
+    {
+        if (Status != LearningPactStatus.Active) throw new InvalidOperationException("Only an active Pact supports this operation.");
+    }
+
     public override string ToString() => $"Learning Pact ({Status}) [private terms and identities omitted]";
 
-    /// <summary>Immutable invitation snapshot. Decision is not an authentication receipt.</summary>
+    /// <summary>Immutable invitation and completion-report snapshot. Neither decision nor report
+    /// is authentication, verified achievement or proof of current production authorization.</summary>
     public sealed class Participation
     {
         public LearningPactParticipant Participant { get; }
         public PactInvitationDecision Decision { get; }
-        internal Participation(LearningPactParticipant participant, PactInvitationDecision decision)
-        { Participant = participant; Decision = decision; }
+        public bool CompletionConfirmed { get; }
+        internal Participation(LearningPactParticipant participant, PactInvitationDecision decision, bool completionConfirmed = false)
+        { Participant = participant; Decision = decision; CompletionConfirmed = completionConfirmed; }
         public override string ToString() => $"Pact invitation ({Decision}) [private identity omitted]";
     }
 
