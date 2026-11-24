@@ -13,6 +13,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 . "$PSScriptRoot/Verify-Member02TestResults.ps1"
+. "$PSScriptRoot/Member02RelationalQa.ps1"
 
 $repo = (Resolve-Path "$PSScriptRoot/../..").Path
 $integration = 'tests/Andril.IntegrationTests/Andril.IntegrationTests.csproj'
@@ -81,13 +82,12 @@ function Invoke-QaRestore([string]$Project, [string]$Gate, [string]$PackageCache
         '-p:NuGetAuditLevel=low', '-warnAsError:NU1900,NU1903,NU1904,NU1905', '-clp:NoSummary') $Gate -Audit
 }
 
-function Invoke-QaTests([string]$Suite, [string]$Project, $Expected, [string]$Mode, [switch]$Coverage, [string]$Filter) {
+function Invoke-QaTests([string]$Suite, [string]$Project, $Expected, [switch]$Coverage) {
     $resultDir = Join-Path $raw $Suite
     $null = New-Item -ItemType Directory -Path $resultDir -Force
     $arguments = @('test', $Project, '--configuration', 'Release', '--no-build', '--no-restore',
         '--logger', "trx;LogFileName=$Suite.trx", '--results-directory', $resultDir)
     if ($Coverage) { $arguments += @('--collect', 'Code Coverage;Format=cobertura') }
-    if ($Filter) { $arguments += @('--filter', $Filter) }
     & dotnet @arguments 2>&1 | Out-Null
     $exitCode = $LASTEXITCODE
     $errors = [System.Collections.Generic.List[string]]::new()
@@ -95,7 +95,7 @@ function Invoke-QaTests([string]$Suite, [string]$Project, $Expected, [string]$Mo
     try {
         $report = Read-QaTrx (Join-Path $resultDir "$Suite.trx")
         $counts = "$($report.Passed) passed, $($report.Unsuccessful) unsuccessful, $($report.Skipped) skipped"
-        $errors.AddRange([string[]]@(Test-QaExecutions $report $Expected $Mode))
+        $errors.AddRange([string[]]@(Test-QaExecutions $report $Expected Offline))
         if ($Suite -eq 'offline-integration') {
             foreach ($name in 'AccountPersistenceTests.MigrationMatchesModel_AndScriptOnlyTargetsAccountSchema',
                 'PrivateProfilePhotoPersistenceTests.MigrationIsAdditiveScopedAndMatchesSnapshot') {
@@ -123,7 +123,7 @@ function Invoke-QaTests([string]$Suite, [string]$Project, $Expected, [string]$Mo
         Add-Detail "- $Suite failure diagnostics unavailable. Safe report: $Suite-failures.json (suite report artifact)."
     }
     if ($exitCode -ne 0) { $errors.Add("dotnet test exited $exitCode") }
-    $coverageResult = if ($Mode -eq 'Relational') { 'collected in offline job' } else { 'not requested' }
+    $coverageResult = 'not requested'
     if ($Coverage) {
         try {
             # VSTest may retain the original and a byte-identical TRX attachment copy.
@@ -142,12 +142,6 @@ function Invoke-QaTests([string]$Suite, [string]$Project, $Expected, [string]$Mo
     }
     $status = if ($errors.Count) { 'failed' } else { 'passed' }
     Add-Detail "- $Suite $status ($counts). Coverage $coverageResult."
-    if ($Mode -eq 'Relational') {
-        $caseCount = ($Expected.Values | ForEach-Object { $_.Count } | Measure-Object -Sum).Sum
-        @("Required relational verification $status ($caseCount expected executions)."; $counts; $errors) |
-            Set-Content -LiteralPath (Join-Path $out 'relational-verification.txt') -Encoding utf8
-        Add-Detail "- Required relational verification $status ($caseCount required executions)."
-    }
     foreach ($issue in $errors) { Write-Host $issue }
     return ($errors.Count -eq 0)
 }
@@ -163,7 +157,7 @@ function Invoke-OfflineQa($Inventory) {
     $failed = @(
         foreach ($suite in $suites.Keys) {
             $entries = if ($suite -eq 'offline-integration') { @($Inventory.requiredM2) + @($Inventory.offlineOnlySkips) } else { @() }
-            if (!(Invoke-QaTests $suite $suites[$suite] (Get-QaExpectedCases $entries) Offline -Coverage)) { $suite }
+            if (!(Invoke-QaTests $suite $suites[$suite] (Get-QaExpectedCases $entries) -Coverage)) { $suite }
         }
     )
     Add-Detail "- Offline skip inventory covers $($Inventory.requiredM2.Count) M2 and $($Inventory.offlineOnlySkips.Count) other database methods."
@@ -210,7 +204,7 @@ function Invoke-ProcessorQa {
         Add-Detail '- Photo processor licensed Release build passed.'
 
         $stage = 'required tests'
-        if (!(Invoke-QaTests 'photo-processor' $processorTests (Get-QaExpectedCases @()) Offline)) {
+        if (!(Invoke-QaTests 'photo-processor' $processorTests (Get-QaExpectedCases @()))) {
             throw 'Test verification failed.'
         }
     } catch {
@@ -236,17 +230,25 @@ function Invoke-RelationalQa($Inventory) {
     Remove-Item Env:ANDRIL_M3_TEST_POSTGRES, Env:ANDRIL_M2_TEST_POSTGRES, Env:ANDRIL_M2_TEST_POSTGRES_ALLOW_ROLES -ErrorAction SilentlyContinue
     $port = & docker port $ServiceId '5432/tcp' 2>&1
     if ($LASTEXITCODE -ne 0 -or "$port" -cne '127.0.0.1:55432') { throw 'Unexpected PostgreSQL service port binding.' }
+    $budget = [Diagnostics.Stopwatch]::StartNew()
+    $deadline = [TimeSpan]::FromMinutes(27)
     $expected = Get-QaExpectedCases $Inventory.requiredM2
-    if (!$expected.Count) { throw 'The required M2 inventory is empty.' }
-    $filter = ($expected.Keys | Sort-Object | ForEach-Object { "FullyQualifiedName=$_" }) -join '|'
+    $partitions = Get-QaRelationalPartitions $expected
+    $states = [ordered]@{}
+    foreach ($partition in $partitions.Keys) {
+        $states[$partition] = New-QaPartitionReport $partition $partitions[$partition]
+        Write-QaPartitionReport $out $states[$partition]
+    }
+    $probesPassed = $false
     $password = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(24))
     try {
-        "CREATE ROLE andril_qa_fixture LOGIN CREATEDB CREATEROLE NOSUPERUSER NOBYPASSRLS PASSWORD '$password';" |
+        "SET statement_timeout = '15s'; CREATE ROLE andril_qa_fixture LOGIN CREATEDB CREATEROLE NOSUPERUSER NOBYPASSRLS PASSWORD '$password';" |
             & docker exec -i $ServiceId psql -X -U postgres -d postgres -v ON_ERROR_STOP=1 *> $null
         if ($LASTEXITCODE -ne 0) { throw 'Could not provision the restricted disposable fixture bootstrap role.' }
         $env:PGPASSWORD = $password
         $env:PGCONNECT_TIMEOUT = '5'
         $env:PGSSLMODE = 'disable'
+        $env:PGOPTIONS = '-c statement_timeout=15000'
         $version = Invoke-QaPsql postgres @'
 SELECT current_setting('server_version_num') FROM pg_roles
 WHERE rolname = current_user AND current_user = 'andril_qa_fixture' AND current_database() = 'postgres'
@@ -276,15 +278,34 @@ COMMIT;
         } finally {
             $null = Invoke-QaPsql postgres "DROP DATABASE $db WITH (FORCE);"
         }
-        Remove-Item Env:PGPASSWORD, Env:PGSSLMODE, Env:PGCONNECT_TIMEOUT
+        Remove-Item Env:PGPASSWORD, Env:PGSSLMODE, Env:PGCONNECT_TIMEOUT, Env:PGOPTIONS
+        $probesPassed = $true
         Add-Detail '- PostgreSQL 17.12 loopback, maintenance database, database create/drop and role probes passed.'
         Add-Detail "- Relational selection includes $($expected.Count) M2 methods and excludes $($Inventory.offlineOnlySkips.Count) other database methods."
         $env:ANDRIL_M2_TEST_POSTGRES = "Host=127.0.0.1;Port=55432;Database=postgres;Username=andril_qa_fixture;Password=$password;SSL Mode=Disable;Timeout=5"
         $env:ANDRIL_M2_TEST_POSTGRES_ALLOW_ROLES = '1'
-        if (!(Invoke-QaTests 'm2-postgres' $integration $expected Relational -Filter $filter)) { throw 'M2 relational verification failed.' }
+        foreach ($partition in $partitions.Keys) {
+            $state = $states[$partition]
+            if ($budget.Elapsed -ge $deadline) {
+                $state.reason = 'Shared relational execution budget exhausted before launch'
+                Write-QaPartitionReport $out $state
+                break
+            }
+            $result = Invoke-QaRelationalPartition $integration $state $partitions[$partition] $raw $out $ServiceId $budget $deadline
+            if ($result.timedOut -or $result.termination -eq 'Process tree stop unconfirmed') { break }
+        }
+        if (@($states.Values | Where-Object outcome -cne 'Passed').Count) { throw 'M2 relational verification incomplete or unsuccessful.' }
     } finally {
-        Remove-Item Env:PGPASSWORD, Env:PGSSLMODE, Env:PGCONNECT_TIMEOUT, Env:ANDRIL_M2_TEST_POSTGRES,
+        Remove-Item Env:PGPASSWORD, Env:PGSSLMODE, Env:PGCONNECT_TIMEOUT, Env:PGOPTIONS, Env:ANDRIL_M2_TEST_POSTGRES,
             Env:ANDRIL_M2_TEST_POSTGRES_ALLOW_ROLES -ErrorAction SilentlyContinue
+        if ($probesPassed) {
+            $cleanup = Get-QaPostgresSnapshot $ServiceId -Cleanup
+            Write-QaRelationalEvent $out 'relational' 'Fixture cleanup observation' $cleanup
+        } else {
+            Write-QaRelationalEvent $out 'relational' 'Fixture cleanup observation' @{
+                status = 'Unavailable'; serviceTeardown = 'GitHub Actions'
+            }
+        }
     }
 }
 
@@ -364,6 +385,22 @@ try {
         'Relational' { Invoke-RelationalQa $inventory }
         'Secrets' { Invoke-GitleaksQa }
         'Summarize' {
+            if ($env:QA_NAME -ceq 'member02-postgres') {
+                Complete-QaInterruptedPartitions $out $env:QA_RELATIONAL_OUTCOME
+                foreach ($partition in 'non-lifecycle', 'lifecycle') {
+                    $path = Join-Path $out "relational-$partition.json"
+                    if (Test-Path -LiteralPath $path) {
+                        $result = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+                        $counts = if ($result.reportAvailable) {
+                            "$($result.counts.passed) passed, $($result.counts.failed) failed, $($result.counts.skipped) skipped, $($result.counts.cancelled) cancelled, $($result.missingCount) missing"
+                        } else { 'no completed TRX' }
+                        Add-Detail "- Relational $partition $($result.outcome) ($counts)."
+                    } else { Add-Detail "- Relational $partition evidence unavailable." }
+                }
+                if ($env:QA_RELATIONAL_OUTCOME -cne 'success') {
+                    Add-Detail '- Relational evidence may be incomplete. Missing results confer no acceptance.'
+                }
+            }
             $body = if (Test-Path -LiteralPath $details) { Get-Content -LiteralPath $details -Raw } else { '- No gate reports available.' }
             Set-Content -LiteralPath $details -Value $body -Encoding utf8
             $delimiter = [guid]::NewGuid().ToString('N')
