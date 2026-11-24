@@ -41,7 +41,7 @@ public static class PersonalityArchetypeClassifier
 
         if (!string.Equals(version, QuestionnaireV1Definition.Version, StringComparison.Ordinal))
         {
-            return PersonalityArchetypeClassificationResult.Failed($"Unsupported questionnaire definition version '{version}'. Expected '{QuestionnaireV1Definition.Version}'.");
+            return PersonalityArchetypeClassificationResult.Failed($"Unsupported questionnaire definition version. Expected '{QuestionnaireV1Definition.Version}'.");
         }
 
         if (answers.Count != 12)
@@ -59,7 +59,7 @@ public static class PersonalityArchetypeClassifier
 
             if (string.IsNullOrWhiteSpace(answer.QuestionId) || !ValidQuestionIds.Contains(answer.QuestionId))
             {
-                return PersonalityArchetypeClassificationResult.Failed($"Unknown or invalid question identifier '{answer.QuestionId}'.");
+                return PersonalityArchetypeClassificationResult.Failed("Unknown or invalid question identifier encountered.");
             }
 
             if (parsedScores.ContainsKey(answer.QuestionId))
@@ -67,11 +67,16 @@ public static class PersonalityArchetypeClassifier
                 return PersonalityArchetypeClassificationResult.Failed($"Duplicate answer for question '{answer.QuestionId}'.");
             }
 
-            if (string.IsNullOrWhiteSpace(answer.OptionId) ||
-                !int.TryParse(answer.OptionId, out var score) ||
-                score < 1 || score > 5)
+            int score;
+            switch (answer.OptionId)
             {
-                return PersonalityArchetypeClassificationResult.Failed($"Invalid option value '{answer.OptionId}' for question '{answer.QuestionId}'. Must be integer 1 to 5.");
+                case "1": score = 1; break;
+                case "2": score = 2; break;
+                case "3": score = 3; break;
+                case "4": score = 4; break;
+                case "5": score = 5; break;
+                default:
+                    return PersonalityArchetypeClassificationResult.Failed($"Invalid option value for question '{answer.QuestionId}'. Must be canonical integer '1' through '5'.");
             }
 
             parsedScores[answer.QuestionId] = score;
@@ -86,15 +91,31 @@ public static class PersonalityArchetypeClassifier
         PersonalityArchetypeConfirmation? validConfirmation = null;
         if (confirmation is not null)
         {
-            if (!string.IsNullOrWhiteSpace(currentRevision) &&
-                !string.Equals(confirmation.QuestionnaireRevision, currentRevision, StringComparison.Ordinal))
+            if (confirmation.SocialConfirmation.HasValue && !Enum.IsDefined(confirmation.SocialConfirmation.Value))
             {
-                // Confirmation is stale: bound to an older revision
-                validConfirmation = null;
+                return PersonalityArchetypeClassificationResult.Failed("Invalid confirmation: social confirmation contains an undefined value.");
+            }
+
+            if (confirmation.CommunicationConfirmation.HasValue && !Enum.IsDefined(confirmation.CommunicationConfirmation.Value))
+            {
+                return PersonalityArchetypeClassificationResult.Failed("Invalid confirmation: communication confirmation contains an undefined value.");
+            }
+
+            if (confirmation.PlanningConfirmation.HasValue && !Enum.IsDefined(confirmation.PlanningConfirmation.Value))
+            {
+                return PersonalityArchetypeClassificationResult.Failed("Invalid confirmation: planning confirmation contains an undefined value.");
+            }
+
+            if (!string.IsNullOrWhiteSpace(currentRevision) &&
+                !string.IsNullOrWhiteSpace(confirmation.QuestionnaireRevision) &&
+                string.Equals(confirmation.QuestionnaireRevision, currentRevision, StringComparison.Ordinal))
+            {
+                validConfirmation = confirmation;
             }
             else
             {
-                validConfirmation = confirmation;
+                // Stale or unbound confirmation is ignored
+                validConfirmation = null;
             }
         }
 
