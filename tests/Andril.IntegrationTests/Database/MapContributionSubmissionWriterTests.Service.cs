@@ -24,7 +24,7 @@ public sealed partial class MapContributionSubmissionWriterTests
             var foreign = new TrustedTestPorts(Guid.NewGuid());
             var denied = new MapContributionSubmissionService(new(foreign,
                 new MapContributionCaptureSessionRepository<HobbiesMapDbContext>(reads),
-                new MapAttractionRepository<HobbiesMapDbContext>(reads), foreign), new MapContributionSubmissionWriter(contexts));
+                new MapAttractionRepository<HobbiesMapDbContext>(reads), foreign), new MapContributionSubmissionWriter(contexts, new TrustedSubmissionAuthorization(seed.OwnerHobbiesModuleProfileId)));
             Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.Denied), await Submit(denied, seed));
             Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.Denied),
                 await Submit(Service(reads, contexts, seed, new DenyAllMapContributionPhotoEvidenceReader()), seed));
@@ -77,7 +77,7 @@ public sealed partial class MapContributionSubmissionWriterTests
         // Synthetic trusted evidence only; the production reader remains deny-all.
         var ports = new TrustedTestPorts(seed.OwnerHobbiesModuleProfileId);
         return new(new(ports, new MapContributionCaptureSessionRepository<HobbiesMapDbContext>(reads),
-            new MapAttractionRepository<HobbiesMapDbContext>(reads), photo ?? ports), new MapContributionSubmissionWriter(contexts));
+            new MapAttractionRepository<HobbiesMapDbContext>(reads), photo ?? ports), new MapContributionSubmissionWriter(contexts, new TrustedSubmissionAuthorization(seed.OwnerHobbiesModuleProfileId)));
     }
 
     private static Task<MapSubmissionResult> Submit(MapContributionSubmissionService service, MapContribution seed) =>

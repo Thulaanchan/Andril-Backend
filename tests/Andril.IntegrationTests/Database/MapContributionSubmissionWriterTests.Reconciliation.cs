@@ -70,7 +70,7 @@ public sealed partial class MapContributionSubmissionWriterTests
             var prepared = await PrepareAsync(contexts);
             var row = prepared.Contribution;
             var evidence = MapSubmissionOriginalEvidence.Capture(prepared);
-            Assert.Equal(MapSubmissionOutcome.Created, (await new MapContributionSubmissionWriter(contexts).SubmitAsync(prepared)).Outcome);
+            Assert.Equal(MapSubmissionOutcome.Created, (await new MapContributionSubmissionWriter(contexts, new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId)).SubmitAsync(prepared)).Outcome);
             await using var source = NpgsqlDataSource.Create(new NpgsqlConnectionStringBuilder(connection) { Enlist = false }.ConnectionString);
             var actor = new ReconciliationActor(new(row.OwnerHobbiesModuleProfileId, "Hobbies", true));
             var service = new MapContributionSubmissionReconciliationService(new MapContributionCommittedReader(source), actor);
