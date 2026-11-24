@@ -218,6 +218,136 @@ public sealed class PostgresSocialQuestionnaireReadAdapterTests
         Assert.Null(unauthorizedResult);
     }
 
+    [Fact]
+    public async Task VerifySocialProfileScopeAsync_WhenDatabaseFails_FailsClosedAndReturnsFalse()
+    {
+        var guard = new RejectConnections();
+        using var context = CreateOfflineContext(guard);
+        var adapter = new PostgresSocialQuestionnaireReadAdapter(context);
+
+        var result = await adapter.VerifySocialProfileScopeAsync(Guid.NewGuid());
+
+        Assert.False(result);
+        Assert.Equal(1, guard.Attempts);
+    }
+
+    [Fact]
+    public async Task VerifySocialProfileScopeAsync_WhenDatabaseThrowsOperationCanceledException_RethrowsException()
+    {
+        var interceptor = new CancelConnectionInterceptor();
+        using var context = CreateOfflineContext(interceptor);
+        var adapter = new PostgresSocialQuestionnaireReadAdapter(context);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => adapter.VerifySocialProfileScopeAsync(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public async Task GetByIdAsync_WhenEnforceIdentityDiscriminatorTrue_AndScopeVerificationFails_ReturnsNull()
+    {
+        var guard = new RejectConnections();
+        using var context = CreateOfflineContext(guard);
+        var adapter = new PostgresSocialQuestionnaireReadAdapter(context, enforceIdentityDiscriminator: true);
+
+        var result = await adapter.GetByIdAsync(Guid.NewGuid(), Guid.NewGuid());
+
+        Assert.Null(result);
+        Assert.Equal(1, guard.Attempts);
+    }
+
+    [Fact]
+    public async Task GetLatestByProfileIdAsync_WhenEnforceIdentityDiscriminatorTrue_AndScopeVerificationFails_ReturnsNull()
+    {
+        var guard = new RejectConnections();
+        using var context = CreateOfflineContext(guard);
+        var adapter = new PostgresSocialQuestionnaireReadAdapter(context, enforceIdentityDiscriminator: true);
+
+        var result = await adapter.GetLatestByProfileIdAsync(Guid.NewGuid());
+
+        Assert.Null(result);
+        Assert.Equal(1, guard.Attempts);
+    }
+
+    [Fact]
+    public async Task ListByProfileIdAsync_WhenEnforceIdentityDiscriminatorTrue_AndScopeVerificationFails_ReturnsEmpty()
+    {
+        var guard = new RejectConnections();
+        using var context = CreateOfflineContext(guard);
+        var adapter = new PostgresSocialQuestionnaireReadAdapter(context, enforceIdentityDiscriminator: true);
+
+        var result = await adapter.ListByProfileIdAsync(Guid.NewGuid(), 10);
+
+        Assert.Empty(result);
+        Assert.Equal(1, guard.Attempts);
+    }
+
+    [LocalPostgresFact]
+    public async Task LivePostgres_GetLatestByProfileIdAsync_ReturnsMostRecentResponse()
+    {
+        await using var database = await LocalSocialQuestionnaireDatabase.CreateAsync(applySocialMigrations: true);
+        await using var context = database.Open();
+
+        var profileId = Guid.NewGuid();
+        var olderResponseId = Guid.NewGuid();
+        var newerResponseId = Guid.NewGuid();
+
+        var definition = QuestionnaireV1Definition.Create();
+        var now = DateTimeOffset.UtcNow;
+        var olderAnswers = definition.Questions.Select(q =>
+            new QuestionnaireAnswerEntity(Guid.NewGuid(), olderResponseId, q.Id, "1", now.AddMinutes(-10))).ToList();
+        var newerAnswers = definition.Questions.Select(q =>
+            new QuestionnaireAnswerEntity(Guid.NewGuid(), newerResponseId, q.Id, "4", now)).ToList();
+
+        var older = QuestionnaireResponseEntity.Create(olderResponseId, profileId, definition, olderAnswers, false, now.AddMinutes(-10));
+        var newer = QuestionnaireResponseEntity.Create(newerResponseId, profileId, definition, newerAnswers, false, now);
+
+        context.QuestionnaireResponses.AddRange(older, newer);
+        await context.SaveChangesAsync();
+
+        var adapter = new PostgresSocialQuestionnaireReadAdapter(context);
+
+        var latest = await adapter.GetLatestByProfileIdAsync(profileId);
+        Assert.NotNull(latest);
+        Assert.Equal(newerResponseId, latest.Id);
+        Assert.Equal(12, latest.Answers.Count);
+    }
+
+    [LocalPostgresFact]
+    public async Task LivePostgres_ListByProfileIdAsync_ReturnsChronologicalDescendingResponsesUpToMaxItems()
+    {
+        await using var database = await LocalSocialQuestionnaireDatabase.CreateAsync(applySocialMigrations: true);
+        await using var context = database.Open();
+
+        var profileId = Guid.NewGuid();
+        var definition = QuestionnaireV1Definition.Create();
+        var now = DateTimeOffset.UtcNow;
+
+        for (int i = 0; i < 3; i++)
+        {
+            var respId = Guid.NewGuid();
+            var answers = definition.Questions.Select(q =>
+                new QuestionnaireAnswerEntity(Guid.NewGuid(), respId, q.Id, "2", now.AddMinutes(-i))).ToList();
+            var resp = QuestionnaireResponseEntity.Create(respId, profileId, definition, answers, false, now.AddMinutes(-i));
+            context.QuestionnaireResponses.Add(resp);
+        }
+        await context.SaveChangesAsync();
+
+        var adapter = new PostgresSocialQuestionnaireReadAdapter(context);
+
+        var list = await adapter.ListByProfileIdAsync(profileId, maxItems: 2);
+        Assert.Equal(2, list.Count);
+        Assert.True(list[0].CreatedAtUtc >= list[1].CreatedAtUtc);
+    }
+
+    private sealed class CancelConnectionInterceptor : DbConnectionInterceptor
+    {
+        public override ValueTask<InterceptionResult> ConnectionOpeningAsync(DbConnection connection,
+            ConnectionEventData eventData, InterceptionResult result, CancellationToken cancellationToken = default)
+        {
+            throw new OperationCanceledException("Operation canceled during connection open.");
+        }
+    }
+
     private sealed class RejectConnections : DbConnectionInterceptor
     {
         public int Attempts { get; private set; }
