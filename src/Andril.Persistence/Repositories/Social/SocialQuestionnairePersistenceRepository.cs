@@ -115,22 +115,11 @@ public sealed class SocialQuestionnairePersistenceRepository : IQuestionnairePer
                     "Security invariant violation: cannot overwrite a questionnaire response belonging to a different profile.");
             }
 
-            // Remove existing child answers if being replaced
-            _context.QuestionnaireAnswers.RemoveRange(existing.Answers);
-
-            // Update parent entity state
-            _context.Entry(existing).CurrentValues.SetValues(response);
-
-            // Add new answers
-            foreach (var answer in response.Answers)
-            {
-                _context.QuestionnaireAnswers.Add(answer);
-            }
+            throw new InvalidOperationException(
+                "Unapproved questionnaire response overwrite rejected: destructive replacement of previously persisted responses and answers is prohibited pending Decision P-04.");
         }
-        else
-        {
-            await _context.QuestionnaireResponses.AddAsync(response, cancellationToken).ConfigureAwait(false);
-        }
+
+        await _context.QuestionnaireResponses.AddAsync(response, cancellationToken).ConfigureAwait(false);
 
         await _context.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
     }

@@ -158,18 +158,19 @@ public sealed class SkillExchangeTests
     }
 
     [Theory]
-    [InlineData("reverse")]
-    [InlineData("offered")]
-    [InlineData("wanted")]
-    [InlineData("recipient")]
-    public void OtherPendingTerms_RemainPolicyDecisions_NotCertifiedDistinct(string difference)
+    [InlineData("reverse", PendingProposalComparison.PendingPairConflict)]
+    [InlineData("offered", PendingProposalComparison.PendingPairConflict)]
+    [InlineData("wanted", PendingProposalComparison.PendingPairConflict)]
+    [InlineData("recipient", PendingProposalComparison.DifferentPair)]
+    public void PendingTerms_UseApprovedUnorderedProfilePairRule(string difference, PendingProposalComparison expected)
     {
         var exchange = Create();
         var other = SkillExchange.Propose(Guid.NewGuid(), difference == "reverse" ? exchange.Recipient : exchange.Sender,
             difference == "reverse" ? exchange.Sender : difference == "recipient" ? Participant() : exchange.Recipient,
             difference == "offered" ? Guid.NewGuid() : exchange.OfferedSkillId,
             difference == "wanted" ? Guid.NewGuid() : exchange.WantedSkillId);
-        Assert.Equal(PendingProposalComparison.PolicyDecisionRequired, exchange.ComparePendingProposal(other));
+        Assert.Equal(expected, exchange.ComparePendingProposal(other));
+        Assert.Equal(expected, other.ComparePendingProposal(exchange));
     }
 
     [Theory]
@@ -216,6 +217,166 @@ public sealed class SkillExchangeTests
         foreach (var id in new[] { exchange.Id, exchange.Sender.AccountId, exchange.Sender.LearningProfileId,
             exchange.Recipient.AccountId, exchange.Recipient.LearningProfileId, exchange.OfferedSkillId, exchange.WantedSkillId })
             Assert.DoesNotContain(id.ToString(), text);
+    }
+
+    [Theory]
+    [InlineData("exact")]
+    [InlineData("reverse")]
+    [InlineData("different-terms")]
+    [InlineData("reverse-different-terms")]
+    [InlineData("changed-account-references")]
+    public void PairGuard_RejectsEverySamePairPendingProposalWithoutMutatingHistory(string variant)
+    {
+        var existing = Create(); var before = Snapshot(existing);
+        var reverse = variant.StartsWith("reverse", StringComparison.Ordinal);
+        var sender = reverse ? existing.Recipient : existing.Sender;
+        var recipient = reverse ? existing.Sender : existing.Recipient;
+        if (variant == "changed-account-references")
+        {
+            sender = new(Guid.NewGuid(), sender.LearningProfileId);
+            recipient = new(Guid.NewGuid(), recipient.LearningProfileId);
+        }
+        var changedTerms = variant.Contains("different-terms", StringComparison.Ordinal);
+        var history = new[] { existing };
+        var error = Assert.Throws<InvalidOperationException>(() => SkillExchange.Propose(Guid.NewGuid(), sender, recipient,
+            changedTerms ? Guid.NewGuid() : existing.OfferedSkillId,
+            changedTerms ? Guid.NewGuid() : existing.WantedSkillId, history));
+        Assert.Equal(before, Snapshot(existing)); Assert.Same(existing, Assert.Single(history));
+        foreach (var id in new[] { existing.Id, sender.AccountId, sender.LearningProfileId, recipient.AccountId,
+            recipient.LearningProfileId, existing.OfferedSkillId, existing.WantedSkillId })
+            Assert.DoesNotContain(id.ToString(), error.ToString());
+    }
+
+    [Theory]
+    [InlineData("accept", false)]
+    [InlineData("accept", true)]
+    [InlineData("decline", false)]
+    [InlineData("decline", true)]
+    [InlineData("cancel", false)]
+    [InlineData("cancel", true)]
+    public void PairGuard_TerminalHistoryAllowsFreshExplicitProposalWithoutChangingHistory(string terminal, bool reverse)
+    {
+        var existing = Create();
+        Act(existing, terminal, terminal == "cancel" ? existing.Sender : existing.Recipient);
+        var before = Snapshot(existing); var id = Guid.NewGuid();
+        var sender = reverse ? existing.Recipient : existing.Sender;
+        var recipient = reverse ? existing.Sender : existing.Recipient;
+        var next = SkillExchange.Propose(id, sender, recipient, Guid.NewGuid(), Guid.NewGuid(), [existing]);
+        Assert.Equal(id, next.Id); Assert.NotEqual(existing.Id, next.Id);
+        Assert.Equal(SkillExchangeStatus.Pending, next.Status);
+        Assert.Same(sender, next.Sender); Assert.Same(recipient, next.Recipient);
+        Assert.Equal(before, Snapshot(existing));
+        // Fresh local construction is not a grant of current eligibility or production access.
+    }
+
+    [Theory]
+    [InlineData("sender")]
+    [InlineData("recipient")]
+    [InlineData("neither")]
+    [InlineData("same-accounts-new-profiles")]
+    public void PairGuard_DifferentProfilePairsRemainIndependent(string shared)
+    {
+        var existing = Create(); var before = Snapshot(existing);
+        var sender = shared == "sender" ? existing.Sender : Participant();
+        var recipient = shared == "recipient" ? existing.Recipient : Participant();
+        if (shared == "same-accounts-new-profiles")
+        {
+            sender = new(existing.Sender.AccountId, Guid.NewGuid());
+            recipient = new(existing.Recipient.AccountId, Guid.NewGuid());
+        }
+        var next = SkillExchange.Propose(Guid.NewGuid(), sender, recipient, existing.OfferedSkillId,
+            existing.WantedSkillId, [existing]);
+        Assert.Equal(PendingProposalComparison.DifferentPair, existing.ComparePendingProposal(next));
+        Assert.Equal(PendingProposalComparison.DifferentPair, next.ComparePendingProposal(existing));
+        Assert.Equal(before, Snapshot(existing)); Assert.Equal(SkillExchangeStatus.Pending, next.Status);
+    }
+
+    [Fact]
+    public void PairGuard_LaterPendingConflictIsNotHiddenByUnrelatedOrTerminalHistory()
+    {
+        var pending = Create();
+        var terminal = SkillExchange.Propose(Guid.NewGuid(), pending.Sender, pending.Recipient,
+            pending.OfferedSkillId, pending.WantedSkillId);
+        terminal.Cancel(terminal.Sender);
+        var history = new[] { Create(), terminal, pending };
+        var before = history.Select(Snapshot).ToArray();
+        Assert.Throws<InvalidOperationException>(() => SkillExchange.Propose(Guid.NewGuid(), pending.Recipient,
+            pending.Sender, Guid.NewGuid(), Guid.NewGuid(), history));
+        Assert.Equal(before, history.Select(Snapshot));
+    }
+
+    [Fact]
+    public void PairGuard_EmptySuppliedHistoryAllowsOnlyLocalConstruction()
+    {
+        var sender = Participant(); var recipient = Participant();
+        var proposal = SkillExchange.Propose(Guid.NewGuid(), sender, recipient, Guid.NewGuid(), Guid.NewGuid(), []);
+        Assert.Equal(SkillExchangeStatus.Pending, proposal.Status);
+        Assert.Same(sender, proposal.Sender); Assert.Same(recipient, proposal.Recipient);
+        Assert.Equal("learning", proposal.Module);
+        // Empty caller input does not prove that authoritative storage contains no pending pair.
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("missing-entry")]
+    [InlineData("enumeration")]
+    public void PairGuard_InvalidOrFailedHistoryCannotReturnAProposal(string defect)
+    {
+        var existing = Create(); var before = Snapshot(existing);
+        IEnumerable<SkillExchange> FailingHistory()
+        {
+            yield return existing;
+            throw new InvalidOperationException("Synthetic history enumeration failure.");
+        }
+        IEnumerable<SkillExchange>? history = defect switch
+        {
+            "null" => null, "missing-entry" => new[] { existing, null! }, _ => FailingHistory()
+        };
+        var error = Record.Exception(() => SkillExchange.Propose(Guid.NewGuid(), Participant(), Participant(),
+            Guid.NewGuid(), Guid.NewGuid(), history!));
+        if (defect == "null") Assert.IsType<ArgumentNullException>(error);
+        else if (defect == "missing-entry") Assert.IsType<ArgumentException>(error);
+        else
+        {
+            var failure = Assert.IsType<InvalidOperationException>(error);
+            Assert.Equal("Synthetic history enumeration failure.", failure.Message);
+        }
+        Assert.Equal(before, Snapshot(existing));
+    }
+
+    [Theory]
+    [InlineData("empty-id")]
+    [InlineData("missing-sender")]
+    [InlineData("self")]
+    [InlineData("empty-skill")]
+    [InlineData("same-skill")]
+    public void PairGuard_PreservesExistingStructuralValidationBeforeReadingHistory(string defect)
+    {
+        var sender = Participant(); var recipient = defect == "self" ? sender : Participant();
+        var offered = Guid.NewGuid(); var wanted = defect == "same-skill" ? offered : Guid.NewGuid();
+        var reads = 0;
+        IEnumerable<SkillExchange> History() { reads++; yield return Create(); }
+        var error = Record.Exception(() => SkillExchange.Propose(defect == "empty-id" ? Guid.Empty : Guid.NewGuid(),
+            defect == "missing-sender" ? null! : sender, recipient,
+            defect == "empty-skill" ? Guid.Empty : offered, wanted, History()));
+        Assert.NotNull(error);
+        if (defect == "same-skill") Assert.IsType<NotSupportedException>(error);
+        else Assert.IsAssignableFrom<ArgumentException>(error);
+        Assert.Equal(0, reads);
+    }
+
+    [Fact]
+    public void PairGuard_EnumeratesSuppliedHistoryOnceWithoutConsumingOrChangingItsEntries()
+    {
+        var existing = Create(); var before = Snapshot(existing); var reads = 0;
+        IEnumerable<SkillExchange> History()
+        {
+            if (++reads != 1) throw new InvalidOperationException("History enumerated again.");
+            yield return existing;
+        }
+        var next = SkillExchange.Propose(Guid.NewGuid(), Participant(), Participant(), Guid.NewGuid(), Guid.NewGuid(), History());
+        Assert.Equal(1, reads); Assert.Equal(before, Snapshot(existing));
+        Assert.Equal(SkillExchangeStatus.Pending, next.Status);
     }
 
     private static object Snapshot(SkillExchange exchange) =>

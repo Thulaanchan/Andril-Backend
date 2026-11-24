@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Andril.AI.ChatBox;
 using Andril.AI.DTOs;
@@ -13,12 +14,16 @@ using Andril.Common.Accounts;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.ApplicationParts;
 using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.Routing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -363,5 +368,279 @@ public sealed class AiEndpointSecurityTests
         using var cts = new CancellationTokenSource(); cts.Cancel(); c.Request.Path = "/api/v1/ai"; c.RequestAborted = cts.Token;
         Assert.True(await h.TryHandleAsync(c, new OperationCanceledException(Secret), cts.Token));
         Assert.Equal(503, c.Response.StatusCode); Assert.Null(p.Last);
+    }
+
+    [Fact]
+    public async Task T05_PostStartSensitiveExceptionDoesNotLeakThroughFrameworkLogs()
+    {
+        // Isolated in-memory middleware pipeline only: never run Program, discover controllers,
+        // activate production AI, bind a socket, authenticate, or contact an external dependency.
+        using var capture = new T05LogCapture();
+        var responseStarted = false;
+        using var host = await new HostBuilder().ConfigureWebHost(web => web.UseTestServer()
+            .ConfigureLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(capture))
+            .ConfigureServices(services =>
+            {
+                services.AddProblemDetails();
+                services.AddExceptionHandler<AiExceptionHandler>();
+            })
+            .Configure(app =>
+            {
+                app.UseExceptionHandler();
+                app.UseMiddleware<AiExceptionPrivacyMiddleware>();
+                app.Run(async context =>
+                {
+                    context.Response.StatusCode = StatusCodes.Status202Accepted;
+                    await context.Response.WriteAsync("Synthetic response started.");
+                    await context.Response.Body.FlushAsync();
+                    responseStarted = context.Response.HasStarted;
+                    throw new InvalidOperationException(Secret, new Exception("T05-INNER-PRIVATE-MARKER"));
+                });
+            })).StartAsync();
+        var server = host.GetTestServer();
+
+        // Positive control exercises the actual ILogger pipeline, formatter, structured state
+        // and exception capture. An empty/disabled collector cannot satisfy confidentiality.
+        var control = server.Services.GetRequiredService<ILoggerFactory>().CreateLogger("T05.Control");
+        control.LogInformation(new InvalidOperationException("T05-SAFE-EXCEPTION"),
+            "T05 harmless capture {Marker}", "T05-SAFE-CONTROL");
+        Assert.Contains(capture.Entries, entry => entry.Category == "T05.Control" &&
+            entry.Message.Contains("T05-SAFE-CONTROL", StringComparison.Ordinal) &&
+            entry.State.Contains("T05-SAFE-CONTROL", StringComparison.Ordinal) &&
+            entry.ExceptionText.Contains("T05-SAFE-EXCEPTION", StringComparison.Ordinal));
+
+        using var client = server.CreateClient();
+        var transportFailure = await Record.ExceptionAsync(async () =>
+        {
+            using var response = await client.GetAsync("/api/v1/ai/t05-synthetic-probe",
+                HttpCompletionOption.ResponseHeadersRead);
+            await response.Content.ReadAsStringAsync();
+        });
+        Assert.True(responseStarted, "The synthetic exception must occur after the real response starts.");
+        Assert.NotNull(transportFailure); // The framework cannot replace an already-started response.
+        var framework = capture.Entries.Where(entry => entry.Category.StartsWith(
+            "Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware", StringComparison.Ordinal)).ToArray();
+        Assert.NotEmpty(framework);
+        Assert.Contains(framework, entry => entry.Level == LogLevel.Error);
+
+        var leaks = capture.Entries.SelectMany(entry => new[]
+        {
+            (Channel: "message", Text: entry.Message),
+            (Channel: "structured state", Text: entry.State),
+            (Channel: "exception payload", Text: entry.ExceptionText)
+        }.Where(payload => payload.Text.Contains(Secret, StringComparison.Ordinal) ||
+            payload.Text.Contains("T05-INNER-PRIVATE-MARKER", StringComparison.Ordinal))
+            .Select(payload => entry.Category + " event " + entry.Event.Id + ": " + payload.Channel))
+            .Distinct().ToArray();
+        Assert.True(leaks.Length == 0,
+            "Sensitive synthetic exception data reached framework logging: " + string.Join("; ", leaks));
+    }
+
+    [Fact]
+    public async Task T05_NestedExceptionAndDataAreAbsentFromFrameworkAndTransportPayloads()
+    {
+        using var capture = new T05LogCapture();
+        var original = new InvalidOperationException(Secret,
+            new Exception("T05-INNER-PRIVATE-MARKER", new Exception("T05-NESTED-PRIVATE-MARKER")));
+        original.Data["T05-DATA-PRIVATE-KEY"] = "T05-DATA-PRIVATE-MARKER";
+        original.InnerException!.Data["nested"] = "T05-NESTED-DATA-MARKER";
+        using var host = await T05PrivacyHost(capture, async context =>
+        {
+            context.Response.StatusCode = StatusCodes.Status202Accepted;
+            await context.Response.WriteAsync("Synthetic partial response.");
+            await context.Response.Body.FlushAsync();
+            Assert.True(context.Response.HasStarted);
+            throw original;
+        });
+        using var client = host.GetTestClient();
+        var failure = await Record.ExceptionAsync(async () =>
+        {
+            using var response = await client.GetAsync("/api/v1/ai/nested", HttpCompletionOption.ResponseHeadersRead);
+            await response.Content.ReadAsStringAsync();
+        });
+        Assert.NotNull(failure);
+        var sanitized = Assert.IsType<InvalidOperationException>(failure.GetBaseException());
+        Assert.NotSame(original, sanitized);
+        Assert.Null(sanitized.InnerException);
+        Assert.Empty(sanitized.Data);
+        Assert.Contains(capture.Entries, entry => entry.Event.Id == 5105 &&
+            entry.Level == LogLevel.Error && entry.Message.Contains("completion is unverified", StringComparison.Ordinal));
+        Assert.Contains(capture.Entries, entry => entry.Category.StartsWith(
+            "Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware", StringComparison.Ordinal) &&
+            entry.Level == LogLevel.Error && entry.ExceptionText.Contains("AI response interrupted after start.", StringComparison.Ordinal));
+        T05AssertPrivateDataAbsent(capture, failure.ToString());
+    }
+
+    [Theory]
+    [InlineData("validation", 400)]
+    [InlineData("denied", 403)]
+    [InlineData("provider", 503)]
+    [InlineData("cancel", 503)]
+    [InlineData("unexpected", 500)]
+    public async Task T05_PreStartErrorHandlingPreservesSafeStatusAndResponse(string kind, int status)
+    {
+        using var capture = new T05LogCapture();
+        Exception original = kind switch
+        {
+            "validation" => new AiChatValidationException(Secret),
+            "denied" => new UnauthorizedAccessException(Secret),
+            "provider" => new InvalidOperationException(Secret),
+            "cancel" => new OperationCanceledException(Secret),
+            _ => new Exception(Secret, new Exception("T05-INNER-PRIVATE-MARKER"))
+        };
+        using var host = await T05PrivacyHost(capture, _ => Task.FromException(original));
+        using var client = host.GetTestClient();
+        using var response = await client.GetAsync("/api/v1/ai/pre-start");
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.Equal(status, (int)response.StatusCode);
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        using var json = JsonDocument.Parse(body);
+        Assert.Equal(status, json.RootElement.GetProperty("status").GetInt32());
+        Assert.DoesNotContain(capture.Entries, entry => entry.Event.Id == 5105);
+        T05AssertPrivateDataAbsent(capture, body);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task T05_RequestAbortKeepsFrameworkResponseBehavior(bool started, bool ioFailure)
+    {
+        using var capture = new T05LogCapture();
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        var observedStarted = false;
+        using var host = await T05PrivacyHost(capture, async context =>
+        {
+            if (started)
+            {
+                context.Response.StatusCode = StatusCodes.Status202Accepted;
+                await context.Response.WriteAsync("Synthetic partial response.");
+                await context.Response.Body.FlushAsync();
+            }
+            observedStarted = context.Response.HasStarted;
+            context.RequestAborted = cancelled.Token;
+            if (ioFailure) throw new IOException(Secret, new Exception("T05-INNER-PRIVATE-MARKER"));
+            throw new OperationCanceledException(Secret, cancelled.Token);
+        });
+        using var client = host.GetTestClient();
+        using var response = await client.GetAsync("/api/v1/ai/cancelled");
+        Assert.Equal(started, observedStarted);
+        Assert.Equal(started ? 202 : 499, (int)response.StatusCode);
+        Assert.Equal(started ? "Synthetic partial response." : "", await response.Content.ReadAsStringAsync());
+        if (started) Assert.Contains(capture.Entries, entry => entry.Event.Id == 5105 && entry.Level == LogLevel.Information);
+        else Assert.DoesNotContain(capture.Entries, entry => entry.Event.Id == 5105);
+        T05AssertPrivateDataAbsent(capture);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task T05_CancellationTokenAndExistingResponseArePreserved(bool started)
+    {
+        using var capture = new T05LogCapture();
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        var original = new OperationCanceledException(Secret, cancelled.Token);
+        var context = new DefaultHttpContext();
+        context.Request.Path = "/api/v1/ai/cancelled";
+        context.RequestAborted = cancelled.Token;
+        if (started) context.Features.Set<IHttpResponseFeature>(new StartedResponse());
+        context.Response.Headers["X-T05-Safe"] = "preserved";
+        using var loggers = new LoggerFactory([capture]);
+        var middleware = new AiExceptionPrivacyMiddleware(_ => Task.FromException(original),
+            loggers.CreateLogger<AiExceptionPrivacyMiddleware>());
+        var failure = await Assert.ThrowsAsync<OperationCanceledException>(() => middleware.InvokeAsync(context));
+        Assert.Equal(cancelled.Token, failure.CancellationToken);
+        Assert.Equal(started ? 202 : 200, context.Response.StatusCode);
+        Assert.Equal("preserved", context.Response.Headers["X-T05-Safe"].ToString());
+        if (started)
+        {
+            Assert.NotSame(original, failure);
+            Assert.Null(failure.InnerException);
+            Assert.Empty(failure.Data);
+            T05AssertPrivateDataAbsent(capture, failure.ToString());
+        }
+        else Assert.Same(original, failure);
+    }
+
+    [Theory]
+    [InlineData("/api/v1/account/t05")]
+    [InlineData("/api/v1/aievil/t05")]
+    public async Task T05_NonAiFrameworkLoggingAndFailuresRemainUnchanged(string path)
+    {
+        using var capture = new T05LogCapture();
+        var original = new InvalidOperationException("T05-NON-AI-SYNTHETIC-FAILURE");
+        using var host = await T05PrivacyHost(capture, async context =>
+        {
+            context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("T05.NonAi")
+                .LogInformation("T05-NON-AI-SAFE-DIAGNOSTIC");
+            await context.Response.WriteAsync("Synthetic partial response.");
+            await context.Response.Body.FlushAsync();
+            throw original;
+        });
+        using var client = host.GetTestClient();
+        var failure = await Record.ExceptionAsync(async () =>
+        {
+            using var response = await client.GetAsync(path, HttpCompletionOption.ResponseHeadersRead);
+            await response.Content.ReadAsStringAsync();
+        });
+        Assert.NotNull(failure);
+        Assert.Same(original, failure.GetBaseException());
+        Assert.DoesNotContain(capture.Entries, entry => entry.Event.Id == 5105);
+        Assert.Contains(capture.Entries, entry => entry.Category == "T05.NonAi" &&
+            entry.Message.Contains("T05-NON-AI-SAFE-DIAGNOSTIC", StringComparison.Ordinal));
+        Assert.Contains(capture.Entries, entry => entry.Category.StartsWith(
+            "Microsoft.AspNetCore.Diagnostics.ExceptionHandlerMiddleware", StringComparison.Ordinal) &&
+            entry.ExceptionText.Contains(original.Message, StringComparison.Ordinal));
+    }
+
+    private static Task<IHost> T05PrivacyHost(T05LogCapture capture, RequestDelegate endpoint) =>
+        new HostBuilder().ConfigureWebHost(web => web.UseTestServer()
+            .ConfigureLogging(logging => logging.SetMinimumLevel(LogLevel.Trace).AddProvider(capture))
+            .ConfigureServices(services =>
+            {
+                services.AddProblemDetails();
+                services.AddExceptionHandler<AiExceptionHandler>();
+            })
+            .Configure(app =>
+            {
+                app.UseExceptionHandler();
+                app.UseMiddleware<AiExceptionPrivacyMiddleware>();
+                app.Run(endpoint);
+            })).StartAsync();
+
+    private static void T05AssertPrivateDataAbsent(T05LogCapture capture, string extra = "")
+    {
+        var payloads = capture.Entries.SelectMany(entry => new[] { entry.Message, entry.State, entry.ExceptionText }).Append(extra);
+        foreach (var marker in new[] { Secret, "T05-INNER-PRIVATE-MARKER", "T05-NESTED-PRIVATE-MARKER",
+            "T05-DATA-PRIVATE-KEY", "T05-DATA-PRIVATE-MARKER", "T05-NESTED-DATA-MARKER" })
+            Assert.DoesNotContain(payloads, payload => payload.Contains(marker, StringComparison.Ordinal));
+    }
+
+    private sealed record T05LogEntry(string Category, LogLevel Level, EventId Event,
+        string Message, string State, string ExceptionText);
+
+    private sealed class T05LogCapture : ILoggerProvider
+    {
+        internal ConcurrentQueue<T05LogEntry> Entries { get; } = new();
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(categoryName, Entries);
+        public void Dispose() { }
+
+        private sealed class CapturingLogger(string category, ConcurrentQueue<T05LogEntry> entries) : ILogger
+        {
+            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+            public bool IsEnabled(LogLevel logLevel) => true;
+            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
+                Exception? exception, Func<TState, Exception?, string> formatter)
+            {
+                var values = state is IEnumerable<KeyValuePair<string, object?>> properties
+                    ? string.Join("; ", properties.Select(property => property.Key + "=" + property.Value))
+                    : state?.ToString() ?? "";
+                entries.Enqueue(new(category, logLevel, eventId, formatter(state, exception),
+                    values, exception?.ToString() ?? ""));
+            }
+        }
     }
 }

@@ -37,6 +37,7 @@ public sealed class LearningCircleTests
         Assert.NotEqual(Guid.Empty, goal.Id);
         Assert.Equal(circle.Id, goal.CircleId);
         Assert.Equal(text, goal.Text);
+        Assert.Equal(0, goal.ProgressPercent);
         Assert.Same(goal, Assert.Single(circle.Goals));
     }
 
@@ -158,7 +159,7 @@ public sealed class LearningCircleTests
     }
 
     [Fact]
-    public void PublicSurface_PreservesImmutableIdentityAndOmitsUnapprovedMembershipAndProgressOperations()
+    public void PublicSurface_PreservesImmutableIdentityAndIncludesOnlyApprovedLocalProgress()
     {
         foreach (var type in new[] { typeof(LearningCircle), typeof(LearningCircle.SharedGoal) })
         {
@@ -167,12 +168,12 @@ public sealed class LearningCircleTests
             Assert.All(type.GetProperties(), property => Assert.False(property.SetMethod?.IsPublic == true));
         }
         Assert.Empty(typeof(LearningCircle.SharedGoal).GetConstructors());
-        Assert.Equal(new[] { "CreateSharedGoal", "EditSharedGoal", "ToString" },
+        Assert.Equal(new[] { "CreateSharedGoal", "EditSharedGoal", "ToString", "UpdateSharedGoalProgress" },
             typeof(LearningCircle).GetMethods(BindingFlags.DeclaredOnly | BindingFlags.Public | BindingFlags.Instance)
                 .Where(method => !method.IsSpecialName).Select(method => method.Name).Order(StringComparer.Ordinal));
-        Assert.Equal(new[] { "CircleId", "Id", "Text" },
+        Assert.Equal(new[] { "CircleId", "Id", "ProgressPercent", "Text" },
             typeof(LearningCircle.SharedGoal).GetProperties().Select(property => property.Name).Order(StringComparer.Ordinal));
-        // No membership/roles, progress percentages, XP, connections, chat grants or goal deletion APIs.
+        // Local reported progress grants no membership/roles, XP, connections, chat or goal deletion.
     }
 
     [Fact]
@@ -183,5 +184,130 @@ public sealed class LearningCircleTests
         Assert.DoesNotContain(circle.Id.ToString(), diagnostic);
         Assert.DoesNotContain(goal.Id.ToString(), diagnostic);
         Assert.DoesNotContain(goal.Text, diagnostic);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void ProgressUpdates_PreserveTextScopeUnrelatedGoalsAndPreviousSnapshots(int selected)
+    {
+        var circle = Create();
+        var originals = new[] { circle.CreateSharedGoal("First"), circle.CreateSharedGoal("  தமிழ் 👩🏽‍💻  "),
+            circle.CreateSharedGoal("Third") };
+        var initial = circle.Goals;
+        foreach (var progress in new[] { 60, 100, 20, 0 })
+        {
+            var before = circle.Goals;
+            var previous = before[selected];
+            var replacement = circle.UpdateSharedGoalProgress(previous.Id, progress);
+            Assert.Equal(progress, replacement.ProgressPercent);
+            Assert.Equal(previous.Text, replacement.Text);
+            Assert.Equal(previous.Id, replacement.Id); Assert.Equal(circle.Id, replacement.CircleId);
+            Assert.Same(replacement, circle.Goals[selected]); Assert.NotSame(previous, replacement);
+            Assert.Equal(3, circle.Goals.Count); Assert.Equal("learning", circle.Module);
+            Assert.Same(previous, before[selected]);
+            for (var i = 0; i < originals.Length; i++)
+            {
+                Assert.Same(originals[i], initial[i]); Assert.Equal(0, initial[i].ProgressPercent);
+                if (i != selected) Assert.Same(originals[i], circle.Goals[i]);
+            }
+        }
+    }
+
+    [Fact]
+    public void ProgressUpdate_AcceptsEveryIntegerFromZeroThroughOneHundred()
+    {
+        var circle = Create(); var goal = circle.CreateSharedGoal("Reported progress only");
+        foreach (var progress in Enumerable.Range(0, 101))
+            Assert.Equal(progress, circle.UpdateSharedGoalProgress(goal.Id, progress).ProgressPercent);
+        Assert.Equal(0, goal.ProgressPercent);
+        // The value records a report only; no achievement verification, XP or reward operation exists.
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(37)]
+    [InlineData(100)]
+    public void TextEdits_PreserveReportedProgressAndEarlierContent(int progress)
+    {
+        var circle = Create(); var goal = circle.CreateSharedGoal("Original text");
+        var reported = circle.UpdateSharedGoalProgress(goal.Id, progress);
+        var before = circle.Goals;
+        var edited = circle.EditSharedGoal(goal.Id, "  Explicit new text  ");
+        Assert.Equal(progress, edited.ProgressPercent);
+        Assert.Equal("  Explicit new text  ", edited.Text);
+        Assert.Equal(goal.Id, edited.Id); Assert.Equal(circle.Id, edited.CircleId);
+        Assert.Same(reported, Assert.Single(before));
+        Assert.Equal("Original text", reported.Text); Assert.Equal(progress, reported.ProgressPercent);
+        Assert.Equal(0, goal.ProgressPercent);
+    }
+
+    [Theory]
+    [InlineData(int.MinValue)]
+    [InlineData(-1)]
+    [InlineData(101)]
+    [InlineData(int.MaxValue)]
+    public void InvalidProgress_PreservesCompleteCircleState(int invalid)
+    {
+        var circle = Create(); var goal = circle.CreateSharedGoal("Keep text");
+        circle.UpdateSharedGoalProgress(goal.Id, 45);
+        var other = circle.CreateSharedGoal("Other text"); var before = circle.Goals;
+        Assert.Throws<ArgumentOutOfRangeException>("progressPercent", () => circle.UpdateSharedGoalProgress(goal.Id, invalid));
+        Assert.Same(before, circle.Goals); Assert.Same(other, circle.Goals[1]);
+        Assert.Equal(45, circle.Goals[0].ProgressPercent); Assert.Equal("Keep text", circle.Goals[0].Text);
+        Assert.Equal(0, other.ProgressPercent);
+    }
+
+    [Theory]
+    [InlineData("empty")]
+    [InlineData("unknown")]
+    [InlineData("foreign")]
+    [InlineData("circle-id")]
+    public void InvalidGoalReference_CannotUpdateProgressOrCreateGoals(string defect)
+    {
+        var circle = Create(); var goal = circle.CreateSharedGoal("Local");
+        circle.UpdateSharedGoalProgress(goal.Id, 100);
+        var other = Create(); var foreign = other.CreateSharedGoal("Foreign");
+        var before = circle.Goals; var otherBefore = other.Goals;
+        var id = defect switch
+        {
+            "empty" => Guid.Empty, "foreign" => foreign.Id, "circle-id" => circle.Id, _ => Guid.NewGuid()
+        };
+        if (defect == "empty")
+            Assert.Throws<ArgumentException>("goalId", () => circle.UpdateSharedGoalProgress(id, 30));
+        else Assert.Throws<KeyNotFoundException>(() => circle.UpdateSharedGoalProgress(id, 30));
+        Assert.Same(before, circle.Goals); Assert.Same(otherBefore, other.Goals);
+        Assert.Equal(100, Assert.Single(circle.Goals).ProgressPercent);
+        Assert.Equal(0, foreign.ProgressPercent);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("\t\r\n")]
+    public void InvalidTextEdit_DoesNotResetExistingProgress(string? invalid)
+    {
+        var circle = Create(); var goal = circle.CreateSharedGoal("Keep text");
+        circle.UpdateSharedGoalProgress(goal.Id, 75); var before = circle.Goals;
+        Assert.Throws<ArgumentException>("text", () => circle.EditSharedGoal(goal.Id, invalid!));
+        Assert.Same(before, circle.Goals);
+        Assert.Equal(75, Assert.Single(circle.Goals).ProgressPercent);
+        Assert.Equal("Keep text", circle.Goals[0].Text);
+    }
+
+    [Fact]
+    public void NewGoalsStartAtZeroWithoutResettingOtherGoalsOrSharingStateByCircleId()
+    {
+        var circle = Create(); var goal = circle.CreateSharedGoal("Existing");
+        var completedReport = circle.UpdateSharedGoalProgress(goal.Id, 100);
+        var other = new LearningCircle(circle.Id); var otherGoal = other.CreateSharedGoal("Independent");
+        var next = circle.CreateSharedGoal("New goal");
+        Assert.Equal(0, next.ProgressPercent); Assert.Equal(100, completedReport.ProgressPercent);
+        Assert.Same(completedReport, circle.Goals[0]); Assert.Equal(0, otherGoal.ProgressPercent);
+        Assert.Same(otherGoal, Assert.Single(other.Goals));
+        Assert.Throws<KeyNotFoundException>(() => other.UpdateSharedGoalProgress(goal.Id, 90));
+        Assert.Equal(100, circle.Goals[0].ProgressPercent);
     }
 }

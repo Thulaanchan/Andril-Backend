@@ -168,11 +168,22 @@ public interface IChatConversationAccessEvidenceReader
 }
 ```
 
-### 4.3 Evidence Lifetime & Revocation Expectations
-- **TTL Limit:** Maximum evidence lifetime must not exceed **60 seconds**.
-- **Real-Time Revocation:** Upon an unmatch event, user block, or profile deactivation in M5:
-  - Active conversation participation tokens must be invalidated immediately.
-  - Downstream message dispatch must reject subsequent write attempts.
+### 4.3 Evidence Lifetime & Revocation Expectations (PROPOSED — PENDING M4/M6 CONTRACT APPROVAL)
+
+The mechanism for enforcing evidence freshness and prompt revocation remains under evaluation between M4, M5, and M6. The project boundaries are defined as follows:
+
+1. **Required Product / Security Outcome:**
+   - A user who revokes consent, unmatches, or blocks **MUST** lose communication authorization promptly.
+   - No unauthorized communication may occur after relationship termination, profile deactivation, or privacy revocation.
+
+2. **Proposed Mechanisms (Pending Evaluation & Architecture Decision):**
+   - **Option A (Event-Based Invalidation):** Immediate invalidation of active conversation participation tokens via message broker or domain events (e.g., `SocialUnmatchedDomainEvent`, `ProfileBlockedDomainEvent`).
+   - **Option B (Short-Lived Evidence Cache):** Short-lived access evidence with a constrained lifetime (e.g., proposed 60-second TTL, pending performance, load, and security evaluation).
+   - **Option C (Per-Message Synchronous Check):** Real-time synchronous verification of account standing, blocks, and mutual match status on every message dispatch.
+
+3. **Actual Verified Mechanism (Current Implementation):**
+   - The only currently implemented and verified mechanism in the codebase is `DenyAllChatAccessAuthorizer`, which denies all communication requests unconditionally (`null` actor).
+   - Authoritative communication access adapters remain pending live database activation and M4/M6 contract ratification.
 
 ---
 
