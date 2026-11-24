@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using Andril.Social.Personality;
 using Xunit;
 
@@ -183,5 +184,120 @@ public sealed class PersonalityArchetypeClassifierTests
 
         Assert.Equal(r1.Archetype?.Id, r2.Archetype?.Id);
         Assert.Equal(r1.IsSuccess, r2.IsSuccess);
+    }
+
+    [Theory]
+    [InlineData(" 1 ")]
+    [InlineData("+1")]
+    [InlineData("001")]
+    [InlineData("1.0")]
+    [InlineData("secret-injection")]
+    public void Classify_NonCanonicalOptionValue_FailsClosedWithoutDisclosure(string nonCanonicalOption)
+    {
+        var answers = CreateAnswers();
+        answers[0] = new QuestionnaireAnswer("q01", nonCanonicalOption);
+
+        var result = PersonalityArchetypeClassifier.Classify(answers, "v1", "rev-1");
+
+        Assert.False(result.IsSuccess);
+        Assert.Contains("Invalid option value", result.ErrorMessage);
+        Assert.DoesNotContain(nonCanonicalOption, result.ErrorMessage);
+    }
+
+    [Fact]
+    public void Classify_VoluntaryConfirmation_IgnoredWhenRevisionIsMissingOrWhitespace()
+    {
+        var answers = CreateAnswers(); // all 3s
+        var confirmation = new PersonalityArchetypeConfirmation(
+            "rev-1",
+            SocialConfirmation: SocialEngagementTendency.Outgoing,
+            CommunicationConfirmation: CommunicationTendency.Expressive,
+            PlanningConfirmation: PlanningTendency.Structured);
+
+        var resultNullRev = PersonalityArchetypeClassifier.Classify(answers, "v1", null, confirmation);
+        var resultEmptyRev = PersonalityArchetypeClassifier.Classify(answers, "v1", "   ", confirmation);
+
+        Assert.False(resultNullRev.IsSuccess);
+        Assert.True(resultNullRev.HasUnresolvedAxes);
+        Assert.False(resultEmptyRev.IsSuccess);
+        Assert.True(resultEmptyRev.HasUnresolvedAxes);
+    }
+
+    [Fact]
+    public void Classify_InvalidConfirmationEnumValue_FailsClosed()
+    {
+        var answers = CreateAnswers(); // all 3s
+        var invalidSocial = new PersonalityArchetypeConfirmation("rev-1", SocialConfirmation: (SocialEngagementTendency)999);
+        var invalidComm = new PersonalityArchetypeConfirmation("rev-1", CommunicationConfirmation: (CommunicationTendency)999);
+        var invalidPlan = new PersonalityArchetypeConfirmation("rev-1", PlanningConfirmation: (PlanningTendency)999);
+
+        var resultSocial = PersonalityArchetypeClassifier.Classify(answers, "v1", "rev-1", invalidSocial);
+        var resultComm = PersonalityArchetypeClassifier.Classify(answers, "v1", "rev-1", invalidComm);
+        var resultPlan = PersonalityArchetypeClassifier.Classify(answers, "v1", "rev-1", invalidPlan);
+
+        Assert.False(resultSocial.IsSuccess);
+        Assert.Contains("undefined value", resultSocial.ErrorMessage);
+        Assert.False(resultComm.IsSuccess);
+        Assert.Contains("undefined value", resultComm.ErrorMessage);
+        Assert.False(resultPlan.IsSuccess);
+        Assert.Contains("undefined value", resultPlan.ErrorMessage);
+    }
+
+    [Fact]
+    public void Result_ToString_ProtectsInternalDetails()
+    {
+        var answers = CreateAnswers();
+        var unresolvedResult = PersonalityArchetypeClassifier.Classify(answers, "v1", "rev-1");
+        var failedResult = PersonalityArchetypeClassifier.Classify(null, "v1", "rev-1");
+
+        Assert.Equal("PersonalityArchetypeClassificationResult [incomplete]", unresolvedResult.ToString());
+        Assert.Equal("PersonalityArchetypeClassificationResult [incomplete]", failedResult.ToString());
+    }
+
+    [Fact]
+    public void Result_Serialization_HidesPrivateAxesAndDiagnostics()
+    {
+        var answers = CreateAnswers(q01: 5, q07: 5, q09: 5, q03: 5, q05: 5, q06: 5, q10: 5);
+        var result = PersonalityArchetypeClassifier.Classify(answers, "v1", "rev-1");
+
+        var json = JsonSerializer.Serialize(result);
+
+        Assert.Contains("Archetype", json);
+        Assert.DoesNotContain("SocialTendency", json);
+        Assert.DoesNotContain("CommunicationTendency", json);
+        Assert.DoesNotContain("PlanningTendency", json);
+        Assert.DoesNotContain("UnresolvedAxes", json);
+        Assert.DoesNotContain("ErrorMessage", json);
+    }
+
+    [Fact]
+    public void Confirmation_ToString_And_Serialization_ConcealsConfidentialData()
+    {
+        var confirmation = new PersonalityArchetypeConfirmation(
+            "confidential-revision-token-999",
+            SocialConfirmation: SocialEngagementTendency.Outgoing,
+            CommunicationConfirmation: CommunicationTendency.Expressive,
+            PlanningConfirmation: PlanningTendency.Structured);
+
+        var repr = confirmation.ToString();
+        var json = JsonSerializer.Serialize(confirmation);
+
+        Assert.Equal("PersonalityArchetypeConfirmation [private]", repr);
+        Assert.DoesNotContain("confidential-revision-token-999", repr);
+        Assert.DoesNotContain("confidential-revision-token-999", json);
+        Assert.DoesNotContain("Outgoing", json);
+    }
+
+    [Fact]
+    public void Result_UnresolvedAxes_IsDefensivelyCopied()
+    {
+        var axes = new List<string> { "SocialEngagement", "Communication" };
+        var result = PersonalityArchetypeClassificationResult.Unresolved(
+            null, null, PlanningTendency.Structured, axes);
+
+        axes.Add("Planning");
+
+        Assert.Equal(2, result.UnresolvedAxes.Count);
+        Assert.DoesNotContain("Planning", result.UnresolvedAxes);
     }
 }
