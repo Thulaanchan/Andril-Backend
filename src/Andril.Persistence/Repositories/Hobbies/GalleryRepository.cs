@@ -1,13 +1,15 @@
 
-using System.Data;
+using System.Transactions;
+using Andril.Hobbies.DTOs;
 using Andril.Hobbies.Entities;
 using Andril.Hobbies.Interfaces;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 
 namespace Andril.Persistence.Repositories.Hobbies;
 
 public sealed class GalleryRepository<TDbContext>
-    : IGalleryRepository
+    : IGalleryRepository, IGalleryPageRepository
     where TDbContext : DbContext
 {
     private const string HobbiesModule = "Hobbies";
@@ -36,6 +38,50 @@ public sealed class GalleryRepository<TDbContext>
                 !x.IsDeleted)
             .OrderByDescending(x => x.CreatedAtUtc)
             .ToListAsync(cancellationToken);
+    }
+
+    Task<GalleryPage> IGalleryPageRepository.GetOwnerGalleryPageAsync(
+        Guid authorizedOwnerModuleProfileId, int pageSize, int trustedTestOnlyMaximum,
+        GalleryPagePosition? after, CancellationToken cancellationToken) =>
+        GetOwnerGalleryPageAsync(authorizedOwnerModuleProfileId, pageSize, trustedTestOnlyMaximum, after, cancellationToken);
+
+    // Offline-only additive operation. Not exposed through IGalleryRepository or runtime callers.
+    // A future protected caller must freshly authorize the owner on EVERY page request.
+    // trustedTestOnlyMaximum is supplied by offline tests, not an approved Product limit.
+    internal async Task<GalleryPage> GetOwnerGalleryPageAsync(
+        Guid authorizedOwnerModuleProfileId,
+        int pageSize,
+        int trustedTestOnlyMaximum,
+        GalleryPagePosition? after = null,
+        CancellationToken cancellationToken = default)
+    {
+        GalleryPaging.Validate(authorizedOwnerModuleProfileId, pageSize, trustedTestOnlyMaximum, after, cancellationToken);
+
+        var query = _context.Set<GalleryMedia>().AsNoTracking().Where(media =>
+            media.OwnerModuleProfileId == authorizedOwnerModuleProfileId
+            && media.Module == HobbiesModule && !media.IsDeleted);
+        if (after is not null)
+        {
+            // Preserve the database-returned UTC microsecond position; never round client input.
+            var timestamp = after.Timestamp;
+            var id = after.Id;
+            var fetch = checked(pageSize + 1);
+            var sameTimestamp = query.Where(media => media.CreatedAtUtc == timestamp && media.Id.CompareTo(id) > 0)
+                .OrderByDescending(media => media.CreatedAtUtc).ThenBy(media => media.Id).Take(fetch);
+            var older = query.Where(media => media.CreatedAtUtc < timestamp)
+                .OrderByDescending(media => media.CreatedAtUtc).ThenBy(media => media.Id).Take(fetch);
+            // Disjoint branches retain every possible combined top-fetch row; Concat stays server-side.
+            query = sameTimestamp.Concat(older);
+        }
+        var fetched = await query.OrderByDescending(media => media.CreatedAtUtc).ThenBy(media => media.Id)
+            .Take(checked(pageSize + 1)).ToListAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        var items = fetched.Take(pageSize).ToArray();
+        var next = fetched.Count > pageSize
+            ? new GalleryPagePosition(authorizedOwnerModuleProfileId, HobbiesModule, items[^1].CreatedAtUtc, items[^1].Id)
+            : null;
+        // Replaying a valid position is a read, not a consumed token. No authorization is cached.
+        return new GalleryPage(Array.AsReadOnly(items), next);
     }
 
     public async Task<GalleryMedia?> GetOwnedByIdAsync(
@@ -132,9 +178,34 @@ public sealed class GalleryRepository<TDbContext>
             return false;
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var tracker = _context.ChangeTracker;
+        tracker.DetectChanges();
+        if (tracker.HasChanges())
+            throw new InvalidOperationException("The Gallery context contains pending changes.");
+
+        // Leave caller-owned instances untouched and avoid EF identity conflicts or stale reads.
+        if (tracker.Entries<GalleryPreferences>().Any(entry =>
+            entry.Entity.OwnerModuleProfileId == ownerModuleProfileId))
+        {
+            throw new InvalidOperationException("The owner's Gallery preferences are already tracked.");
+        }
+
+        var database = _context.Database;
+        if (database.CurrentTransaction is not null || Transaction.Current is not null
+            || database.GetEnlistedTransaction() is not null)
+        {
+            throw new InvalidOperationException("Cover selection requires its own transaction.");
+        }
+        // An outer EF strategy can also retry the entire operation.
+        if (ExecutionStrategy.Current?.RetriesOnFailure == true
+            || database.CreateExecutionStrategy().RetriesOnFailure)
+            throw new InvalidOperationException("Cover selection requires a non-retrying execution strategy.");
+
         await using var transaction =
-            await _context.Database.BeginTransactionAsync(
-                IsolationLevel.Serializable,
+            await database.BeginTransactionAsync(
+                System.Data.IsolationLevel.Serializable,
                 cancellationToken);
 
         var mediaExists = await _context.Set<GalleryMedia>()
@@ -151,31 +222,41 @@ public sealed class GalleryRepository<TDbContext>
 
         var preferences = await _context
             .Set<GalleryPreferences>()
+            .AsNoTracking()
             .SingleOrDefaultAsync(
                 x =>
                     x.OwnerModuleProfileId == ownerModuleProfileId,
                 cancellationToken);
 
-        if (preferences is null)
+        var isNew = preferences is null;
+        preferences ??= new GalleryPreferences
         {
-            preferences = new GalleryPreferences
+            OwnerModuleProfileId = ownerModuleProfileId,
+            CoverMediaId = mediaId
+        };
+
+        var entry = _context.Entry(preferences);
+        try
+        {
+            if (isNew)
             {
-                OwnerModuleProfileId = ownerModuleProfileId,
-                CoverMediaId = mediaId
-            };
+                entry.State = EntityState.Added;
+            }
+            else if (preferences.CoverMediaId != mediaId)
+            {
+                entry.State = EntityState.Unchanged;
+                var cover = entry.Property(preference => preference.CoverMediaId);
+                cover.CurrentValue = mediaId;
+                cover.IsModified = true;
+            }
 
-            _context.Set<GalleryPreferences>()
-                .Add(preferences);
+            await _context.SaveChangesAsync(cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return true;
         }
-        else
+        finally
         {
-            preferences.CoverMediaId = mediaId;
+            entry.State = EntityState.Detached;
         }
-
-        await _context.SaveChangesAsync(cancellationToken);
-
-        await transaction.CommitAsync(cancellationToken);
-
-        return true;
     }
 }

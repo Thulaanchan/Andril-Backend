@@ -187,7 +187,7 @@ public sealed class StarterModuleEndpointTests
             new("test-privacy", "https://policy.test/privacy", "en"), new("test-guidelines", "https://policy.test/guidelines", "en"));
         internal Store(int age = 18)
         {
-            Demographics = AccountDemographics.Create(Account.Id, new(2026 - age, 11, 15), "private-test-gender", Clock.Now);
+            Demographics = AccountDemographics.Create(Account.Id, new(2026 - age, 11, 15), "other", Clock.Now);
             Policies.Add(AccountPolicyRecord.Create(Account.Id, PolicyActions.TermsAgreed, "test-terms", Clock.Now));
             Policies.Add(AccountPolicyRecord.Create(Account.Id, PolicyActions.PrivacyAcknowledged, "test-privacy", Clock.Now));
         }

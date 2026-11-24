@@ -145,7 +145,7 @@ public sealed class StarterModulePersistenceTests
     {
         await using var db = database.Open();
         var account = await new AccountRepository(db).GetOrCreateAsync(Guid.NewGuid(), Now);
-        await new AccountDemographicsRepository(db).SaveAsync(account.Id, new(2008, 11, 15), "test", Now);
+        await new AccountDemographicsRepository(db).SaveAsync(account.Id, new(2008, 11, 15), "other", Now);
         await new AccountPolicyRepository(db).AppendAsync(account.Id,
             [new(PolicyActions.TermsAgreed, "test-terms"), new(PolicyActions.PrivacyAcknowledged, "test-privacy")], Now);
         return account;

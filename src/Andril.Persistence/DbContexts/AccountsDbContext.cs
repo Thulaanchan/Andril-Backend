@@ -1,4 +1,5 @@
 using Andril.Common.Accounts;
+using Andril.Common.Entities;
 using Andril.Common.Accounts.Preferences;
 using Andril.Common.Accounts.Eligibility;
 using Andril.Persistence.Configurations;
@@ -15,6 +16,8 @@ public sealed class AccountsDbContext(DbContextOptions<AccountsDbContext> option
     public DbSet<Andril.Common.Accounts.Policies.AccountPolicyRecord> PolicyRecords => Set<Andril.Common.Accounts.Policies.AccountPolicyRecord>();
     public DbSet<Andril.Common.Accounts.StarterModules.StarterMembership> StarterMemberships => Set<Andril.Common.Accounts.StarterModules.StarterMembership>();
 
+    public DbSet<PrivateProfilePhoto> PrivateProfilePhotos => Set<PrivateProfilePhoto>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         modelBuilder.ApplyConfiguration(new AccountConfiguration());
@@ -23,5 +26,9 @@ public sealed class AccountsDbContext(DbContextOptions<AccountsDbContext> option
         modelBuilder.ApplyConfiguration(new AccountPolicyRecordConfiguration());
         modelBuilder.ApplyConfiguration(new StarterMembershipConfiguration());
         modelBuilder.ApplyConfiguration(new PrivateModuleProfileConfiguration());
+        modelBuilder.ApplyConfiguration(new PrivateProfilePhotoConfiguration());
+        modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleConfiguration());
+        modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleReceiptConfiguration());
+        modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleAuditConfiguration());
     }
 }

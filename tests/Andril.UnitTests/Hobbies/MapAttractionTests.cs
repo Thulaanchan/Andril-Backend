@@ -10,6 +10,49 @@ public sealed class MapAttractionTests
     private static readonly Guid AttractionId =
         Guid.Parse("33333333-3333-4333-8333-333333333333");
 
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(12, 25)]
+    [InlineData(int.MaxValue, 100)]
+    public void DiscoveryQuery_PreservesValidBounds(int offset, int limit)
+    {
+        var query = new MapAttractionDiscoveryQuery(offset, limit);
+
+        Assert.Equal(offset, query.Offset);
+        Assert.Equal(limit, query.Limit);
+    }
+
+    [Theory]
+    [InlineData(-1, 1, "offset")]
+    [InlineData(0, 0, "limit")]
+    [InlineData(0, -1, "limit")]
+    [InlineData(0, 101, "limit")]
+    public void DiscoveryQuery_RejectsInvalidBounds(int offset, int limit, string parameter)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(parameter,
+            () => new MapAttractionDiscoveryQuery(offset, limit));
+    }
+
+    [Fact]
+    public void DiscoveryModels_HaveImmutableCanonicalShape()
+    {
+        var queryType = typeof(MapAttractionDiscoveryQuery);
+        var itemType = typeof(MapAttractionDiscoveryItem);
+        foreach (var type in new[] { queryType, itemType })
+        {
+            Assert.True(type.IsSealed);
+            Assert.Empty(type.GetFields(BindingFlags.Public | BindingFlags.Instance));
+            Assert.All(type.GetProperties(), property => Assert.Null(property.SetMethod));
+        }
+
+        var item = new MapAttractionDiscoveryItem(AttractionId, "Synthetic attraction", 7.5, -80.5);
+        Assert.Equal(4, itemType.GetProperties().Length);
+        Assert.Equal(AttractionId, item.AttractionId);
+        Assert.Equal("Synthetic attraction", item.Name);
+        Assert.Equal(7.5, item.Latitude);
+        Assert.Equal(-80.5, item.Longitude);
+    }
+
     [Fact]
     public void Create_ValidInputs_PreservesOriginalValues()
     {

@@ -11,6 +11,7 @@ public sealed class GalleryService : IGalleryService
 
     private readonly IGalleryRepository _repository;
     private readonly IGalleryActorContext _actorContext;
+    private readonly IGalleryPageRepository? _pages;
 
     public GalleryService(
         IGalleryRepository repository,
@@ -21,6 +22,42 @@ public sealed class GalleryService : IGalleryService
 
         _actorContext = actorContext
             ?? throw new ArgumentNullException(nameof(actorContext));
+    }
+
+    // Explicit offline construction only; existing runtime registration and constructor are unchanged.
+    public GalleryService(IGalleryRepository repository, IGalleryActorContext actorContext,
+        IGalleryPageRepository pages) : this(repository, actorContext)
+    {
+        _pages = pages ?? throw new ArgumentNullException(nameof(pages));
+    }
+
+    // Deliberately absent from IGalleryService and HTTP contracts until runtime integration is approved.
+    internal async Task<GalleryPhotoPage> GetMinePageAsync(int pageSize, int trustedTestOnlyMaximum,
+        GalleryPagePosition? after = null, CancellationToken cancellationToken = default)
+    {
+        var ownerId = RequireActiveHobbiesProfile();
+        GalleryPaging.Validate(ownerId, pageSize, trustedTestOnlyMaximum, after, cancellationToken);
+        if (_pages is null)
+            throw new InvalidOperationException("Offline Gallery paging is not configured.");
+        try
+        {
+            var page = await _pages.GetOwnerGalleryPageAsync(ownerId, pageSize,
+                trustedTestOnlyMaximum, after, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            // Reject an invalid port result as a whole; never return foreign metadata or continuation.
+            if (page.Items.Count > pageSize || page.Items.Any(item => !IsAccessible(item, ownerId)))
+                throw new InvalidOperationException();
+            GalleryPaging.Validate(ownerId, pageSize, trustedTestOnlyMaximum, page.Next, cancellationToken);
+            var coverId = await _repository.GetCoverIdAsync(ownerId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            return new GalleryPhotoPage(Array.AsReadOnly(page.Items.Select(item => ToDto(item, coverId)).ToArray()), page.Next);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception)
+        {
+            // This offline boundary has no public error contract. Never return provider/private details.
+            throw new InvalidOperationException("Gallery page retrieval is unavailable.");
+        }
     }
 
     private Guid RequireActiveHobbiesProfile()
@@ -75,14 +112,17 @@ public sealed class GalleryService : IGalleryService
         CancellationToken cancellationToken = default)
     {
         var ownerId = RequireActiveHobbiesProfile();
+        cancellationToken.ThrowIfCancellationRequested();
 
         var media = await _repository.GetOwnerGalleryAsync(
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         var coverId = await _repository.GetCoverIdAsync(
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         return media
             .Where(item => IsAccessible(item, ownerId))
@@ -95,6 +135,7 @@ public sealed class GalleryService : IGalleryService
         CancellationToken cancellationToken = default)
     {
         var ownerId = RequireActiveHobbiesProfile();
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (mediaId == Guid.Empty)
             return null;
@@ -103,6 +144,7 @@ public sealed class GalleryService : IGalleryService
             mediaId,
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (!IsAccessible(media, ownerId))
             return null;
@@ -110,6 +152,7 @@ public sealed class GalleryService : IGalleryService
         var coverId = await _repository.GetCoverIdAsync(
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         return ToDto(media!, coverId);
     }
@@ -120,6 +163,7 @@ public sealed class GalleryService : IGalleryService
         CancellationToken cancellationToken = default)
     {
         var ownerId = RequireActiveHobbiesProfile();
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (mediaId == Guid.Empty)
             return false;
@@ -135,15 +179,18 @@ public sealed class GalleryService : IGalleryService
             mediaId,
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (!IsAccessible(media, ownerId))
             return false;
 
-        return await _repository.UpdateTitleAsync(
+        var updated = await _repository.UpdateTitleAsync(
             mediaId,
             ownerId,
             title.Trim(),
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return updated;
     }
 
     public async Task<bool> SelectCoverAsync(
@@ -151,6 +198,7 @@ public sealed class GalleryService : IGalleryService
         CancellationToken cancellationToken = default)
     {
         var ownerId = RequireActiveHobbiesProfile();
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (mediaId == Guid.Empty)
             return false;
@@ -159,13 +207,16 @@ public sealed class GalleryService : IGalleryService
             mediaId,
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (!IsAccessible(media, ownerId))
             return false;
 
-        return await _repository.SetCoverAsync(
+        var selected = await _repository.SetCoverAsync(
             mediaId,
             ownerId,
             cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return selected;
     }
 }

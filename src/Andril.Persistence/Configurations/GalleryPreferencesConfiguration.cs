@@ -11,6 +11,8 @@ public sealed class GalleryPreferencesConfiguration
     public void Configure(
         EntityTypeBuilder<GalleryPreferences> builder)
     {
+        builder.ToTable("GalleryPreferences", HobbiesDatabaseOptions.Schema);
+
         // One gallery preference record per Hobbies profile.
         builder.HasKey(
             preferences => preferences.OwnerModuleProfileId);

@@ -118,7 +118,7 @@ public sealed class StarterModuleTests
         await Assert.ThrowsAsync<StarterModuleIneligibleException>(() => fixture.Service.SelectAsync("social", true));
         fixture.Now = new(2026, 11, 15, 0, 0, 0, TimeSpan.Zero);
         Assert.True((await fixture.Service.GetAsync()).Modules.Single(x => x.Module == "social").AgeEligible);
-        fixture.BeforeSelect = () => fixture.Demographics = AccountDemographics.Create(fixture.Account.Id, new(2011, 11, 15), "test", fixture.Now);
+        fixture.BeforeSelect = () => fixture.Demographics = AccountDemographics.Create(fixture.Account.Id, new(2011, 11, 15), "other", fixture.Now);
         await Assert.ThrowsAsync<StarterModuleIneligibleException>(() => fixture.Service.SelectAsync("social", true));
         Assert.Null(fixture.Membership);
     }
@@ -156,7 +156,7 @@ public sealed class StarterModuleTests
         internal Fixture(int age = 18)
         {
             Account = Account.Create(Guid.NewGuid(), Now);
-            Demographics = AccountDemographics.Create(Account.Id, new(2026 - age, 11, 15), "test", Now);
+            Demographics = AccountDemographics.Create(Account.Id, new(2026 - age, 11, 15), "other", Now);
             Policies.Add(AccountPolicyRecord.Create(Account.Id, PolicyActions.TermsAgreed, "test-terms", Now));
             Policies.Add(AccountPolicyRecord.Create(Account.Id, PolicyActions.PrivacyAcknowledged, "test-privacy", Now));
         }

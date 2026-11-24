@@ -1,5 +1,7 @@
 
+using Andril.Economy.FlightPoints;
 using Andril.Hobbies.Map.Contributions;
+using Andril.Hobbies.Map.Places;
 using Andril.Persistence.Configurations;
 using Microsoft.EntityFrameworkCore;
 
@@ -24,6 +26,21 @@ public sealed class HobbiesMapDbContext : DbContext
         CaptureSessions =>
             Set<MapContributionCaptureSession>();
 
+    /// <summary>
+    /// Canonical Map attraction records.
+    /// </summary>
+    public DbSet<MapAttraction> MapAttractions => Set<MapAttraction>();
+
+    /// <summary>
+    /// Private Map contribution records.
+    /// </summary>
+    public DbSet<MapContribution> MapContributions => Set<MapContribution>();
+
+    /// <summary>
+    /// Hobbies Flight Points ledger entries.
+    /// </summary>
+    public DbSet<FlightPointsLedgerEntry> FlightPointsLedgerEntries => Set<FlightPointsLedgerEntry>();
+
     protected override void OnModelCreating(
         ModelBuilder modelBuilder)
     {
@@ -31,5 +48,14 @@ public sealed class HobbiesMapDbContext : DbContext
 
         modelBuilder.ApplyConfiguration(
             new MapContributionCaptureSessionConfiguration());
+
+        modelBuilder.ApplyConfiguration(
+            new MapAttractionConfiguration());
+
+        modelBuilder.ApplyConfiguration(
+            new MapContributionConfiguration());
+
+        modelBuilder.ApplyConfiguration(
+            new FlightPointsLedgerEntryConfiguration());
     }
 }

@@ -48,7 +48,6 @@ public sealed class StarterModuleService(ICurrentUser user, IAccountRepository a
         {
             try
             {
-                GenderInputPolicy.Normalize(demographics.Gender);
                 age = AgeEligibilityPolicy.Evaluate(demographics.DateOfBirth, DateOnly.FromDateTime(now.UtcDateTime));
                 complete = true;
             }

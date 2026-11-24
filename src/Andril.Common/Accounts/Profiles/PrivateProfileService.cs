@@ -19,7 +19,14 @@ public sealed class PrivateProfileService(ICurrentUser user, IOnboardingIdentity
     public Task<PrivateProfileDto> UpdateAsync(string module, ProfileEdit edit, CancellationToken cancellationToken = default) =>
         Execute(module, false, cancellationToken, DisplayNames.Validate(edit));
 
-    private async Task<PrivateProfileDto> Execute(string module, bool create, CancellationToken ct, ProfileEdit? edit = null)
+    public async Task<T> WithAuthorizedProfileAsync<T>(string module, Func<PrivateProfileDto, Task<T>> action, CancellationToken cancellationToken)
+    {
+        var (accountId, validate) = await AuthorizeAsync(module, cancellationToken);
+        return await repository.WithAuthorizedProfileAsync(accountId, module, validate,
+            profile => action(ToDto(profile, accountId, module)), cancellationToken);
+    }
+
+    private async Task<(Guid AccountId, Action<StarterModuleState> Validate)> AuthorizeAsync(string module, CancellationToken ct)
     {
         if (!user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty)
             throw new AccountAuthenticationRequiredException();
@@ -36,7 +43,6 @@ public sealed class PrivateProfileService(ICurrentUser user, IOnboardingIdentity
             ModuleAgeEligibility age;
             try
             {
-                GenderInputPolicy.Normalize(demographics.Gender);
                 age = AgeEligibilityPolicy.Evaluate(demographics.DateOfBirth, DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime));
             }
             catch (EligibilityValidationException) { throw new ProfileAccessDeniedException(); }
@@ -47,11 +53,22 @@ public sealed class PrivateProfileService(ICurrentUser user, IOnboardingIdentity
                 || !state.Policies.Any(x => x.AccountId == account.Id && x.Action == PolicyActions.PrivacyAcknowledged && x.Version == current.Privacy.Version))
                 throw new ProfileAccessDeniedException();
         }
-        var profile = edit is not null ? await repository.UpdateAsync(account.Id, module, edit, Validate, ct)
-            : create ? await repository.GetOrCreateAsync(account.Id, module, Validate, clock, ct)
-            : await repository.ReadAsync(account.Id, module, Validate, ct);
+        return (account.Id, Validate);
+    }
+
+    private async Task<PrivateProfileDto> Execute(string module, bool create, CancellationToken ct, ProfileEdit? edit = null)
+    {
+        var (accountId, validate) = await AuthorizeAsync(module, ct);
+        var profile = edit is not null ? await repository.UpdateAsync(accountId, module, edit, validate, ct)
+            : create ? await repository.GetOrCreateAsync(accountId, module, validate, clock, ct)
+            : await repository.ReadAsync(accountId, module, validate, ct);
+        return ToDto(profile, accountId, module);
+    }
+
+    private static PrivateProfileDto ToDto(PrivateModuleProfile? profile, Guid accountId, string module)
+    {
         if (profile is null) throw new ProfileMissingException();
-        if (profile.AccountId != account.Id || profile.Module != module || profile.Id == Guid.Empty)
+        if (profile.AccountId != accountId || profile.Module != module || profile.Id == Guid.Empty)
             throw new ProfileAccessDeniedException();
         return new(profile.Id, profile.Module, profile.CreatedAtUtc) { DisplayName = profile.DisplayName, Bio = profile.Bio, Visibility = profile.Visibility };
     }

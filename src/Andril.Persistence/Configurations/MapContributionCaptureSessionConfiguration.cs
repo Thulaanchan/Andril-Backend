@@ -17,7 +17,7 @@ public sealed class MapContributionCaptureSessionConfiguration
     {
         // Table and database-level validation constraints.
         builder.ToTable(
-            "map_contribution_capture_sessions",
+            "map_contribution_capture_sessions", HobbiesDatabaseOptions.Schema,
             table =>
             {
                 table.HasCheckConstraint(
@@ -43,6 +43,13 @@ public sealed class MapContributionCaptureSessionConfiguration
 
         // Primary key.
         builder.HasKey(session => session.SessionId);
+
+        builder.HasAlternateKey(session => new
+        {
+            session.SessionId,
+            session.OwnerHobbiesModuleProfileId,
+            session.AttractionId
+        }).HasName("ak_map_capture_session_scope");
 
         builder.Property(session => session.SessionId)
             .HasColumnName("session_id")
