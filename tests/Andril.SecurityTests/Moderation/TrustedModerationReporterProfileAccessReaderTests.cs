@@ -285,6 +285,129 @@ public sealed class TrustedModerationReporterProfileAccessReaderTests
                 cancellation.Token));
     }
 
+    // STEP 61 PHASE A: Offline exception characterization tests.
+    // These tests do not approve final public HTTP classifications.
+
+    [Fact]
+    public async Task Step61_OnboardingDependency_FailsClosed()
+    {
+        var f = new Fixture();
+        f.ProfileLookup = (_, _) =>
+            Task.FromException<PrivateProfileDto>(
+                new OnboardingDependencyException());
+
+        Assert.False(await f.Reader.IsAuthorizedReporterAsync(
+            f.StoredAccount.Id, Report()));
+    }
+
+    [Fact]
+    public async Task Step61_ProfileValidation_CurrentlyReturnsFalse()
+    {
+        var f = new Fixture();
+        f.ProfileLookup = (_, _) =>
+            Task.FromException<PrivateProfileDto>(
+                new ProfileValidationException());
+
+        // Characterizes current behavior, not final approved mapping.
+        Assert.False(await f.Reader.IsAuthorizedReporterAsync(
+            f.StoredAccount.Id, Report()));
+    }
+
+    [Fact]
+    public async Task Step61_MissingAccountFromProfileRead_FailsClosed()
+    {
+        var f = new Fixture();
+        f.ProfileLookup = (_, _) =>
+            Task.FromException<PrivateProfileDto>(
+                new Andril.Common.Accounts.StarterModules.StarterModuleAccountMissingException());
+
+        Assert.False(await f.Reader.IsAuthorizedReporterAsync(
+            f.StoredAccount.Id, Report()));
+    }
+
+    [Fact]
+    public async Task Step61_SyntheticIneligibleException_FailsClosed()
+    {
+        var f = new Fixture();
+        f.ProfileLookup = (_, _) =>
+            Task.FromException<PrivateProfileDto>(
+                new Andril.Common.Accounts.StarterModules.StarterModuleIneligibleException());
+
+        // A mock does NOT establish real-service reachability.
+        Assert.False(await f.Reader.IsAuthorizedReporterAsync(
+            f.StoredAccount.Id, Report()));
+    }
+
+    [Fact]
+    public async Task Step61_AccountStoreUnavailable_Propagates()
+    {
+        var f = new Fixture();
+        f.AccountLookup = (_, _) =>
+            Task.FromException<Account?>(
+                new AccountStoreUnavailableException());
+
+        await Assert.ThrowsAsync<AccountStoreUnavailableException>(
+            () => f.Reader.IsAuthorizedReporterAsync(
+                f.StoredAccount.Id, Report()));
+
+        Assert.Equal(0, f.ProfileCalls);
+    }
+
+    [Fact]
+    public async Task Step61_ProfileStoreUnavailable_Propagates()
+    {
+        var f = new Fixture();
+        f.ProfileLookup = (_, _) =>
+            Task.FromException<PrivateProfileDto>(
+                new AccountStoreUnavailableException());
+
+        await Assert.ThrowsAsync<AccountStoreUnavailableException>(
+            () => f.Reader.IsAuthorizedReporterAsync(
+                f.StoredAccount.Id, Report()));
+    }
+
+    [Fact]
+    public async Task Step61_PolicyConfigurationFault_Propagates()
+    {
+        var f = new Fixture();
+        f.ProfileLookup = (_, _) =>
+            Task.FromException<PrivateProfileDto>(
+                new Andril.Common.Accounts.Policies.PolicyConfigurationException());
+
+        await Assert.ThrowsAsync<
+            Andril.Common.Accounts.Policies.PolicyConfigurationException>(
+            () => f.Reader.IsAuthorizedReporterAsync(
+                f.StoredAccount.Id, Report()));
+    }
+
+    [Fact]
+    public async Task Step61_AccountLookupCancellation_Propagates()
+    {
+        var f = new Fixture();
+        f.AccountLookup = (_, _) =>
+            Task.FromException<Account?>(
+                new OperationCanceledException());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => f.Reader.IsAuthorizedReporterAsync(
+                f.StoredAccount.Id, Report()));
+
+        Assert.Equal(0, f.ProfileCalls);
+    }
+
+    [Fact]
+    public async Task Step61_ProfileLookupCancellation_Propagates()
+    {
+        var f = new Fixture();
+        f.ProfileLookup = (_, _) =>
+            Task.FromException<PrivateProfileDto>(
+                new OperationCanceledException());
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => f.Reader.IsAuthorizedReporterAsync(
+                f.StoredAccount.Id, Report()));
+    }
+
     private sealed class Fixture
     {
         public Account StoredAccount { get; } =
