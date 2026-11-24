@@ -13,6 +13,7 @@ using Xunit;
 
 namespace Andril.IntegrationTests.Lifecycle;
 
+[Collection("ControlledLifecyclePostgreSQL")]
 public sealed class Phase3BAcceptanceTests
 {
     private static ModuleLifecycleCommand Command(string module = "learning", Guid? key = null, long? revision = null) =>

@@ -35,7 +35,7 @@ internal sealed class ModuleLifecycleReceiptConfiguration : IEntityTypeConfigura
         b.ToTable("account_module_lifecycle_receipts", "andril_identity", t =>
         {
             t.HasCheckConstraint("ck_lifecycle_receipt_intent", "intent_hash COLLATE \"C\" ~ '^[0-9A-F]{64}$'");
-            t.HasCheckConstraint("ck_lifecycle_receipt_revision", "revision > 0 AND ((operation = 'activate' AND expected_revision IS NULL) OR (operation = 'reactivate' AND expected_revision IS NOT NULL AND expected_revision > 0 AND expected_revision < 9223372036854775807))");
+            t.HasCheckConstraint("ck_lifecycle_receipt_revision", "revision > 0 AND ((operation = 'activate' AND expected_revision IS NULL) OR (operation = 'reactivate' AND expected_revision IS NOT NULL AND expected_revision > 0 AND expected_revision < 9223372036854775807) OR (operation = 'deactivate' AND expected_revision IS NOT NULL AND expected_revision > 0 AND expected_revision < 9223372036854775807 AND revision = expected_revision + 1))");
             t.HasCheckConstraint("ck_lifecycle_receipt_time", "isfinite(recorded_at_utc) AND isfinite(state_changed_at_utc) AND recorded_at_utc >= state_changed_at_utc");
             t.HasCheckConstraint("ck_lifecycle_receipt_key", "request_key <> '00000000-0000-0000-0000-000000000000'");
         });
@@ -59,7 +59,7 @@ internal sealed class ModuleLifecycleAuditConfiguration : IEntityTypeConfigurati
     {
         b.ToTable("account_module_lifecycle_audit", "andril_identity", t =>
         {
-            t.HasCheckConstraint("ck_lifecycle_audit_transition", "revision > 0 AND ((operation = 'activate' AND previous_state IS NULL AND revision = 1) OR (operation = 'reactivate' AND previous_state IS NOT NULL AND previous_state = 'inactive' AND revision > 1))");
+            t.HasCheckConstraint("ck_lifecycle_audit_transition", "revision > 0 AND ((operation = 'activate' AND previous_state IS NULL AND revision = 1) OR (operation = 'reactivate' AND previous_state IS NOT NULL AND previous_state = 'inactive' AND revision > 1) OR (operation = 'deactivate' AND previous_state IS NOT NULL AND previous_state = 'active' AND revision > 1))");
             t.HasCheckConstraint("ck_lifecycle_audit_time", "isfinite(recorded_at_utc)");
             t.HasCheckConstraint("ck_lifecycle_audit_correlation", "correlation_id <> '00000000-0000-0000-0000-000000000000'");
         });

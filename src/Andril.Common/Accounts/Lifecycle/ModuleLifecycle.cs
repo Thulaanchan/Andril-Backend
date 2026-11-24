@@ -41,7 +41,7 @@ internal abstract class ModuleMembership(ModuleMembershipScope scope, long revis
     public long Revision { get; } = revision;
 }
 
-// Supplied by an offline fixture. The domain has no transition that produces this state.
+// Materialized from storage or produced by the offline deactivation transition.
 internal sealed class InactiveModuleMembership(ModuleMembershipScope scope, long revision)
     : ModuleMembership(scope, revision);
 
@@ -157,7 +157,9 @@ internal enum ModuleLifecycleDenial
     InvalidOptIn,
     IneligibleAge,
     MissingCurrentPolicies,
-    ConflictingTransition
+    ConflictingTransition,
+    MembershipMissing,
+    AlreadyInactive
 }
 
 internal sealed class ModuleLifecycleException(ModuleLifecycleDenial denial) : Exception

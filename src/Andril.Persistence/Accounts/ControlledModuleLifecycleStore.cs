@@ -17,6 +17,14 @@ internal interface IControlledLifecycleAuthority
     Task<LifecycleAuthorityState> ReadAsync(Guid subject, Guid account, string module, CancellationToken cancellationToken);
 }
 
+// Separate synthetic test-host authority. No production eligibility/revocation
+// decision is inferred from activation standing or consent.
+internal interface IControlledDeactivationAuthority
+{
+    Task<ModuleDeactivationEvidence> ReadAsync(Guid subject, ModuleMembershipScope scope,
+        DateTimeOffset databaseTime, CancellationToken cancellationToken);
+}
+
 internal sealed class UnavailableLifecycleAuthority : IControlledLifecycleAuthority
 {
     public Task<LifecycleAuthorityState> ReadAsync(Guid subject, Guid account, string module, CancellationToken cancellationToken) =>
@@ -25,15 +33,17 @@ internal sealed class UnavailableLifecycleAuthority : IControlledLifecycleAuthor
 
 // Deliberately internal and never registered by production startup. The only executable
 // composition lives in the integration test assembly, with a random disposable database.
-internal sealed class ControlledModuleLifecycleStore : IModuleLifecycleStore
+internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivationStore
 {
     private readonly string connection;
     private readonly IOnboardingIdentity identity;
     private readonly IPolicyCatalogProvider policies;
     private readonly IControlledLifecycleAuthority authority;
+    private readonly IControlledDeactivationAuthority? deactivationAuthority;
 
     internal ControlledModuleLifecycleStore(string connection, IOnboardingIdentity identity,
-        IPolicyCatalogProvider policies, IControlledLifecycleAuthority? authority, bool explicitlyOptedIn)
+        IPolicyCatalogProvider policies, IControlledLifecycleAuthority? authority, bool explicitlyOptedIn,
+        IControlledDeactivationAuthority? deactivationAuthority = null)
     {
         var settings = new NpgsqlConnectionStringBuilder(connection);
         if (!explicitlyOptedIn || settings.Host is not ("localhost" or "127.0.0.1" or "::1")
@@ -46,6 +56,7 @@ internal sealed class ControlledModuleLifecycleStore : IModuleLifecycleStore
         this.identity = identity ?? throw new ArgumentNullException(nameof(identity));
         this.policies = policies ?? throw new ArgumentNullException(nameof(policies));
         this.authority = authority ?? new UnavailableLifecycleAuthority();
+        this.deactivationAuthority = deactivationAuthority;
     }
 
     public Task<ModuleLifecycleResult> WriteAsync(Guid subject, string module, Guid requestKey,
@@ -80,31 +91,49 @@ internal sealed class ControlledModuleLifecycleStore : IModuleLifecycleStore
                 || write.Audit is { } a && a.Scope != scope
                 || write.ChangedMembership is { } m && m.Membership.Scope != scope)
                 throw new ModuleLifecycleException(ModuleLifecycleDenial.InvalidScope);
+            var r = write.Receipt;
+            var operation = OperationName(r.Operation);
+            var resultState = ResultState(r.Operation);
+            if (r.Result.Module != module || r.Result.State != resultState || decision.Result != r.Result
+                || (write.ChangedMembership is null) != (write.Audit is null)
+                || write.Audit is { } journal && (journal.Operation != r.Operation || journal.Result != r.Result))
+                throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
             var account = scope.AccountId;
             if (write.ChangedMembership is { } changed)
             {
                 var revision = changed.Membership.Revision;
                 var now = changed.StateChangedAtUtc;
+                var changedState = changed.Membership is InactiveModuleMembership ? "inactive" : "active";
+                if (changedState != resultState || revision != r.Result.Revision || now != r.Result.StateChangedAtUtc
+                    || snapshot.Current is { } previous && changed.FirstActivatedAtUtc != previous.FirstActivatedAtUtc)
+                    throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
                 int rows;
                 if (snapshot.Current is null)
+                {
+                    if (r.Operation != ModuleLifecycleOperation.Activate || revision != 1)
+                        throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
                     rows = await db.Database.ExecuteSqlInterpolatedAsync($"""
                         INSERT INTO andril_identity.account_module_lifecycles
                         (account_id,module,state,revision,first_activated_at_utc,state_changed_at_utc)
                         VALUES ({account},{module},'active',{revision},{now},{now})
                         ON CONFLICT (account_id,module) DO NOTHING
                         """, ct);
+                }
                 else
                 {
                     var oldRevision = snapshot.Current.Membership.Revision;
+                    var oldState = r.Operation == ModuleLifecycleOperation.Deactivate ? "active" : "inactive";
+                    if (r.Operation == ModuleLifecycleOperation.Activate || r.ExpectedRevision != oldRevision
+                        || oldRevision == long.MaxValue || revision != oldRevision + 1
+                        || write.Audit!.PreviousState != oldState)
+                        throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
                     rows = await db.Database.ExecuteSqlInterpolatedAsync($"""
-                        UPDATE andril_identity.account_module_lifecycles SET state='active',revision={revision},state_changed_at_utc={now}
-                        WHERE account_id={account} AND module={module} AND state='inactive' AND revision={oldRevision}
+                        UPDATE andril_identity.account_module_lifecycles SET state={resultState},revision={revision},state_changed_at_utc={now}
+                        WHERE account_id={account} AND module={module} AND state={oldState} AND revision={oldRevision}
                         """, ct);
                 }
                 if (rows != 1) throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
             }
-            var r = write.Receipt;
-            var operation = r.Operation == ModuleLifecycleOperation.Activate ? "activate" : "reactivate";
             await db.Database.ExecuteSqlInterpolatedAsync($"""
                 INSERT INTO andril_identity.account_module_lifecycle_receipts
                 (account_id,module,request_key,operation,expected_revision,intent_hash,revision,state_changed_at_utc,recorded_at_utc)
@@ -148,11 +177,44 @@ internal sealed class ControlledModuleLifecycleStore : IModuleLifecycleStore
             state.RestrictionsAllow, state.SocialOptIn, state.ObservedVersion, state.CurrentVersion, now);
         var row = await db.Set<ModuleLifecycleRow>().AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == account.Id && x.Module == module, ct);
         StoredModuleMembership? current = row is null ? null : new(row.State == "active"
-            ? ActiveModuleMembership.Restore(scope, row.Revision) : new InactiveModuleMembership(scope, row.Revision), row.StateChangedAtUtc);
+            ? ActiveModuleMembership.Restore(scope, row.Revision) : new InactiveModuleMembership(scope, row.Revision), row.StateChangedAtUtc, row.FirstActivatedAtUtc);
         var stored = await db.Set<ModuleLifecycleReceiptRow>().AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == account.Id && x.Module == module && x.RequestKey == key, ct);
         var receipt = stored is null ? null : new ModuleLifecycleReceipt(scope, key,
-            stored.Operation == "activate" ? ModuleLifecycleOperation.Activate : ModuleLifecycleOperation.Reactivate,
-            stored.ExpectedRevision, stored.IntentHash, new(module, stored.Revision, stored.StateChangedAtUtc), stored.RecordedAtUtc);
-        return new(evidence, current, receipt);
+            ParseOperation(stored.Operation), stored.ExpectedRevision, stored.IntentHash,
+            new(module, stored.Revision, stored.StateChangedAtUtc) { State = ResultState(ParseOperation(stored.Operation)) }, stored.RecordedAtUtc);
+        var deactivation = deactivationAuthority is null ? null
+            : await deactivationAuthority.ReadAsync(subject, scope, now, ct);
+        // The store supplies the clock and verifies identity. The synthetic authority
+        // supplies operation-specific standing/version evidence only.
+        if (deactivation is not null)
+            deactivation = deactivation with { EvaluatedAtUtc = now,
+                ConfirmedSubject = identity.IsConfirmedFor(subject) ? deactivation.ConfirmedSubject : Guid.Empty };
+        return new(evidence, current, receipt, deactivation);
     }
+
+    private static string OperationName(ModuleLifecycleOperation operation) => operation switch
+    {
+        ModuleLifecycleOperation.Activate => "activate",
+        ModuleLifecycleOperation.Reactivate => "reactivate",
+        ModuleLifecycleOperation.Deactivate => "deactivate",
+        _ => throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition)
+    };
+
+    private static ModuleLifecycleOperation ParseOperation(string operation) => operation switch
+    {
+        "activate" => ModuleLifecycleOperation.Activate,
+        "reactivate" => ModuleLifecycleOperation.Reactivate,
+        "deactivate" => ModuleLifecycleOperation.Deactivate,
+        _ => throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition)
+    };
+
+    // Journal operation is an immutable state discriminator. Historical constraints
+    // admit only activate/reactivate (both active); deactivate always means inactive.
+    // Reconstructing this avoids redundant columns and any historical-data backfill.
+    private static string ResultState(ModuleLifecycleOperation operation) => operation switch
+    {
+        ModuleLifecycleOperation.Activate or ModuleLifecycleOperation.Reactivate => "active",
+        ModuleLifecycleOperation.Deactivate => "inactive",
+        _ => throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition)
+    };
 }

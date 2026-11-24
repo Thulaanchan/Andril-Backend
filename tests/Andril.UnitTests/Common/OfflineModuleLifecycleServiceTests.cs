@@ -17,6 +17,23 @@ public sealed class OfflineModuleLifecycleServiceTests
     private static readonly ModuleLifecycleCommand Learning = new(ModuleNames.Learning,
         new Guid("55555555-5555-5555-5555-555555555555"), false);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ExplicitLegacyOperationsPreserveV1IntentHashes(bool reactivate)
+    {
+        var fixture = new Fixture();
+        fixture.Store.ReleaseFirstWrite.SetResult();
+        if (reactivate) fixture.SeedInactive("learning", 4);
+        var operation = reactivate ? ModuleLifecycleOperation.Reactivate : ModuleLifecycleOperation.Activate;
+        var command = Learning with { Operation = operation, ExpectedRevision = reactivate ? 4 : null };
+        await fixture.Execute(command);
+        var normalized = reactivate ? "v1\nlearning\nReactivate\n4\nFalse" : "v1\nlearning\nActivate\n-\nFalse";
+        var expected = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(normalized)));
+        Assert.Equal(expected, fixture.Store.Receipts.Values.Single().IntentHash);
+        Assert.Equal("active", (await fixture.Execute(command)).State);
+    }
+
     [Fact]
     public async Task MissingVerifiedSubjectNeverReadsOrWritesLifecycleState()
     {
