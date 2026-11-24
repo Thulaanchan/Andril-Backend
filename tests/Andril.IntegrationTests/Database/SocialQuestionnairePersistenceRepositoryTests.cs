@@ -30,12 +30,12 @@ public sealed class SocialQuestionnairePersistenceRepositoryTests
         return new SocialDbContext(builder.Options);
     }
 
-    private static QuestionnaireResponseEntity CreateTestResponse(Guid profileId, Guid responseId)
+    private static QuestionnaireResponseEntity CreateTestResponse(Guid profileId, Guid responseId, string optionValue = "3")
     {
         var definition = QuestionnaireV1Definition.Create();
         var now = DateTimeOffset.UtcNow;
         var answers = definition.Questions.Select(q =>
-            new QuestionnaireAnswerEntity(Guid.NewGuid(), responseId, q.Id, "3", now)).ToList();
+            new QuestionnaireAnswerEntity(Guid.NewGuid(), responseId, q.Id, optionValue, now)).ToList();
 
         return QuestionnaireResponseEntity.Create(
             responseId,
@@ -225,20 +225,54 @@ public sealed class SocialQuestionnairePersistenceRepositoryTests
         var profileId = Guid.NewGuid();
         var responseId = Guid.NewGuid();
 
-        var response = CreateTestResponse(profileId, responseId);
-        await repo.SaveAsync(profileId, response);
+        // 1. Persist original response with option value "3"
+        var originalResponse = CreateTestResponse(profileId, responseId, optionValue: "3");
+        var originalAnswerIds = originalResponse.Answers.Select(a => a.Id).ToHashSet();
+        var originalCreatedAt = originalResponse.CreatedAtUtc;
+        var originalStatus = originalResponse.Status;
+        var originalVersion = originalResponse.Version;
 
-        var duplicateResponse = CreateTestResponse(profileId, responseId);
+        await repo.SaveAsync(profileId, originalResponse);
+
+        // 2. Attempt replacement using different valid answer values ("5") and distinct answer GUIDs
+        var replacementAttempt = CreateTestResponse(profileId, responseId, optionValue: "5");
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => repo.SaveAsync(profileId, duplicateResponse));
+            () => repo.SaveAsync(profileId, replacementAttempt));
 
         Assert.Contains("Unapproved questionnaire response overwrite rejected", ex.Message);
         Assert.Contains("Decision P-04", ex.Message);
 
-        var preserved = await repo.GetByIdAsync(profileId, responseId);
-        Assert.NotNull(preserved);
-        Assert.Equal(responseId, preserved.Id);
-        Assert.Equal(12, preserved.Answers.Count);
+        // 3. Attempt cross-profile overwrite on the existing response ID
+        var otherProfileId = Guid.NewGuid();
+        var crossProfileAttempt = CreateTestResponse(otherProfileId, responseId, optionValue: "5");
+        var crossProfileEx = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => repo.SaveAsync(otherProfileId, crossProfileAttempt));
+        Assert.Contains("cannot overwrite a questionnaire response belonging to a different profile", crossProfileEx.Message);
+
+        // 4. Open an independent DbContext to verify persistence state without change-tracker caching
+        await using var independentContext = database.Open();
+        var independentRepo = new SocialQuestionnairePersistenceRepository(independentContext);
+
+        // 5. Reload original response via independent DbContext
+        var reloaded = await independentRepo.GetByIdAsync(profileId, responseId);
+        Assert.NotNull(reloaded);
+        Assert.Equal(responseId, reloaded.Id);
+        Assert.Equal(profileId, reloaded.ProfileId);
+        Assert.Equal(originalCreatedAt, reloaded.CreatedAtUtc);
+        Assert.Equal(originalStatus, reloaded.Status);
+        Assert.Equal(originalVersion, reloaded.Version);
+
+        // 6. Verify original answer IDs and values remain unchanged (option "3", not "5")
+        Assert.Equal(12, reloaded.Answers.Count);
+        foreach (var answer in reloaded.Answers)
+        {
+            Assert.Contains(answer.Id, originalAnswerIds);
+            Assert.Equal("3", answer.OptionId);
+        }
+
+        // 7. Verify no additional answer rows were created in the database
+        var totalAnswerRows = await independentContext.QuestionnaireAnswers.CountAsync();
+        Assert.Equal(12, totalAnswerRows);
     }
 
     private sealed class RejectConnections : DbConnectionInterceptor
