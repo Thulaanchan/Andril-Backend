@@ -57,6 +57,8 @@ public sealed class SocialRelationshipAccessServiceTests
 
         public SocialRelationshipSnapshot SnapshotResult { get; set; }
 
+        public bool ShouldThrow { get; set; }
+
         public SocialRevocationTransactionResult RevokeResult { get; set; } =
             new(success: true, matchRevoked: true, revokedMatchId: Guid.NewGuid(), revokedAtUtc: DateTime.UtcNow);
 
@@ -71,6 +73,7 @@ public sealed class SocialRelationshipAccessServiceTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (ShouldThrow) throw new InvalidOperationException("Repository failure");
             return Task.FromResult(SnapshotResult);
         }
 
@@ -80,6 +83,7 @@ public sealed class SocialRelationshipAccessServiceTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (ShouldThrow) throw new InvalidOperationException("Repository failure");
             return Task.FromResult<SocialDirectionalInterest?>(null);
         }
 
@@ -89,6 +93,7 @@ public sealed class SocialRelationshipAccessServiceTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (ShouldThrow) throw new InvalidOperationException("Repository failure");
             return Task.FromResult<SocialDirectionalInterest?>(null);
         }
 
@@ -100,6 +105,7 @@ public sealed class SocialRelationshipAccessServiceTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (ShouldThrow) throw new InvalidOperationException("Repository failure");
             RecordInterestCalled = true;
             LastPairKey = pairKey;
             LastActingProfileId = actingProfileId;
@@ -114,6 +120,7 @@ public sealed class SocialRelationshipAccessServiceTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (ShouldThrow) throw new InvalidOperationException("Repository failure");
             RevokeMatchCalled = true;
             LastPairKey = pairKey;
             LastActingProfileId = actingProfileId;
@@ -470,5 +477,322 @@ public sealed class SocialRelationshipAccessServiceTests
         Assert.Equal("SocialRelationshipOperationResult [private]", opResult.ToString());
         Assert.Equal("SocialRelationshipStatusResult [private]", statusResult.ToString());
         Assert.Equal("SocialRevocationOperationResult [private]", revokeResult.ToString());
+    }
+
+    [Fact]
+    public async Task RecordInterestAsync_WhenTransactionSuccessIsFalse_ReturnsFailedResult()
+    {
+        var (idA, idB, pair) = CreatePair();
+        var profile = new PrivateProfileDto(idA, "social", DateTimeOffset.UtcNow);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubTransactionRepository(pair)
+        {
+            RecordInterestResult = new SocialInterestTransactionResult(
+                success: false,
+                matchCreated: false,
+                match: null,
+                resultingState: SocialRelationshipState.PendingUnilateral)
+        };
+        var stubEvidence = new StubEvidenceProvider
+        {
+            CallerEvidence = new SocialDiscoveryCallerEvidence(idA, 25, isOptedIn: true, isActive: true),
+            CandidateEvidence = CreateCandidateEvidence(idB, 26)
+        };
+
+        var service = new SocialRelationshipAccessService(stubProfileService, stubRepo, stubEvidence);
+
+        var result = await service.RecordInterestAsync(idB, isPositive: true, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.False(result.MatchCreated);
+        Assert.Null(result.MatchId);
+    }
+
+    [Fact]
+    public async Task RecordInterestAsync_FailedTransaction_CannotProduceSuccessfulAcknowledgment()
+    {
+        var (idA, idB, pair) = CreatePair();
+        var profile = new PrivateProfileDto(idA, "social", DateTimeOffset.UtcNow);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubTransactionRepository(pair)
+        {
+            RecordInterestResult = new SocialInterestTransactionResult(
+                success: false,
+                matchCreated: false,
+                match: null,
+                resultingState: SocialRelationshipState.None)
+        };
+        var stubEvidence = new StubEvidenceProvider
+        {
+            CallerEvidence = new SocialDiscoveryCallerEvidence(idA, 25, isOptedIn: true, isActive: true),
+            CandidateEvidence = CreateCandidateEvidence(idB, 26)
+        };
+
+        var service = new SocialRelationshipAccessService(stubProfileService, stubRepo, stubEvidence);
+
+        var result = await service.RecordInterestAsync(idB, isPositive: false, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.False(result.MatchCreated);
+    }
+
+    [Fact]
+    public async Task RecordInterestAsync_WhenFailedTransactionContainsMatch_ReturnsFailedResult()
+    {
+        var (idA, idB, pair) = CreatePair();
+        var profile = new PrivateProfileDto(idA, "social", DateTimeOffset.UtcNow);
+        var match = SocialMatchEntity.Create(Guid.NewGuid(), pair, DateTime.UtcNow);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubTransactionRepository(pair)
+        {
+            RecordInterestResult = new SocialInterestTransactionResult(
+                success: false,
+                matchCreated: true,
+                match: match,
+                resultingState: SocialRelationshipState.Matched)
+        };
+        var stubEvidence = new StubEvidenceProvider
+        {
+            CallerEvidence = new SocialDiscoveryCallerEvidence(idA, 25, isOptedIn: true, isActive: true),
+            CandidateEvidence = CreateCandidateEvidence(idB, 26)
+        };
+
+        var service = new SocialRelationshipAccessService(stubProfileService, stubRepo, stubEvidence);
+
+        var result = await service.RecordInterestAsync(idB, isPositive: true, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.False(result.MatchCreated);
+        Assert.Null(result.MatchId);
+    }
+
+    [Fact]
+    public async Task RecordInterestAsync_WhenMatchCreatedWithMissingMatch_ReturnsFailedResult()
+    {
+        var (idA, idB, pair) = CreatePair();
+        var profile = new PrivateProfileDto(idA, "social", DateTimeOffset.UtcNow);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubTransactionRepository(pair)
+        {
+            RecordInterestResult = new SocialInterestTransactionResult(
+                success: true,
+                matchCreated: true,
+                match: null,
+                resultingState: SocialRelationshipState.Matched)
+        };
+        var stubEvidence = new StubEvidenceProvider
+        {
+            CallerEvidence = new SocialDiscoveryCallerEvidence(idA, 25, isOptedIn: true, isActive: true),
+            CandidateEvidence = CreateCandidateEvidence(idB, 26)
+        };
+
+        var service = new SocialRelationshipAccessService(stubProfileService, stubRepo, stubEvidence);
+
+        var result = await service.RecordInterestAsync(idB, isPositive: true, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.False(result.MatchCreated);
+        Assert.Null(result.MatchId);
+    }
+
+    [Fact]
+    public async Task RecordInterestAsync_WhenMatchBelongsToForeignCanonicalPair_ReturnsFailedResult()
+    {
+        var (idA, idB, pair) = CreatePair();
+        var profile = new PrivateProfileDto(idA, "social", DateTimeOffset.UtcNow);
+        var foreignPair = SocialProfilePairKey.Create(Guid.NewGuid(), Guid.NewGuid());
+        var foreignMatch = SocialMatchEntity.Create(Guid.NewGuid(), foreignPair, DateTime.UtcNow);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubTransactionRepository(pair)
+        {
+            RecordInterestResult = new SocialInterestTransactionResult(
+                success: true,
+                matchCreated: true,
+                match: foreignMatch,
+                resultingState: SocialRelationshipState.Matched)
+        };
+        var stubEvidence = new StubEvidenceProvider
+        {
+            CallerEvidence = new SocialDiscoveryCallerEvidence(idA, 25, isOptedIn: true, isActive: true),
+            CandidateEvidence = CreateCandidateEvidence(idB, 26)
+        };
+
+        var service = new SocialRelationshipAccessService(stubProfileService, stubRepo, stubEvidence);
+
+        var result = await service.RecordInterestAsync(idB, isPositive: true, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.False(result.MatchCreated);
+        Assert.Null(result.MatchId);
+    }
+
+    [Fact]
+    public async Task GetRelationshipStatusAsync_WhenSnapshotBelongsToForeignPair_ReturnsNotMatched()
+    {
+        var (idA, idB, pair) = CreatePair();
+        var profile = new PrivateProfileDto(idA, "social", DateTimeOffset.UtcNow);
+        var foreignPair = SocialProfilePairKey.Create(Guid.NewGuid(), Guid.NewGuid());
+        var match = SocialMatchEntity.Create(Guid.NewGuid(), foreignPair, DateTime.UtcNow);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubTransactionRepository(pair)
+        {
+            SnapshotResult = new SocialRelationshipSnapshot(foreignPair, SocialRelationshipState.Matched, match)
+        };
+        var stubEvidence = new StubEvidenceProvider();
+
+        var service = new SocialRelationshipAccessService(stubProfileService, stubRepo, stubEvidence);
+
+        var result = await service.GetRelationshipStatusAsync(idB, CancellationToken.None);
+
+        Assert.False(result.HasActiveMatch);
+        Assert.Null(result.MatchId);
+    }
+
+    [Fact]
+    public async Task RecordInterestAsync_WhenInconsistentResultingState_ReturnsFailedResult()
+    {
+        var (idA, idB, pair) = CreatePair();
+        var profile = new PrivateProfileDto(idA, "social", DateTimeOffset.UtcNow);
+        var match = SocialMatchEntity.Create(Guid.NewGuid(), pair, DateTime.UtcNow);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubTransactionRepository(pair)
+        {
+            RecordInterestResult = new SocialInterestTransactionResult(
+                success: true,
+                matchCreated: true,
+                match: match,
+                resultingState: SocialRelationshipState.Passed)
+        };
+        var stubEvidence = new StubEvidenceProvider
+        {
+            CallerEvidence = new SocialDiscoveryCallerEvidence(idA, 25, isOptedIn: true, isActive: true),
+            CandidateEvidence = CreateCandidateEvidence(idB, 26)
+        };
+
+        var service = new SocialRelationshipAccessService(stubProfileService, stubRepo, stubEvidence);
+
+        var result = await service.RecordInterestAsync(idB, isPositive: true, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.False(result.MatchCreated);
+    }
+
+    [Fact]
+    public async Task RevokeMatchAsync_WhenInvalidRevocationOutcome_ReturnsSuccessFalse()
+    {
+        var (idA, idB, pair) = CreatePair();
+        var profile = new PrivateProfileDto(idA, "social", DateTimeOffset.UtcNow);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubTransactionRepository(pair)
+        {
+            RevokeResult = new SocialRevocationTransactionResult(
+                success: false,
+                matchRevoked: true,
+                revokedMatchId: Guid.NewGuid(),
+                revokedAtUtc: DateTime.UtcNow)
+        };
+        var stubEvidence = new StubEvidenceProvider();
+
+        var service = new SocialRelationshipAccessService(stubProfileService, stubRepo, stubEvidence);
+
+        var result = await service.RevokeMatchAsync(idB, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.False(result.MatchRevoked);
+    }
+
+    [Fact]
+    public async Task Operations_WhenRepositoryFails_PropagatesException()
+    {
+        var (idA, idB, pair) = CreatePair();
+        var profile = new PrivateProfileDto(idA, "social", DateTimeOffset.UtcNow);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubTransactionRepository(pair) { ShouldThrow = true };
+        var stubEvidence = new StubEvidenceProvider
+        {
+            CallerEvidence = new SocialDiscoveryCallerEvidence(idA, 25, isOptedIn: true, isActive: true),
+            CandidateEvidence = CreateCandidateEvidence(idB, 26)
+        };
+
+        var service = new SocialRelationshipAccessService(stubProfileService, stubRepo, stubEvidence);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.RecordInterestAsync(idB, isPositive: true, CancellationToken.None));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.GetRelationshipStatusAsync(idB, CancellationToken.None));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            service.RevokeMatchAsync(idB, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task RecordInterestAsync_WhenNegativeDecisionRecorded_DoesNotDiscloseUnilateralDecision()
+    {
+        var (idA, idB, pair) = CreatePair();
+        var profile = new PrivateProfileDto(idA, "social", DateTimeOffset.UtcNow);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubTransactionRepository(pair)
+        {
+            RecordInterestResult = new SocialInterestTransactionResult(
+                success: true,
+                matchCreated: false,
+                match: null,
+                resultingState: SocialRelationshipState.Passed)
+        };
+        var stubEvidence = new StubEvidenceProvider
+        {
+            CallerEvidence = new SocialDiscoveryCallerEvidence(idA, 25, isOptedIn: true, isActive: true),
+            CandidateEvidence = CreateCandidateEvidence(idB, 26)
+        };
+
+        var service = new SocialRelationshipAccessService(stubProfileService, stubRepo, stubEvidence);
+
+        var result = await service.RecordInterestAsync(idB, isPositive: false, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.False(result.MatchCreated);
+        Assert.Null(result.MatchId);
+        Assert.Equal(SocialRelationshipState.Passed, result.VisibleState);
+    }
+
+    [Fact]
+    public void Results_NeverExposeCommunicationPermissionsOrTokens()
+    {
+        var opProps = typeof(SocialRelationshipOperationResult).GetProperties();
+        var statusProps = typeof(SocialRelationshipStatusResult).GetProperties();
+        var revokeProps = typeof(SocialRevocationOperationResult).GetProperties();
+
+        foreach (var prop in opProps)
+        {
+            Assert.DoesNotContain("token", prop.Name, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("chat", prop.Name, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("message", prop.Name, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("room", prop.Name, StringComparison.OrdinalIgnoreCase);
+        }
+        foreach (var prop in statusProps)
+        {
+            Assert.DoesNotContain("token", prop.Name, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("chat", prop.Name, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("message", prop.Name, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("room", prop.Name, StringComparison.OrdinalIgnoreCase);
+        }
+        foreach (var prop in revokeProps)
+        {
+            Assert.DoesNotContain("token", prop.Name, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("chat", prop.Name, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("message", prop.Name, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain("room", prop.Name, StringComparison.OrdinalIgnoreCase);
+        }
     }
 }
