@@ -18,7 +18,7 @@ using Xunit;
 
 namespace Andril.IntegrationTests.Database;
 
-public sealed class MapAttractionPersistenceTests
+public sealed partial class MapAttractionPersistenceTests
 {
     private const string ModelOnlyConnection =
         "Host=127.0.0.1;Database=andril_model_only;Username=unused";
