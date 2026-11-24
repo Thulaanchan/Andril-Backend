@@ -142,6 +142,187 @@ public sealed class MapContributionSubmissionServiceTests
         Assert.Equal(3, f.Calls.Count(call => call == "access"));
     }
 
+    [Theory]
+    [InlineData("owner")]
+    [InlineData("attraction")]
+    [InlineData("session")]
+    [InlineData("photo")]
+    [InlineData("photo-case")]
+    [InlineData("photo-space")]
+    [InlineData("description")]
+    [InlineData("description-case")]
+    [InlineData("description-space")]
+    [InlineData("user-latitude")]
+    [InlineData("user-longitude")]
+    [InlineData("attraction-latitude")]
+    [InlineData("attraction-longitude")]
+    [InlineData("accuracy")]
+    [InlineData("capture-start")]
+    [InlineData("capture-end")]
+    public async Task OriginalEvidenceRejectsEveryContradictoryRequestField(string changed)
+    {
+        var f = new Fixture();
+        var attempt = await f.Attempt();
+        var original = Assert.Single(f.Requests).Contribution;
+        var location = changed switch
+        {
+            "user-latitude" => original.LocationEvidence with { UserLatitude = 1 },
+            "user-longitude" => original.LocationEvidence with { UserLongitude = 1 },
+            "attraction-latitude" => original.LocationEvidence with { AttractionLatitude = 1 },
+            "attraction-longitude" => original.LocationEvidence with { AttractionLongitude = 1 },
+            "accuracy" => original.LocationEvidence with { HorizontalAccuracyMetres = 6 },
+            "capture-start" => original.LocationEvidence with { CaptureStartedAt = original.LocationEvidence.CaptureStartedAt!.Value.AddTicks(1) },
+            "capture-end" => original.LocationEvidence with { CaptureCompletedAt = original.LocationEvidence.CaptureCompletedAt!.Value.AddTicks(1) },
+            _ => original.LocationEvidence
+        };
+        var contradictory = MapContribution.Create(original.ContributionId,
+            changed == "owner" ? Guid.NewGuid() : original.OwnerHobbiesModuleProfileId,
+            changed == "attraction" ? Guid.NewGuid() : original.AttractionId,
+            changed == "session" ? Guid.NewGuid() : original.CaptureSessionId,
+            changed switch { "photo" => "private/other", "photo-case" => original.PrivatePhotoStorageObjectKey.ToUpperInvariant(),
+                "photo-space" => original.PrivatePhotoStorageObjectKey + " ", _ => original.PrivatePhotoStorageObjectKey },
+            changed switch { "description" => "Different", "description-case" => original.Description.ToLowerInvariant(),
+                "description-space" => original.Description + " ", _ => original.Description }, location, original.SubmittedAtUtc);
+
+        var retained = Assert.IsType<MapSubmissionOriginalEvidence>(attempt.OriginalEvidence);
+        Assert.False(retained.MatchesRequest(contradictory));
+        Assert.True(retained.MatchesRequest(original));
+        Assert.False(retained.MatchesRequest(null));
+        Assert.Single(f.Requests); // Comparing never invokes the writer or preflight again.
+    }
+
+    [Theory]
+    [InlineData("id")]
+    [InlineData("submission-time")]
+    [InlineData("capture-offset")]
+    [InlineData("new-evidence-instance")]
+    public async Task OriginalEvidenceUsesValueEqualityAndExcludesOnlyApprovedGeneratedFields(string equivalent)
+    {
+        var f = new Fixture();
+        var attempt = await f.Attempt();
+        var original = Assert.Single(f.Requests).Contribution;
+        var location = original.LocationEvidence with { };
+        if (equivalent == "capture-offset")
+            location = location with
+            {
+                CaptureStartedAt = location.CaptureStartedAt!.Value.ToOffset(TimeSpan.FromHours(5.5)),
+                CaptureCompletedAt = location.CaptureCompletedAt!.Value.ToOffset(TimeSpan.FromHours(-3))
+            };
+        var sameRequest = MapContribution.Create(equivalent == "id" ? Guid.NewGuid() : original.ContributionId,
+            original.OwnerHobbiesModuleProfileId, original.AttractionId, original.CaptureSessionId,
+            original.PrivatePhotoStorageObjectKey, original.Description, location,
+            equivalent == "submission-time" ? original.SubmittedAtUtc.AddDays(1) : original.SubmittedAtUtc);
+        Assert.True(attempt.OriginalEvidence!.MatchesRequest(sameRequest));
+        Assert.Single(f.Requests);
+    }
+
+    [Theory]
+    [InlineData((int)MapSubmissionOutcome.Created)]
+    [InlineData((int)MapSubmissionOutcome.ExistingAuthorized)]
+    [InlineData((int)MapSubmissionOutcome.Denied)]
+    [InlineData((int)MapSubmissionOutcome.InfrastructureFailure)]
+    [InlineData((int)MapSubmissionOutcome.OutcomeUnknown)]
+    public async Task InternalAttemptPreservesWriterOutcomesAndOriginalEvidenceWithoutRetry(int value)
+    {
+        var f = new Fixture();
+        var id = Guid.NewGuid();
+        f.Write = (_, _) => Task.FromResult(new MapSubmissionResult((MapSubmissionOutcome)value, id));
+        var attempt = await f.Attempt();
+        Assert.Equal((MapSubmissionOutcome)value, attempt.Result.Outcome);
+        Assert.Equal(value is (int)MapSubmissionOutcome.Created or (int)MapSubmissionOutcome.ExistingAuthorized ? id : (Guid?)null,
+            attempt.Result.ContributionId);
+        Assert.True(attempt.OriginalEvidence!.MatchesRequest(Assert.Single(f.Requests).Contribution));
+        Assert.Equal(1, f.Calls.Count(call => call == "access"));
+    }
+
+    [Theory]
+    [InlineData("authorization")]
+    [InlineData("photo")]
+    [InlineData("missing-photo")]
+    public async Task DeniedPreparationCannotProduceOriginalEvidence(string denial)
+    {
+        var f = new Fixture { Denial = denial };
+        var attempt = await f.Attempt();
+        Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.Denied), attempt.Result);
+        Assert.Null(attempt.OriginalEvidence);
+        Assert.Empty(f.Requests);
+    }
+
+    [Fact]
+    public async Task FailedPreparationCannotProduceOriginalEvidence()
+    {
+        var f = new Fixture { FailAt = "photo" };
+        var attempt = await f.Attempt();
+        Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.InfrastructureFailure), attempt.Result);
+        Assert.Null(attempt.OriginalEvidence);
+        Assert.Empty(f.Requests);
+    }
+
+    [Theory]
+    [InlineData("before")]
+    [InlineData("photo")]
+    [InlineData("writer")]
+    public async Task InternalAttemptCancellationPropagatesWithoutReturningEvidence(string stage)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var f = new Fixture { CancelAt = stage, Cancellation = cancellation };
+        if (stage == "before") cancellation.Cancel();
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => f.Attempt(cancellation.Token));
+        Assert.Equal(cancellation.Token, error.CancellationToken);
+        Assert.Equal(stage == "writer" ? 1 : 0, f.Requests.Count);
+    }
+
+    [Fact]
+    public async Task UnknownWriterFailureRetainsOriginalAndLaterAttemptCannotOverwriteIt()
+    {
+        var f = new Fixture { Write = (_, _) => throw new IOException("sensitive " + Fixture.PhotoKey) };
+        var first = await f.Attempt();
+        var firstRequest = Assert.Single(f.Requests).Contribution;
+        Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.OutcomeUnknown), first.Result);
+        var second = await f.Attempt(description: "Changed retry");
+        Assert.True(first.OriginalEvidence!.MatchesRequest(firstRequest));
+        Assert.False(first.OriginalEvidence.MatchesRequest(f.Requests[1].Contribution));
+        Assert.True(second.OriginalEvidence!.MatchesRequest(f.Requests[1].Contribution));
+        Assert.Equal(2, f.Requests.Count); // Two explicit calls, no automatic retries.
+    }
+
+    [Fact]
+    public async Task CommittedOutcomeAndEvidenceSurviveCancellationAfterWriterCompletion()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var f = new Fixture();
+        f.Write = (prepared, _) =>
+        {
+            cancellation.Cancel();
+            return Task.FromResult(new MapSubmissionResult(MapSubmissionOutcome.Created, prepared.Contribution.ContributionId));
+        };
+        var attempt = await f.Attempt(cancellation.Token);
+        Assert.Equal(MapSubmissionOutcome.Created, attempt.Result.Outcome);
+        Assert.True(attempt.OriginalEvidence!.MatchesRequest(Assert.Single(f.Requests).Contribution));
+    }
+
+    [Fact]
+    public async Task RetainedEvidenceIsGetterOnlyAndDoesNotSerializeOrPrintPrivateMetadata()
+    {
+        var f = new Fixture();
+        var attempt = await f.Attempt();
+        Assert.Equal("{}", JsonSerializer.Serialize(attempt));
+        Assert.Equal("{}", JsonSerializer.Serialize(attempt.OriginalEvidence));
+        Assert.Equal("Submission attempt (internal).", attempt.ToString());
+        Assert.Equal("Original submission evidence (internal).", attempt.OriginalEvidence!.ToString());
+        Assert.Empty(typeof(MapSubmissionOriginalEvidence).GetConstructors());
+        foreach (var type in new[] { typeof(MapSubmissionAttempt), typeof(MapSubmissionOriginalEvidence) })
+        {
+            Assert.True(type.IsSealed);
+            Assert.Empty(type.GetProperties());
+            Assert.All(type.GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic),
+                property => Assert.Null(property.SetMethod));
+        }
+        Assert.Equal(f.Owner, attempt.OriginalEvidence.OwnerHobbiesModuleProfileId);
+        Assert.Equal(f.Attraction.AttractionId, attempt.OriginalEvidence.AttractionId);
+        Assert.Equal(f.Session.SessionId, attempt.OriginalEvidence.CaptureSessionId);
+    }
+
     private sealed class Fixture : IMapCaptureSessionAccessReader, IMapContributionCaptureSessionRepository,
         IMapAttractionRepository, IMapContributionPhotoEvidenceReader, IMapContributionSubmissionWriter
     {
@@ -167,6 +348,10 @@ public sealed class MapContributionSubmissionServiceTests
             new MapContributionSubmissionService(new(this, this, this, this), this).SubmitAsync(
                 Attraction.AttractionId, Session.SessionId, new(0, 0, 80, 80, 5, null, null),
                 Denial == "missing-photo" ? null : PhotoKey, "Description", token);
+        internal Task<MapSubmissionAttempt> Attempt(CancellationToken token = default, string description = "Description") =>
+            new MapContributionSubmissionService(new(this, this, this, this), this).SubmitAttemptAsync(
+                Attraction.AttractionId, Session.SessionId, new(0, 0, 80, 80, 5, null, null),
+                Denial == "missing-photo" ? null : PhotoKey, description, token);
         private Task<T> Respond<T>(string stage, T value, CancellationToken token)
         {
             Calls.Add(stage); Tokens.Add(token);
