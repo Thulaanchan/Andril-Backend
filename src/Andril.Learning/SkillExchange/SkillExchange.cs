@@ -21,7 +21,11 @@ public sealed record SkillExchangeParticipant
 public enum SkillExchangeStatus { Pending = 1, Accepted = 2, Declined = 3, Cancelled = 4 }
 
 /// <summary>Local comparison only, not a uniqueness check or permission to create another proposal.</summary>
-public enum PendingProposalComparison { ExactDuplicate = 1, NotBothPending = 2, PolicyDecisionRequired = 3 }
+public enum PendingProposalComparison
+{
+    ExactDuplicate = 1, NotBothPending = 2, PolicyDecisionRequired = 3,
+    PendingPairConflict = 4, DifferentPair = 5
+}
 
 /// <summary>
 /// DEC-20261120-LRN01-01: local Learning proposal lifecycle, not an authorization or storage boundary.
@@ -66,6 +70,32 @@ public sealed class SkillExchange
         return new(id, sender, recipient, offeredSkillId, wantedSkillId);
     }
 
+    /// <summary>
+    /// DEC-M1-01: reject any pending proposal for the same unordered Learning-profile pair
+    /// in the supplied offline history, regardless of direction or skill terms. No existing
+    /// proposal is replaced, transitioned or removed. Terminal history permits fresh explicit
+    /// construction only; current eligibility and sender intent must still be checked externally.
+    /// A caller-supplied history is not authoritative or concurrency-safe. Future protected
+    /// persistence must coordinate fresh authorization and enforce pair uniqueness atomically.
+    /// The five-argument overload remains a structural constructor, not duplicate enforcement.
+    /// </summary>
+    public static SkillExchange Propose(Guid id, SkillExchangeParticipant sender,
+        SkillExchangeParticipant recipient, Guid offeredSkillId, Guid wantedSkillId,
+        IEnumerable<SkillExchange> existingProposals)
+    {
+        ArgumentNullException.ThrowIfNull(existingProposals);
+        var candidate = Propose(id, sender, recipient, offeredSkillId, wantedSkillId);
+        foreach (var existing in existingProposals)
+        {
+            if (existing is null)
+                throw new ArgumentException("Proposal history cannot contain missing entries.", nameof(existingProposals));
+            if (candidate.ComparePendingProposal(existing) is
+                PendingProposalComparison.ExactDuplicate or PendingProposalComparison.PendingPairConflict)
+                throw new InvalidOperationException("A pending Skill Exchange already exists for this Learning-profile pair.");
+        }
+        return candidate;
+    }
+
     /// <summary>Matching references identify a domain participant, never authenticate a caller.</summary>
     public bool IsParticipant(SkillExchangeParticipant? participant) =>
         participant is not null && (participant == Sender || participant == Recipient);
@@ -86,10 +116,12 @@ public sealed class SkillExchange
     }
 
     /// <summary>
-    /// Exact same directed participants and skill terms while both pending are a known duplicate,
-    /// irrespective of exchange ID. A protected coordinator must reject that candidate atomically.
-    /// Every other pending pairing is PolicyDecisionRequired: reversed proposals and different
-    /// skills are NOT certified distinct. NotBothPending does not authorize historical repetition.
+    /// DEC-M1-01: pending proposals for the same unordered Learning-profile pair conflict,
+    /// irrespective of direction, exchange ID, skill terms or supplied account references.
+    /// Exact directed terms retain the ExactDuplicate classification; other same-pair proposals
+    /// return PendingPairConflict. DifferentPair describes profile references, not eligibility.
+    /// The legacy PolicyDecisionRequired enum value is no longer returned by this comparison.
+    /// NotBothPending does not authorize historical repetition.
     /// This comparison neither searches storage nor prevents two independently constructed copies.
     /// </summary>
     public PendingProposalComparison ComparePendingProposal(SkillExchange other)
@@ -97,9 +129,14 @@ public sealed class SkillExchange
         ArgumentNullException.ThrowIfNull(other);
         if (Status != SkillExchangeStatus.Pending || other.Status != SkillExchangeStatus.Pending)
             return PendingProposalComparison.NotBothPending;
+        var samePair = (Sender.LearningProfileId == other.Sender.LearningProfileId &&
+                Recipient.LearningProfileId == other.Recipient.LearningProfileId) ||
+            (Sender.LearningProfileId == other.Recipient.LearningProfileId &&
+                Recipient.LearningProfileId == other.Sender.LearningProfileId);
+        if (!samePair) return PendingProposalComparison.DifferentPair;
         return Sender == other.Sender && Recipient == other.Recipient &&
             OfferedSkillId == other.OfferedSkillId && WantedSkillId == other.WantedSkillId
-            ? PendingProposalComparison.ExactDuplicate : PendingProposalComparison.PolicyDecisionRequired;
+            ? PendingProposalComparison.ExactDuplicate : PendingProposalComparison.PendingPairConflict;
     }
 
     public override string ToString() => $"Learning Skill Exchange ({Status}) [private references omitted]";
