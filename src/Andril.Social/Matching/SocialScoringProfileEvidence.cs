@@ -95,6 +95,11 @@ public sealed class SocialScoringProfileEvidence : IEquatable<SocialScoringProfi
             throw new ArgumentException("Profile identity cannot be empty.", nameof(profileId));
         }
 
+        if (age < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(age), "Age cannot be negative.");
+        }
+
         ProfileId = profileId;
         Age = age;
         DemographicGender = demographicGender;
@@ -102,19 +107,19 @@ public sealed class SocialScoringProfileEvidence : IEquatable<SocialScoringProfi
         IdealAgeBand = idealAgeBand;
 
         ConfirmedLanguages = confirmedLanguages is not null
-            ? new HashSet<string>(confirmedLanguages, StringComparer.OrdinalIgnoreCase)
+            ? new HashSet<string>(confirmedLanguages.Where(l => !string.IsNullOrWhiteSpace(l)), StringComparer.OrdinalIgnoreCase)
             : null;
 
         ConfirmedConnectionGoals = confirmedConnectionGoals is not null
-            ? new HashSet<string>(confirmedConnectionGoals, StringComparer.OrdinalIgnoreCase)
+            ? new HashSet<string>(confirmedConnectionGoals.Where(g => !string.IsNullOrWhiteSpace(g)), StringComparer.OrdinalIgnoreCase)
             : null;
 
         ConfirmedSocialInterestIds = confirmedSocialInterestIds is not null
-            ? new HashSet<Guid>(confirmedSocialInterestIds)
+            ? new HashSet<Guid>(confirmedSocialInterestIds.Where(id => id != Guid.Empty))
             : null;
 
         QuestionnaireResponse = questionnaireResponse;
-        QuestionnaireAnswers = questionnaireAnswers is not null ? new List<QuestionnaireAnswer>(questionnaireAnswers) : null;
+        QuestionnaireAnswers = questionnaireAnswers is not null ? questionnaireAnswers.ToArray() : null;
         QuestionnaireVersion = questionnaireVersion;
         QuestionnaireRevision = questionnaireRevision;
         PartnerPreferences = partnerPreferences;
@@ -124,8 +129,53 @@ public sealed class SocialScoringProfileEvidence : IEquatable<SocialScoringProfi
         IsDiscoverable = isDiscoverable;
         HasAuthoritativeEvidence = hasAuthoritativeEvidence;
         BlockedProfileIds = blockedProfileIds is not null
-            ? new HashSet<Guid>(blockedProfileIds)
+            ? new HashSet<Guid>(blockedProfileIds.Where(id => id != Guid.Empty))
             : new HashSet<Guid>();
+    }
+
+    /// <summary>
+    /// Factory for authoritative Social discovery evidence requiring explicit eligibility parameters.
+    /// </summary>
+    public static SocialScoringProfileEvidence CreateAuthoritativeDiscovery(
+        Guid profileId,
+        int age,
+        string? demographicGender,
+        SocialExplorePreferences preferences,
+        bool isOptedIn,
+        bool isActive,
+        bool isDiscoverable,
+        SocialIdealAgeBand? idealAgeBand = null,
+        IEnumerable<string>? confirmedLanguages = null,
+        IEnumerable<string>? confirmedConnectionGoals = null,
+        IEnumerable<Guid>? confirmedSocialInterestIds = null,
+        QuestionnaireResponseEntity? questionnaireResponse = null,
+        IEnumerable<QuestionnaireAnswer>? questionnaireAnswers = null,
+        string? questionnaireVersion = null,
+        string? questionnaireRevision = null,
+        PersonalityPartnerPreferences? partnerPreferences = null,
+        PersonalityArchetypeConfirmation? archetypeConfirmation = null,
+        IEnumerable<Guid>? blockedProfileIds = null)
+    {
+        return new SocialScoringProfileEvidence(
+            profileId,
+            age,
+            demographicGender,
+            preferences,
+            idealAgeBand,
+            confirmedLanguages,
+            confirmedConnectionGoals,
+            confirmedSocialInterestIds,
+            questionnaireResponse,
+            questionnaireAnswers,
+            questionnaireVersion,
+            questionnaireRevision,
+            partnerPreferences,
+            archetypeConfirmation,
+            isOptedIn: isOptedIn,
+            isActive: isActive,
+            isDiscoverable: isDiscoverable,
+            hasAuthoritativeEvidence: true,
+            blockedProfileIds: blockedProfileIds);
     }
 
     public PersonalityEvaluationProfile? ToPersonalityEvaluationProfile()
@@ -142,17 +192,13 @@ public sealed class SocialScoringProfileEvidence : IEquatable<SocialScoringProfi
 
         if (QuestionnaireResponse is not null && QuestionnaireResponse.Answers is not null)
         {
-            var answers = new List<QuestionnaireAnswer>();
+            var answers = new List<QuestionnaireAnswer>(QuestionnaireResponse.Answers.Count);
             foreach (var ans in QuestionnaireResponse.Answers)
             {
-                var optionVal = ans.OptionId;
-                if (!int.TryParse(optionVal, out _) && optionVal.Contains("_opt", StringComparison.OrdinalIgnoreCase))
+                if (ans is not null)
                 {
-                    var idx = optionVal.LastIndexOf("_opt", StringComparison.OrdinalIgnoreCase);
-                    optionVal = optionVal.Substring(idx + 4);
+                    answers.Add(new QuestionnaireAnswer(ans.QuestionId, ans.OptionId));
                 }
-
-                answers.Add(new QuestionnaireAnswer(ans.QuestionId, optionVal));
             }
 
             return new PersonalityEvaluationProfile(
