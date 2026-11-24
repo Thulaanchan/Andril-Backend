@@ -173,18 +173,8 @@ public sealed class SocialQuestionnairePersistenceRepositoryTests
     [LocalPostgresFact]
     public async Task LivePostgres_SaveAndGetByIdAsync_PersistsAtomically_AndEnforcesIsolation()
     {
-        var env = Environment.GetEnvironmentVariable("ANDRIL_M2_TEST_POSTGRES");
-        if (string.IsNullOrWhiteSpace(env)) return;
-
-        var options = new DbContextOptionsBuilder<SocialDbContext>()
-            .UseNpgsql(env, npgsql =>
-            {
-                npgsql.MigrationsHistoryTable(SocialDbContextFactory.MigrationsHistoryTableName, SocialDbContext.Schema);
-            })
-            .Options;
-
-        using var context = new SocialDbContext(options);
-        await context.Database.MigrateAsync();
+        await using var database = await LocalSocialQuestionnaireDatabase.CreateAsync(applySocialMigrations: true);
+        await using var context = database.Open();
 
         var repo = new SocialQuestionnairePersistenceRepository(context);
         var profileId = Guid.NewGuid();
