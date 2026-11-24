@@ -156,11 +156,16 @@ public sealed class ControlledProfileCoordinationTests
         await f.Profiles.CreateAsync("learning");
         var (upload, lease) = await f.Reserve();
         using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        var stop = f.Stop(deadline.Token);
         var gate = f.DeactivationGate!;
-        await gate.Entered.Task.WaitAsync(deadline.Token);
-        var finalize = f.Profiles.FinalizePhotoAsync("learning", upload, lease, deadline.Token);
-        try { await f.ObserveWaitingLockAsync(deadline.Token); }
+        gate.Armed = true;
+        var stop = f.Stop(deadline.Token);
+        Task<PrivatePhotoStatus> finalize;
+        try
+        {
+            await gate.Entered.Task.WaitAsync(deadline.Token);
+            finalize = f.Profiles.FinalizePhotoAsync("learning", upload, lease, deadline.Token);
+            await f.ObserveWaitingLockAsync(deadline.Token);
+        }
         finally { gate.Release.TrySetResult(); }
 
         await stop;
@@ -310,6 +315,7 @@ public sealed class ControlledProfileCoordinationTests
 
     private sealed class Barrier
     {
+        internal bool Armed { get; set; }
         internal TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
     }
@@ -351,8 +357,11 @@ public sealed class ControlledProfileCoordinationTests
         public async Task<ModuleDeactivationEvidence> ReadAsync(Guid subject, ModuleMembershipScope scope,
             DateTimeOffset databaseTime, CancellationToken cancellationToken)
         {
-            gate.Entered.TrySetResult();
-            await gate.Release.Task.WaitAsync(cancellationToken);
+            if (gate.Armed)
+            {
+                gate.Entered.TrySetResult();
+                await gate.Release.Task.WaitAsync(TimeSpan.FromSeconds(20), cancellationToken);
+            }
             return await inner.ReadAsync(subject, scope, databaseTime, cancellationToken);
         }
     }

@@ -305,10 +305,10 @@ public sealed class DeactivationPersistenceTests
     {
         await using var db = await ControlledLifecycleDatabase.CreateAsync(targetMigration: Previous);
         var activation = Start();
-        await Execute(db, activation);
+        await SeedHistoricalActiveReceipt(db, activation, 1);
         await db.Sql("UPDATE andril_identity.account_module_lifecycles SET state='inactive',revision=2");
         var reactivation = Start(2);
-        await Execute(db, reactivation);
+        await SeedHistoricalActiveReceipt(db, reactivation, 3);
         var before = await Artifacts(db);
         await using var owner = db.Open();
         await owner.Database.MigrateAsync();
@@ -322,6 +322,46 @@ public sealed class DeactivationPersistenceTests
         await Assert.ThrowsAsync<PostgresException>(() => owner.GetService<IMigrator>().MigrateAsync(Previous));
         Assert.Equal(before, await Artifacts(db));
         Assert.Contains(Current, await owner.Database.GetAppliedMigrationsAsync());
+    }
+
+    private static async Task SeedHistoricalActiveReceipt(ControlledLifecycleDatabase fixture,
+        ModuleLifecycleCommand command, long revision)
+    {
+        // Write only columns present in the historical schema. The current EF receipt
+        // mapping includes membership_module, introduced by the later outcomes migration.
+        var operation = command.ExpectedRevision is null ? "activate" : "reactivate";
+        var intentOperation = command.ExpectedRevision is null ? "Activate" : "Reactivate";
+        var expected = command.ExpectedRevision?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "-";
+        var intent = $"v1\nlearning\n{intentOperation}\n{expected}\nFalse";
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(intent)));
+        await using var db = fixture.Open();
+        await using var tx = await db.Database.BeginTransactionAsync();
+        var now = DateTimeOffset.UtcNow;
+        if (command.ExpectedRevision is null)
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO andril_identity.account_module_lifecycles
+                    (account_id,module,state,revision,first_activated_at_utc,state_changed_at_utc)
+                VALUES ({fixture.AccountId},'learning','active',{revision},{now},{now})
+                """);
+        else
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE andril_identity.account_module_lifecycles
+                SET state='active', revision={revision}, state_changed_at_utc={now}
+                WHERE account_id={fixture.AccountId} AND module='learning' AND state='inactive'
+                    AND revision={command.ExpectedRevision}
+                """);
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO andril_identity.account_module_lifecycle_receipts
+                (account_id,module,request_key,operation,expected_revision,intent_hash,revision,state_changed_at_utc,recorded_at_utc)
+            VALUES ({fixture.AccountId},'learning',{command.RequestKey},{operation},{command.ExpectedRevision},{hash},{revision},{now},{now})
+            """);
+        string? previousState = command.ExpectedRevision is null ? null : "inactive";
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            INSERT INTO andril_identity.account_module_lifecycle_audit
+                (account_id,module,revision,request_key,operation,previous_state,correlation_id,recorded_at_utc)
+            VALUES ({fixture.AccountId},'learning',{revision},{command.RequestKey},{operation},{previousState},{Guid.NewGuid()},{now})
+            """);
+        await tx.CommitAsync();
     }
 
     [LocalPostgresFact]
@@ -374,7 +414,7 @@ public sealed class DeactivationPersistenceTests
     private static Task<string> Artifacts(ControlledLifecycleDatabase db) => Scalar<string>(db, """
         SELECT json_build_object(
             'memberships', (SELECT json_agg(t ORDER BY account_id,module) FROM andril_identity.account_module_lifecycles t),
-            'receipts', (SELECT json_agg(t ORDER BY account_id,module,request_key) FROM andril_identity.account_module_lifecycle_receipts t),
+            'receipts', (SELECT json_agg(to_jsonb(t) - 'membership_module' ORDER BY account_id,module,request_key) FROM andril_identity.account_module_lifecycle_receipts t),
             'audits', (SELECT json_agg(t ORDER BY account_id,module,revision) FROM andril_identity.account_module_lifecycle_audit t))::text
         """);
 
