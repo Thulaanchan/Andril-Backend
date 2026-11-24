@@ -42,8 +42,8 @@ internal interface IModuleLifecycleStore
     Task<ModuleLifecycleSnapshot> ReadAsync(Guid subject, string module, Guid requestKey, CancellationToken cancellationToken);
 }
 
-// Explicit capability for offline implementations. The existing PostgreSQL adapter
-// lacks deactivation journal support and deliberately does not implement this interface.
+// Explicit capability for offline or verified controlled PostgreSQL implementations.
+// Implementing it does not register a production writer or supply authorization evidence.
 internal interface IOfflineModuleDeactivationStore : IModuleLifecycleStore;
 
 // Raised only when the store cannot determine whether its commit took effect.
