@@ -92,25 +92,33 @@ public sealed class SocialMigrationTests
     [LocalPostgresFact]
     public async Task SocialMigration_LivePostgres_ApplyAndRollback_Succeeds()
     {
-        var env = Environment.GetEnvironmentVariable("ANDRIL_M2_TEST_POSTGRES");
-        if (string.IsNullOrWhiteSpace(env)) return;
+        await using var fixture = await LocalSocialQuestionnaireDatabase.CreateAsync(applySocialMigrations: false);
+        await using var context = fixture.Open();
 
-        var options = new DbContextOptionsBuilder<SocialDbContext>()
-            .UseNpgsql(env, npgsql =>
-            {
-                npgsql.MigrationsHistoryTable(SocialDbContextFactory.MigrationsHistoryTableName, SocialDbContext.Schema);
-            })
-            .Options;
-
-        using var context = new SocialDbContext(options);
-
-        // 1. Apply migration
+        // 1. Apply Social migration to isolated disposable database
         await context.Database.MigrateAsync();
 
-        var applied = await context.Database.GetAppliedMigrationsAsync();
+        var applied = (await context.Database.GetAppliedMigrationsAsync()).ToArray();
         Assert.Contains(InitialMigrationName, applied);
 
-        // 2. Rollback migration to InitialDatabase ("0")
+        // 2. Verify expected schema objects exist in andril_social
+        await using (var conn = context.Database.GetDbConnection())
+        {
+            await conn.OpenAsync();
+            await using var cmd = conn.CreateCommand();
+            cmd.CommandText = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'andril_social' ORDER BY table_name;";
+            var tables = new System.Collections.Generic.List<string>();
+            await using var reader = await cmd.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                tables.Add(reader.GetString(0));
+            }
+
+            Assert.Contains("social_questionnaire_answers", tables);
+            Assert.Contains("social_questionnaire_responses", tables);
+        }
+
+        // 3. Rollback migration to InitialDatabase ("0")
         var migrator = context.GetService<IMigrator>();
         await migrator.MigrateAsync(Migration.InitialDatabase);
 
