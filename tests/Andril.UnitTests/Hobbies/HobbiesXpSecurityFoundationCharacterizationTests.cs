@@ -1,3 +1,4 @@
+using static Andril.UnitTests.Hobbies.Xp.HobbiesXpReceiptContractCandidate;
 using ModuleNames = Andril.Common.Accounts.StarterModules.StarterModules;
 using Xunit;
 
@@ -174,52 +175,4 @@ public sealed class HobbiesXpSecurityFoundationCharacterizationTests
         Assert.True(type.IsSealed);
     }
 
-    public enum SyntheticAsset { Xp = 1, FlightPoints = 2, Coins = 3 }
-    private readonly record struct SyntheticScope(Guid Owner, string Module, bool IsActive);
-    private readonly record struct CandidateEvent(Guid Owner, string Module, Guid EventId, Guid EvidenceId, SyntheticAsset Asset);
-    private sealed record SyntheticXpReceipt
-    {
-        internal SyntheticXpReceipt(CandidateEvent input)
-        { Owner = input.Owner; Module = input.Module; EventId = input.EventId; EvidenceId = input.EvidenceId; }
-        public Guid Owner { get; }
-        public string Module { get; }
-        public Guid EventId { get; }
-        public Guid EvidenceId { get; }
-    }
-
-    // Hobbies consumption candidate only; this does not implement or modify the shared CF-09 engine.
-    private sealed class HobbiesOnlyCandidate
-    {
-        private readonly object _gate = new();
-        private readonly Dictionary<(string Module, Guid Owner, Guid Event), SyntheticXpReceipt> _receipts = [];
-        internal int ReceiptCount { get { lock (_gate) return _receipts.Count; } }
-        private static void RequireScope(SyntheticScope scope)
-        {
-            if (scope.Owner == Guid.Empty || scope.Module != ModuleNames.Hobbies || !scope.IsActive)
-                throw new UnauthorizedAccessException("Synthetic Hobbies scope denied.");
-        }
-        internal SyntheticXpReceipt AcceptSyntheticBackendEvent(SyntheticScope scope, CandidateEvent input)
-        {
-            RequireScope(scope);
-            if (input.Owner != scope.Owner || input.Module != ModuleNames.Hobbies || input.Asset != SyntheticAsset.Xp
-                || input.EventId == Guid.Empty || input.EvidenceId == Guid.Empty)
-                throw new ArgumentException("Invalid synthetic Hobbies XP event.", nameof(input));
-            lock (_gate)
-            {
-                var key = (input.Module, input.Owner, input.EventId);
-                if (_receipts.TryGetValue(key, out var original))
-                {
-                    if (original.EvidenceId != input.EvidenceId) throw new InvalidOperationException("Synthetic XP event conflict.");
-                    return original;
-                }
-                var accepted = new SyntheticXpReceipt(input); _receipts.Add(key, accepted); return accepted;
-            }
-        }
-        internal SyntheticXpReceipt? FindReceipt(SyntheticScope scope, Guid eventId)
-        {
-            RequireScope(scope);
-            lock (_gate) return _receipts.GetValueOrDefault((scope.Module, scope.Owner, eventId));
-        }
-        internal SyntheticXpReceipt? AcceptClientClaim(object? ignoredClientClaim) => null;
-    }
 }
