@@ -37,10 +37,15 @@ jobs:
       - name: Validate the TRX verifier
         run: ./scripts/ci/Test-VerifyMember02Results.ps1
       - name: Offline suites and coverage
+        id: offline-tests
         run: ./scripts/ci/member-02-qa.ps1 Offline
       - name: Audited standalone photo processor restore
+        id: processor-restore
+        # A completed offline failure still fails this job. The standalone license gate can supply independent evidence.
+        if: ${{ !cancelled() && (steps.offline-tests.outcome == 'success' || steps.offline-tests.outcome == 'failure') }}
         run: ./scripts/ci/member-02-qa.ps1 ProcessorRestore
       - name: Licensed photo processor build and required tests
+        if: ${{ !cancelled() && steps.processor-restore.outcome == 'success' }}
         env:
           SIXLABORS_LICENSE_KEY: ${{ secrets.SIXLABORS_LICENSE_KEY }}
         run: ./scripts/ci/member-02-qa.ps1 Processor
@@ -94,12 +99,16 @@ jobs:
       - name: Release integration project build
         run: ./scripts/ci/member-02-qa.ps1 Build -IntegrationOnly
       - name: Verify disposable PostgreSQL and execute required M2 cases
+        id: relational
+        timeout-minutes: 30
         env:
           QA_SERVICE_ID: ${{ job.services.postgres.id }}
         run: ./scripts/ci/member-02-qa.ps1 Relational -ServiceId $env:QA_SERVICE_ID
       - name: Publish PostgreSQL details
         if: always()
         id: details
+        env:
+          QA_RELATIONAL_OUTCOME: ${{ steps.relational.outcome }}
         run: ./scripts/ci/member-02-qa.ps1 Summarize
       - name: Upload available relational reports
         if: always()

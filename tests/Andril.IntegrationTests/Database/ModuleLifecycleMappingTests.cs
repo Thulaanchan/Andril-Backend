@@ -8,6 +8,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Xunit;
 
 namespace Andril.IntegrationTests.Database;
@@ -89,6 +90,26 @@ public sealed class ModuleLifecycleMappingTests
         Assert.False(context.Database.HasPendingModelChanges());
         Assert.Equal(0, guard.Attempts);
         Assert.Equal(ConnectionState.Closed, context.Database.GetDbConnection().State);
+    }
+
+    [Fact]
+    public void DeactivationOutcomeMigrationKeepsMembershipReferentialIntegrityForExistingRows()
+    {
+        var guard = new RejectConnections();
+        using var context = new AccountsDbContext(new DbContextOptionsBuilder<AccountsDbContext>()
+            .UseNpgsql(ConnectionString).AddInterceptors(guard).Options);
+        const string previous = "20261124130000_AddControlledModuleDeactivation";
+        const string current = "20261124140000_AddControlledDeactivationOutcomes";
+        var migration = context.GetService<IMigrator>();
+        var upgrade = migration.GenerateScript(previous, current);
+        var downgrade = migration.GenerateScript(current, previous);
+        Assert.Contains("CASE WHEN revision > 0 THEN module END", upgrade);
+        Assert.Contains("fk_lifecycle_receipts_result_membership", upgrade);
+        Assert.Contains("fk_lifecycle_receipts_accounts", upgrade);
+        Assert.Contains("revision = 0", upgrade);
+        Assert.Contains("ADD CONSTRAINT ck_lifecycle_receipt_revision", downgrade);
+        Assert.DoesNotContain("DELETE FROM andril_identity.account_module_lifecycle_receipts", downgrade);
+        Assert.Equal(0, guard.Attempts);
     }
 
     private sealed class OfflineLifecycleContext(DbContextOptions<OfflineLifecycleContext> options) : DbContext(options)

@@ -6,9 +6,17 @@ using Andril.Common.Accounts.Policies;
 using Andril.Persistence.Accounts;
 using Andril.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql;
+using Xunit;
 
 namespace Andril.IntegrationTests.Lifecycle;
+
+// These tests inspect the disposable-role inventory. Keep that inventory stable
+// while exercising concurrency explicitly inside each test using real connections.
+[CollectionDefinition("ControlledLifecyclePostgreSQL", DisableParallelization = true)]
+public sealed class ControlledLifecyclePostgresCollection;
 
 // Synthetic authority used only by the opted-in integration host. There is deliberately
 // no corresponding production standing/revocation implementation until its contract exists.
@@ -32,6 +40,22 @@ internal sealed class SyntheticAuthority : IControlledLifecycleAuthority, IOnboa
     }
 }
 
+internal sealed class SyntheticDeactivationAuthority : IControlledDeactivationAuthority
+{
+    internal ModuleAuthorizationOutcome Outcome = ModuleAuthorizationOutcome.Satisfied;
+    internal Guid Version = Guid.NewGuid();
+    internal Guid? CurrentVersion;
+    internal ModuleMembershipScope? ScopeOverride;
+    internal Guid? SubjectOverride;
+    public Task<ModuleDeactivationEvidence> ReadAsync(Guid subject, ModuleMembershipScope scope,
+        DateTimeOffset databaseTime, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(new ModuleDeactivationEvidence(ScopeOverride ?? scope, SubjectOverride ?? subject,
+            Outcome, Version, CurrentVersion ?? Version, databaseTime));
+    }
+}
+
 internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
 {
     private readonly string admin;
@@ -41,13 +65,14 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
     internal string MigrationConnection { get; private set; } = "";
     internal string RuntimeConnection { get; private set; } = "";
     internal SyntheticAuthority Authority { get; } = new();
+    internal SyntheticDeactivationAuthority DeactivationAuthority { get; } = new();
     internal Guid Subject { get; } = Guid.NewGuid();
     internal Guid AccountId { get; private set; }
     private bool created;
     private ControlledLifecycleDatabase(string admin) { this.admin = admin; }
 
     internal static async Task<ControlledLifecycleDatabase> CreateAsync(int age = 25, bool consent = true,
-        bool failAfterDatabaseCreation = false)
+        bool failAfterDatabaseCreation = false, string? targetMigration = null)
     {
         var settings = new NpgsqlConnectionStringBuilder(Environment.GetEnvironmentVariable("ANDRIL_M2_TEST_POSTGRES"));
         if (settings.Host is not ("localhost" or "127.0.0.1" or "::1") || settings.Database != "postgres")
@@ -63,6 +88,9 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
             // PostgreSQL 17 requires SET membership to assign database ownership.
             // The bootstrap already receives ADMIN from CREATE ROLE; enable only SET.
             await fixture.Admin($"GRANT {fixture.migrationRole} TO CURRENT_USER WITH SET TRUE, INHERIT FALSE");
+            // Cleanup must terminate only this fixture's runtime sessions as their
+            // own role. Do not grant pg_signal_backend or migration membership to runtime.
+            await fixture.Admin($"GRANT {fixture.runtimeRole} TO CURRENT_USER WITH SET TRUE, INHERIT FALSE");
             await fixture.Admin($"CREATE DATABASE {fixture.name} OWNER {fixture.migrationRole}");
             fixture.created = true;
             if (failAfterDatabaseCreation) throw new IOException("Injected disposable fixture setup failure.");
@@ -78,7 +106,7 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
             fixture.RuntimeConnection = settings.ConnectionString;
             await using (var db = fixture.Open())
             {
-                await db.Database.MigrateAsync();
+                await db.GetService<IMigrator>().MigrateAsync(targetMigration);
                 // Existing source tables already enable RLS. The test migration owner
                 // can seed them; lifecycle FORCE RLS is not bypassed by that owner.
                 var now = DateTimeOffset.UtcNow.AddMinutes(-5);
@@ -108,8 +136,30 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
                     CREATE POLICY test_policies ON andril_identity.account_policy_records FOR SELECT TO {fixture.runtimeRole}
                     USING (account_id = '{fixture.AccountId}'::uuid AND account_id = nullif(current_setting('andril.account', true), '')::uuid);
                     GRANT SELECT, INSERT ON andril_identity.account_module_lifecycles,
-                        andril_identity.account_module_lifecycle_receipts, andril_identity.account_module_lifecycle_audit TO {fixture.runtimeRole};
+                        andril_identity.account_module_lifecycle_receipts TO {fixture.runtimeRole};
+                    GRANT INSERT ON andril_identity.account_module_lifecycle_audit TO {fixture.runtimeRole};
                     GRANT UPDATE (state, revision, state_changed_at_utc) ON andril_identity.account_module_lifecycles TO {fixture.runtimeRole};
+                    GRANT SELECT, INSERT ON andril_identity.private_module_profiles, andril_identity.private_profile_photos TO {fixture.runtimeRole};
+                    GRANT UPDATE (display_name, bio, visibility) ON andril_identity.private_module_profiles TO {fixture.runtimeRole};
+                    GRANT UPDATE (state, reason, is_current, cleanup_pending, lease_token, lease_until_utc,
+                        superseded_at_utc, updated_at_utc, next_cleanup_attempt_at_utc, late_write_risk)
+                        ON andril_identity.private_profile_photos TO {fixture.runtimeRole};
+                    CREATE POLICY test_controlled_profiles ON andril_identity.private_module_profiles TO {fixture.runtimeRole}
+                    USING (account_id = '{fixture.AccountId}'::uuid AND account_id = nullif(current_setting('andril.account', true), '')::uuid
+                        AND module = current_setting('andril.module', true)
+                        AND EXISTS (SELECT 1 FROM andril_identity.accounts a WHERE a.id = private_module_profiles.account_id
+                            AND a.supabase_user_id = nullif(current_setting('andril.subject', true), '')::uuid))
+                    WITH CHECK (account_id = '{fixture.AccountId}'::uuid AND account_id = nullif(current_setting('andril.account', true), '')::uuid
+                        AND module = current_setting('andril.module', true)
+                        AND EXISTS (SELECT 1 FROM andril_identity.accounts a WHERE a.id = private_module_profiles.account_id
+                            AND a.supabase_user_id = nullif(current_setting('andril.subject', true), '')::uuid));
+                    CREATE POLICY test_controlled_photos ON andril_identity.private_profile_photos TO {fixture.runtimeRole}
+                    USING (module = current_setting('andril.module', true)
+                        AND EXISTS (SELECT 1 FROM andril_identity.private_module_profiles p
+                            WHERE p.id = private_profile_photos.profile_id AND p.module = private_profile_photos.module))
+                    WITH CHECK (module = current_setting('andril.module', true)
+                        AND EXISTS (SELECT 1 FROM andril_identity.private_module_profiles p
+                            WHERE p.id = private_profile_photos.profile_id AND p.module = private_profile_photos.module));
                     """);
 #pragma warning restore EF1002
                 foreach (var table in new[] { "account_module_lifecycles", "account_module_lifecycle_receipts", "account_module_lifecycle_audit" })
@@ -120,7 +170,8 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
         catch { await fixture.DisposeAsync(); throw; }
     }
 
-    internal ControlledModuleLifecycleStore Store() => new(RuntimeConnection, Authority, Authority, Authority, true);
+    internal ControlledModuleLifecycleStore Store(bool enableDeactivation = false) =>
+        new(RuntimeConnection, Authority, Authority, Authority, true, enableDeactivation ? DeactivationAuthority : null);
     internal OfflineModuleLifecycleService Service(IModuleLifecycleStore? store = null) => new(store ?? Store());
     internal AccountsDbContext Open() => new(new DbContextOptionsBuilder<AccountsDbContext>()
         .UseNpgsql(MigrationConnection, o => o.MigrationsHistoryTable("__EFMigrationsHistory", "andril_identity")).Options);
@@ -146,15 +197,15 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
         await using var command = new NpgsqlCommand($"SELECT count(*) FROM andril_identity.{table}", db);
         return (long)(await command.ExecuteScalarAsync())!;
     }
-    private async Task Admin(string sql, bool asMigration = false, string? database = null)
+    private async Task Admin(string sql, bool asMigration = false, string? database = null, bool asRuntime = false)
     {
         var settings = new NpgsqlConnectionStringBuilder(database is null ? admin : MigrationConnection);
         if (database is not null) settings.Database = database;
         await using var db = new NpgsqlConnection(settings.ConnectionString);
         await db.OpenAsync();
-        if (asMigration)
+        if (asMigration || asRuntime)
         {
-            await using var role = new NpgsqlCommand($"SET ROLE {migrationRole}", db);
+            await using var role = new NpgsqlCommand($"SET ROLE {(asRuntime ? runtimeRole : migrationRole)}", db);
             await role.ExecuteNonQueryAsync();
         }
         await using var command = new NpgsqlCommand(sql, db);
@@ -162,8 +213,17 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     {
-        NpgsqlConnection.ClearAllPools();
-        if (created) await Admin($"DROP DATABASE {name} WITH (FORCE)", true);
+        if (RuntimeConnection.Length > 0)
+        {
+            using var pool = new NpgsqlConnection(RuntimeConnection);
+            NpgsqlConnection.ClearPool(pool);
+        }
+        if (created)
+        {
+            await Admin($"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='{name}' AND usename='{runtimeRole}' AND pid<>pg_backend_pid()", asRuntime: true);
+            await Admin($"DROP DATABASE {name} WITH (FORCE)", true);
+            created = false;
+        }
         await Admin($"DROP ROLE IF EXISTS {runtimeRole}");
         await Admin($"DROP ROLE IF EXISTS {migrationRole}");
     }
