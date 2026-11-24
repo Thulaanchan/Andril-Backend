@@ -40,7 +40,7 @@ public sealed partial class MapContributionSubmissionWriterTests
                 };
                 var interceptor = new AdvanceAfterInsert(clock, completed.AddMinutes(10).AddTicks(1),
                     scenario == "expires during save");
-                var writer = new MapContributionSubmissionWriter(new Contexts(connection, interceptor), clock);
+                var writer = new MapContributionSubmissionWriter(new Contexts(connection, interceptor), new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId), clock);
                 var result = await writer.SubmitAsync(prepared);
                 var accepted = scenario is "under" or "boundary";
                 Assert.Equal(accepted ? MapSubmissionOutcome.Created : MapSubmissionOutcome.Denied, result.Outcome);
@@ -81,7 +81,7 @@ public sealed partial class MapContributionSubmissionWriterTests
                 WHERE session_id = {prepared.Contribution.CaptureSessionId} FOR UPDATE
                 """, token);
             var lockProbe = new SessionLockProbe();
-            var attempt = new MapContributionSubmissionWriter(new Contexts(connection, lockProbe), clock)
+            var attempt = new MapContributionSubmissionWriter(new Contexts(connection, lockProbe), new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId), clock)
                 .SubmitAsync(prepared, token);
             var released = false;
             try
@@ -161,7 +161,7 @@ public sealed partial class MapContributionSubmissionWriterTests
                     seed.SaveChanges();
                 });
 
-                var result = await new MapContributionSubmissionWriter(reconcileFactory).SubmitAsync(prepared);
+                var result = await new MapContributionSubmissionWriter(reconcileFactory, new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId)).SubmitAsync(prepared);
                 Assert.Equal(2, reconcileFactory.Created);
                 var error = Assert.IsType<PostgresException>(conflict.Error);
                 Assert.Equal(PostgresErrorCodes.UniqueViolation, error.SqlState);
@@ -190,7 +190,7 @@ public sealed partial class MapContributionSubmissionWriterTests
                 var prepared = await PrepareAsync(factory);
                 var failure = new RealDatabaseFailure(prepared.Contribution, primaryKey, check: !primaryKey);
                 var failingFactory = new Contexts(connection, failure);
-                var result = await new MapContributionSubmissionWriter(failingFactory).SubmitAsync(prepared);
+                var result = await new MapContributionSubmissionWriter(failingFactory, new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId)).SubmitAsync(prepared);
                 Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.InfrastructureFailure), result);
                 Assert.Equal(1, failingFactory.Created);
                 var error = Assert.IsType<PostgresException>(failure.Error);
@@ -212,7 +212,7 @@ public sealed partial class MapContributionSubmissionWriterTests
             var prepared = await PrepareAsync(factory);
             var firstBarrier = new PauseAfterInsert();
             var secondProbe = new SessionLockProbe();
-            var first = new MapContributionSubmissionWriter(new Contexts(connection, firstBarrier))
+            var first = new MapContributionSubmissionWriter(new Contexts(connection, firstBarrier), new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId))
                 .SubmitAsync(prepared, token);
             Task<MapSubmissionResult>? second = null;
             try
@@ -223,7 +223,7 @@ public sealed partial class MapContributionSubmissionWriterTests
                 await using (var count = new NpgsqlCommand(
                     "SELECT count(*) FROM andril_hobbies.map_contributions", observer))
                     Assert.Equal(0L, await count.ExecuteScalarAsync(token));
-                second = new MapContributionSubmissionWriter(new Contexts(connection, secondProbe))
+                second = new MapContributionSubmissionWriter(new Contexts(connection, secondProbe), new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId))
                     .SubmitAsync(prepared, token);
                 var secondPid = await secondProbe.Attempted.Task.WaitAsync(token);
                 Assert.NotEqual(firstPid, secondPid);
@@ -337,7 +337,7 @@ public sealed partial class MapContributionSubmissionWriterTests
             var factory = new Contexts(connection);
             var prepared = await PrepareAsync(factory);
             var independent = await PrepareAsync(factory);
-            var writer = new MapContributionSubmissionWriter(factory);
+            var writer = new MapContributionSubmissionWriter(factory, new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId));
             await using var blocker = factory.CreateDbContext();
             await using var transaction = await blocker.Database.BeginTransactionAsync();
             await blocker.Database.ExecuteSqlInterpolatedAsync($"""
@@ -351,7 +351,7 @@ public sealed partial class MapContributionSubmissionWriterTests
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
                 writer.SubmitAsync(prepared, waitingCancellation.Token));
             var waiting = writer.SubmitAsync(prepared);
-            var separate = await writer.SubmitAsync(independent).WaitAsync(TimeSpan.FromSeconds(10));
+            var separate = await new MapContributionSubmissionWriter(factory, new TrustedSubmissionAuthorization(independent.Contribution.OwnerHobbiesModuleProfileId)).SubmitAsync(independent).WaitAsync(TimeSpan.FromSeconds(10));
             Assert.Equal(MapSubmissionOutcome.Created, separate.Outcome);
             Assert.False(waiting.IsCompleted);
             await transaction.RollbackAsync();
@@ -364,7 +364,7 @@ public sealed partial class MapContributionSubmissionWriterTests
         {
             var factory = new Contexts(connection);
             var first = await PrepareAsync(factory);
-            var writer = new MapContributionSubmissionWriter(factory);
+            var writer = new MapContributionSubmissionWriter(factory, new TrustedSubmissionAuthorization(first.Contribution.OwnerHobbiesModuleProfileId));
             var results = await Task.WhenAll(Enumerable.Range(0, 8).Select(_ => writer.SubmitAsync(first)));
             Assert.Single(results, result => result.Outcome == MapSubmissionOutcome.Created);
             Assert.Equal(7, results.Count(result => result.Outcome == MapSubmissionOutcome.ExistingAuthorized));
@@ -404,7 +404,7 @@ public sealed partial class MapContributionSubmissionWriterTests
                     _ => throw new InvalidOperationException("Unknown test mutation.")
                 };
                 await probe.Database.ExecuteSqlInterpolatedAsync(mutation);
-                var result = await new MapContributionSubmissionWriter(factory).SubmitAsync(prepared);
+                var result = await new MapContributionSubmissionWriter(factory, new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId)).SubmitAsync(prepared);
                 Assert.Equal(new MapSubmissionResult(MapSubmissionOutcome.Denied), result);
                 Assert.Empty(await probe.MapContributions.ToListAsync());
             }
@@ -418,15 +418,15 @@ public sealed partial class MapContributionSubmissionWriterTests
             var prepared = await PrepareAsync(factory);
             var failing = new Contexts(connection, new FailInsert());
             Assert.Equal(MapSubmissionOutcome.InfrastructureFailure,
-                (await new MapContributionSubmissionWriter(failing).SubmitAsync(prepared)).Outcome);
+                (await new MapContributionSubmissionWriter(failing, new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId)).SubmitAsync(prepared)).Outcome);
             await using var probe = factory.CreateDbContext();
             Assert.Empty(await probe.MapContributions.ToListAsync());
             var ambiguous = new Contexts(connection, new LoseAcknowledgement());
             Assert.Equal(MapSubmissionOutcome.OutcomeUnknown,
-                (await new MapContributionSubmissionWriter(ambiguous).SubmitAsync(prepared)).Outcome);
+                (await new MapContributionSubmissionWriter(ambiguous, new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId)).SubmitAsync(prepared)).Outcome);
             Assert.Equal(1, await probe.MapContributions.CountAsync());
             Assert.Equal(MapSubmissionOutcome.ExistingAuthorized,
-                (await new MapContributionSubmissionWriter(factory).SubmitAsync(prepared)).Outcome);
+                (await new MapContributionSubmissionWriter(factory, new TrustedSubmissionAuthorization(prepared.Contribution.OwnerHobbiesModuleProfileId)).SubmitAsync(prepared)).Outcome);
         });
 
     private sealed class FailInsert : SaveChangesInterceptor
@@ -443,16 +443,17 @@ public sealed partial class MapContributionSubmissionWriterTests
             throw new NpgsqlException("Synthetic acknowledgement loss");
     }
 
-    private static async Task<MapContributionSubmissionPreflight.PreparedSubmission> PrepareAsync(Contexts factory)
+    private static async Task<MapContributionSubmissionPreflight.PreparedSubmission> PrepareAsync(Contexts factory, MapAttraction? existingAttraction = null, Guid? existingOwner = null)
     {
         await using var context = factory.CreateDbContext();
-        var owner = Guid.NewGuid();
-        var attraction = MapAttraction.Create(Guid.NewGuid(), "Synthetic", 0, 0);
+        var owner = existingOwner ?? Guid.NewGuid();
+        var attraction = existingAttraction ?? MapAttraction.Create(Guid.NewGuid(), "Synthetic", 0, 0);
         var session = MapContributionCaptureSession.Create(Guid.NewGuid(), owner, attraction.AttractionId, DateTimeOffset.UtcNow.AddSeconds(-10));
         session.Complete(session.StartedAtUtc.AddSeconds(5));
-        context.MapAttractions.Add(attraction);
+        if (existingAttraction is null) context.MapAttractions.Add(attraction);
         context.CaptureSessions.Add(session);
         await context.SaveChangesAsync();
+        await EnsureLifecycleFixtureAsync(context, attraction.AttractionId, owner);
         var ports = new TrustedTestPorts(owner);
         var preflight = new MapContributionSubmissionPreflight(ports,
             new MapContributionCaptureSessionRepository<HobbiesMapDbContext>(context),

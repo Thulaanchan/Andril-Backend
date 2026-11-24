@@ -6,6 +6,7 @@ using Andril.Hobbies.Map.Contributions;
 using Andril.Hobbies.Map.LocationValidation;
 using Andril.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Npgsql;
 
 [assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Andril.IntegrationTests")]
@@ -16,8 +17,11 @@ namespace Andril.Persistence.Repositories.Hobbies;
 // must be approved before exposing this writer through an application entry point.
 internal sealed class MapContributionSubmissionWriter(
     IDbContextFactory<HobbiesMapDbContext> contexts,
+    IMapSubmissionTransactionAuthorization authorization,
     TimeProvider? timeProvider = null) : IMapContributionSubmissionWriter
 {
+    private readonly IDbContextFactory<HobbiesMapDbContext> _contexts = contexts ?? throw new ArgumentNullException(nameof(contexts));
+    private readonly IMapSubmissionTransactionAuthorization _authorization = authorization ?? throw new ArgumentNullException(nameof(authorization));
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     public async Task<MapSubmissionResult> SubmitAsync(
         MapContributionSubmissionPreflight.PreparedSubmission prepared,
@@ -25,13 +29,26 @@ internal sealed class MapContributionSubmissionWriter(
     {
         ArgumentNullException.ThrowIfNull(prepared);
         cancellationToken.ThrowIfCancellationRequested();
+        if (System.Transactions.Transaction.Current is not null)
+            throw new InvalidOperationException("Submission writes do not accept ambient transactions.");
         var contribution = prepared.Contribution;
         var committing = false;
         try
         {
-            await using var context = await contexts.CreateDbContextAsync(cancellationToken);
+            await using var context = await _contexts.CreateDbContextAsync(cancellationToken);
+            if (!Usable(context)) return new(MapSubmissionOutcome.InfrastructureFailure);
             await using var transaction = await context.Database.BeginTransactionAsync(
                 IsolationLevel.ReadCommitted, cancellationToken);
+            var owner = await _authorization.ResolveActiveHobbiesOwnerAsync(context.Database.GetDbConnection(), transaction.GetDbTransaction(), cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (owner is null || owner == Guid.Empty || owner != contribution.OwnerHobbiesModuleProfileId)
+                return new(MapSubmissionOutcome.Denied);
+            // Authorization fence -> lifecycle row -> capture session. Hold all through commit.
+            // SqlQuery is an unmapped scalar query; production EF mappings remain unchanged.
+            var active = await context.Database.SqlQuery<bool?>($"""
+                SELECT is_active AS "Value" FROM andril_hobbies.map_attraction_lifecycle
+                WHERE attraction_id = {contribution.AttractionId} FOR UPDATE
+                """).SingleOrDefaultAsync(cancellationToken);
             var session = await context.CaptureSessions.FromSqlInterpolated($"""
                 SELECT * FROM andril_hobbies.map_contribution_capture_sessions
                 WHERE session_id = {contribution.CaptureSessionId}
@@ -56,7 +73,9 @@ internal sealed class MapContributionSubmissionWriter(
             if (existing is not null)
                 return new(MapSubmissionOutcome.ExistingAuthorized, existing.ContributionId);
 
-            if (!MapContributionSubmissionWindow.Allows(session, _timeProvider.GetUtcNow()))
+            // Inactive or unprovisioned attractions reject NEW writes. Existing committed
+            // evidence above remains an authorized read and never creates another record.
+            if (active is not true || !MapContributionSubmissionWindow.Allows(session, _timeProvider.GetUtcNow()))
                 return new(MapSubmissionOutcome.Denied);
 
             context.MapContributions.Add(contribution);
@@ -85,8 +104,9 @@ internal sealed class MapContributionSubmissionWriter(
         {
             throw;
         }
-        catch (Exception error) when (error is NpgsqlException or DbUpdateException or OperationCanceledException)
+        catch (Exception)
         {
+            if (!committing) cancellationToken.ThrowIfCancellationRequested();
             return new(committing ? MapSubmissionOutcome.OutcomeUnknown : MapSubmissionOutcome.InfrastructureFailure);
         }
     }
@@ -97,7 +117,13 @@ internal sealed class MapContributionSubmissionWriter(
         try
         {
             // The failed transaction and connection have been disposed before this query.
-            await using var context = await contexts.CreateDbContextAsync(cancellationToken);
+            await using var context = await _contexts.CreateDbContextAsync(cancellationToken);
+            if (!Usable(context)) return new(MapSubmissionOutcome.InfrastructureFailure);
+            await using var transaction = await context.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+            var owner = await _authorization.ResolveActiveHobbiesOwnerAsync(context.Database.GetDbConnection(), transaction.GetDbTransaction(), cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (owner is null || owner == Guid.Empty || owner != contribution.OwnerHobbiesModuleProfileId)
+                return new(MapSubmissionOutcome.Denied);
             var existing = await context.MapContributions.AsNoTracking().SingleOrDefaultAsync(
                 row => row.CaptureSessionId == contribution.CaptureSessionId
                     && row.OwnerHobbiesModuleProfileId == contribution.OwnerHobbiesModuleProfileId
@@ -106,9 +132,21 @@ internal sealed class MapContributionSubmissionWriter(
                 ? new(MapSubmissionOutcome.Denied)
                 : new(MapSubmissionOutcome.ExistingAuthorized, existing.ContributionId);
         }
-        catch (NpgsqlException)
+        catch (OperationCanceledException) { throw; }
+        catch (Exception)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             return new(MapSubmissionOutcome.InfrastructureFailure);
         }
     }
+
+    private static bool Usable(HobbiesMapDbContext context)
+    {
+        var connection = context.Database.GetDbConnection();
+        if (connection is not NpgsqlConnection || connection.State != ConnectionState.Closed
+            || context.Database.CurrentTransaction is not null || context.ChangeTracker.HasChanges()) return false;
+        var settings = new NpgsqlConnectionStringBuilder(connection.ConnectionString);
+        return !settings.Enlist && !settings.Multiplexing && !settings.NoResetOnClose;
+    }
+
 }
