@@ -33,7 +33,7 @@ internal sealed class UnavailableLifecycleAuthority : IControlledLifecycleAuthor
 
 // Deliberately internal and never registered by production startup. The only executable
 // composition lives in the integration test assembly, with a random disposable database.
-internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivationStore
+internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivationStore, IModuleNavigationReader
 {
     private readonly string connection;
     private readonly IOnboardingIdentity identity;
@@ -71,6 +71,17 @@ internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivatio
         var snapshot = await Snapshot(db, subject, module, requestKey, cancellationToken);
         await tx.CommitAsync(cancellationToken);
         return snapshot;
+    }
+
+    public async Task<ModuleNavigationSnapshot> ReadNavigationAsync(Guid subject, string module, CancellationToken ct)
+    {
+        await using var db = Open();
+        await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.RepeatableRead, ct);
+        await db.Database.ExecuteSqlRawAsync("SET TRANSACTION READ ONLY", ct);
+        await SetSubject(db, subject, module, ct);
+        var (evidence, membership) = await ReadMembershipAsync(db, subject, module, ct);
+        await tx.CommitAsync(ct);
+        return new(evidence, membership?.Membership);
     }
 
     private async Task<ModuleLifecycleResult> InTransaction(Guid subject, string module, Guid requestKey,
@@ -161,6 +172,25 @@ internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivatio
 
     private async Task<ModuleLifecycleSnapshot> Snapshot(AccountsDbContext db, Guid subject, string module, Guid key, CancellationToken ct)
     {
+        var (evidence, current) = await ReadMembershipAsync(db, subject, module, ct);
+        var scope = evidence.Scope;
+        var stored = await db.Set<ModuleLifecycleReceiptRow>().AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == scope.AccountId && x.Module == module && x.RequestKey == key, ct);
+        var receipt = stored is null ? null : new ModuleLifecycleReceipt(scope, key,
+            ParseOperation(stored.Operation), stored.ExpectedRevision, stored.IntentHash,
+            new(module, stored.Revision, stored.StateChangedAtUtc) { State = ResultState(ParseOperation(stored.Operation)) }, stored.RecordedAtUtc);
+        var deactivation = deactivationAuthority is null ? null
+            : await deactivationAuthority.ReadAsync(subject, scope, evidence.EvaluatedAtUtc, ct);
+        // The store supplies the clock and verifies identity. The synthetic authority
+        // supplies operation-specific standing/version evidence only.
+        if (deactivation is not null)
+            deactivation = deactivation with { EvaluatedAtUtc = evidence.EvaluatedAtUtc,
+                ConfirmedSubject = identity.IsConfirmedFor(subject) ? deactivation.ConfirmedSubject : Guid.Empty };
+        return new(evidence, current, receipt, deactivation);
+    }
+
+    private async Task<(ModuleActivationEvidence Evidence, StoredModuleMembership? Current)> ReadMembershipAsync(
+        AccountsDbContext db, Guid subject, string module, CancellationToken ct)
+    {
         var account = await db.Accounts.AsNoTracking().SingleOrDefaultAsync(x => x.SupabaseUserId == subject, ct)
             ?? throw new ModuleLifecycleException(ModuleLifecycleDenial.UnconfirmedAccount);
         await db.Database.ExecuteSqlInterpolatedAsync($"SELECT set_config('andril.account', {account.Id.ToString()}, true)", ct);
@@ -178,18 +208,7 @@ internal sealed class ControlledModuleLifecycleStore : IOfflineModuleDeactivatio
         var row = await db.Set<ModuleLifecycleRow>().AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == account.Id && x.Module == module, ct);
         StoredModuleMembership? current = row is null ? null : new(row.State == "active"
             ? ActiveModuleMembership.Restore(scope, row.Revision) : new InactiveModuleMembership(scope, row.Revision), row.StateChangedAtUtc, row.FirstActivatedAtUtc);
-        var stored = await db.Set<ModuleLifecycleReceiptRow>().AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == account.Id && x.Module == module && x.RequestKey == key, ct);
-        var receipt = stored is null ? null : new ModuleLifecycleReceipt(scope, key,
-            ParseOperation(stored.Operation), stored.ExpectedRevision, stored.IntentHash,
-            new(module, stored.Revision, stored.StateChangedAtUtc) { State = ResultState(ParseOperation(stored.Operation)) }, stored.RecordedAtUtc);
-        var deactivation = deactivationAuthority is null ? null
-            : await deactivationAuthority.ReadAsync(subject, scope, now, ct);
-        // The store supplies the clock and verifies identity. The synthetic authority
-        // supplies operation-specific standing/version evidence only.
-        if (deactivation is not null)
-            deactivation = deactivation with { EvaluatedAtUtc = now,
-                ConfirmedSubject = identity.IsConfirmedFor(subject) ? deactivation.ConfirmedSubject : Guid.Empty };
-        return new(evidence, current, receipt, deactivation);
+        return (evidence, current);
     }
 
     private static string OperationName(ModuleLifecycleOperation operation) => operation switch

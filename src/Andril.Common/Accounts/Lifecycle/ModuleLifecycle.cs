@@ -56,7 +56,7 @@ internal sealed class ActiveModuleMembership : ModuleMembership
     internal static ActiveModuleMembership Activate(ModuleMembershipScope scope, ModuleActivationEvidence evidence,
         ModuleMembership? current = null)
     {
-        Validate(scope, evidence, current);
+        ValidateEvidence(scope, evidence, current);
         return current switch
         {
             null => new(scope, 1),
@@ -68,7 +68,7 @@ internal sealed class ActiveModuleMembership : ModuleMembership
     internal static ActiveModuleMembership Reactivate(ModuleMembershipScope scope, ModuleActivationEvidence evidence,
         ModuleMembership? current, long expectedRevision)
     {
-        Validate(scope, evidence, current);
+        ValidateEvidence(scope, evidence, current);
         if (expectedRevision is <= 0 or long.MaxValue)
             throw new ModuleLifecycleException(ModuleLifecycleDenial.ConflictingTransition);
 
@@ -80,7 +80,7 @@ internal sealed class ActiveModuleMembership : ModuleMembership
         };
     }
 
-    private static void Validate(ModuleMembershipScope scope, ModuleActivationEvidence evidence, ModuleMembership? current)
+    internal static void ValidateEvidence(ModuleMembershipScope scope, ModuleActivationEvidence evidence, ModuleMembership? current)
     {
         if (scope.AccountId == Guid.Empty || !ModuleNames.IsValid(scope.Module)
             || evidence.Scope != scope || (current is not null && current.Scope != scope))
