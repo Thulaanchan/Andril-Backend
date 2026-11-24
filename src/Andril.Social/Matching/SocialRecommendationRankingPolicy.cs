@@ -98,27 +98,71 @@ public static class SocialRecommendationRankingPolicy
         // 1. Tier (Strong -> Standard -> OtherEligible -> Unscored)
         // 2. Compatibility Score (Descending unrounded)
         // 3. Applicable Coverage (Descending)
-        // 4. Stable Profile ID GUID comparison for tie-breaking
-        var sorted = rankedList
+        var orderedCandidates = rankedList
             .OrderBy(c => (int)c.Tier)
             .ThenByDescending(c => c.ScoreResult.CompatibilityScore ?? -1.0)
             .ThenByDescending(c => c.ScoreResult.ApplicableCoveragePercentage)
-            .ThenBy(c => c.CandidateProfileId)
             .ToList();
 
-        // Apply rotation if candidates exist and rotationOffset > 0
-        if (sorted.Count > 1 && rotationOffset > 0)
+        // Apply rotation EXCLUSIVELY within exact ranking tie groups (Tier, Score, and Coverage equality).
+        // Different tiers, scores, or coverage values are never rotated across boundaries.
+        var result = new List<SocialRecommendationCandidate>(orderedCandidates.Count);
+        int i = 0;
+        while (i < orderedCandidates.Count)
         {
-            int effectiveOffset = rotationOffset % sorted.Count;
-            if (effectiveOffset > 0)
+            int j = i + 1;
+            while (j < orderedCandidates.Count && AreExactTie(orderedCandidates[i], orderedCandidates[j]))
             {
-                var rotated = new List<SocialRecommendationCandidate>(sorted.Count);
-                rotated.AddRange(sorted.Skip(effectiveOffset));
-                rotated.AddRange(sorted.Take(effectiveOffset));
-                return rotated.AsReadOnly();
+                j++;
             }
+
+            var tieGroup = orderedCandidates.GetRange(i, j - i);
+            tieGroup.Sort((a, b) => a.CandidateProfileId.CompareTo(b.CandidateProfileId));
+
+            if (tieGroup.Count > 1 && rotationOffset > 0)
+            {
+                int effectiveOffset = rotationOffset % tieGroup.Count;
+                if (effectiveOffset > 0)
+                {
+                    result.AddRange(tieGroup.Skip(effectiveOffset));
+                    result.AddRange(tieGroup.Take(effectiveOffset));
+                }
+                else
+                {
+                    result.AddRange(tieGroup);
+                }
+            }
+            else
+            {
+                result.AddRange(tieGroup);
+            }
+
+            i = j;
         }
 
-        return sorted.AsReadOnly();
+        return result.AsReadOnly();
+    }
+
+    private static bool AreExactTie(SocialRecommendationCandidate a, SocialRecommendationCandidate b)
+    {
+        if (a.Tier != b.Tier)
+        {
+            return false;
+        }
+
+        var scoreA = a.ScoreResult.CompatibilityScore;
+        var scoreB = b.ScoreResult.CompatibilityScore;
+
+        if (scoreA.HasValue != scoreB.HasValue)
+        {
+            return false;
+        }
+
+        if (scoreA.HasValue && scoreB.HasValue && Math.Abs(scoreA.Value - scoreB.Value) > 1e-9)
+        {
+            return false;
+        }
+
+        return Math.Abs(a.ScoreResult.ApplicableCoveragePercentage - b.ScoreResult.ApplicableCoveragePercentage) < 1e-9;
     }
 }
