@@ -22,7 +22,7 @@ using Xunit;
 
 namespace Andril.IntegrationTests.Database;
 
-public sealed class FlightPointsLedgerPersistenceTests
+public sealed partial class FlightPointsLedgerPersistenceTests
 {
     private const string OfflineConnection = "Host=127.0.0.1;Database=andril_model_only;Username=unused";
     private const string CheckPrefix = "ck_flight_point_ledger_";
