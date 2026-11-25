@@ -72,7 +72,14 @@ public sealed class SocialQuestionnaireLifecycleAccessService : ISocialQuestionn
             cancellationToken.ThrowIfCancellationRequested();
             ValidateProfileScope(profile);
 
-            return await _lifecycleRepository.GetActiveResponseAsync(profile.ProfileId, cancellationToken);
+            var response = await _lifecycleRepository.GetActiveResponseAsync(profile.ProfileId, cancellationToken);
+            if (response is null)
+            {
+                return null;
+            }
+
+            ValidateResponseOwnership(response, profile.ProfileId);
+            return response;
         }, cancellationToken);
     }
 
@@ -87,11 +94,7 @@ public sealed class SocialQuestionnaireLifecycleAccessService : ISocialQuestionn
         {
             cancellationToken.ThrowIfCancellationRequested();
             ValidateProfileScope(profile);
-
-            if (initialResponse.ProfileId != profile.ProfileId)
-            {
-                throw new ProfileAccessDeniedException();
-            }
+            ValidateResponseOwnership(initialResponse, profile.ProfileId);
 
             await _lifecycleRepository.CreateInitialResponseAsync(profile.ProfileId, initialResponse, cancellationToken);
             return true;
@@ -115,11 +118,7 @@ public sealed class SocialQuestionnaireLifecycleAccessService : ISocialQuestionn
         {
             cancellationToken.ThrowIfCancellationRequested();
             ValidateProfileScope(profile);
-
-            if (newResponse.ProfileId != profile.ProfileId)
-            {
-                throw new ProfileAccessDeniedException();
-            }
+            ValidateResponseOwnership(newResponse, profile.ProfileId);
 
             await _lifecycleRepository.ReplaceCurrentResponseAsync(
                 profile.ProfileId,
@@ -157,6 +156,17 @@ public sealed class SocialQuestionnaireLifecycleAccessService : ISocialQuestionn
         if (profile is null ||
             !string.Equals(profile.Module, SocialModule, StringComparison.OrdinalIgnoreCase) ||
             profile.ProfileId == Guid.Empty)
+        {
+            throw new ProfileAccessDeniedException();
+        }
+    }
+
+    private static void ValidateResponseOwnership(QuestionnaireResponseEntity response, Guid authorizedProfileId)
+    {
+        if (response is null ||
+            response.ProfileId == Guid.Empty ||
+            response.ProfileId != authorizedProfileId ||
+            response.Id == Guid.Empty)
         {
             throw new ProfileAccessDeniedException();
         }
