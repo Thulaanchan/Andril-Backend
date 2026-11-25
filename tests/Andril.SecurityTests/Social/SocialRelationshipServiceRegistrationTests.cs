@@ -111,6 +111,94 @@ public sealed class SocialRelationshipServiceRegistrationTests
 
         var concrete = scope.ServiceProvider.GetRequiredService<SocialRelationshipAccessService>();
         Assert.NotNull(concrete);
+        Assert.Same(service, concrete);
+    }
+
+    [Fact]
+    public void AddSocialRelationshipServices_RepeatedResolutionWithinScope_PreservesIdentity()
+    {
+        var services = new ServiceCollection();
+        services.AddSocialRelationshipServices();
+        services.AddScoped<IPrivateProfileService, StubProfileService>();
+        services.AddScoped<ISocialRelationshipTransactionRepository, StubTransactionRepository>();
+        services.AddScoped<ISocialRelationshipEvidenceProvider, StubEvidenceProvider>();
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var s1 = scope.ServiceProvider.GetRequiredService<ISocialRelationshipAccessService>();
+        var s2 = scope.ServiceProvider.GetRequiredService<ISocialRelationshipAccessService>();
+        var c1 = scope.ServiceProvider.GetRequiredService<SocialRelationshipAccessService>();
+        var c2 = scope.ServiceProvider.GetRequiredService<SocialRelationshipAccessService>();
+
+        Assert.Same(s1, s2);
+        Assert.Same(s1, c1);
+        Assert.Same(c1, c2);
+    }
+
+    [Fact]
+    public void AddSocialRelationshipServices_SeparateRequestScopes_ReceiveSeparateInstances()
+    {
+        var services = new ServiceCollection();
+        services.AddSocialRelationshipServices();
+        services.AddScoped<IPrivateProfileService, StubProfileService>();
+        services.AddScoped<ISocialRelationshipTransactionRepository, StubTransactionRepository>();
+        services.AddScoped<ISocialRelationshipEvidenceProvider, StubEvidenceProvider>();
+
+        using var provider = services.BuildServiceProvider();
+        using var scope1 = provider.CreateScope();
+        using var scope2 = provider.CreateScope();
+
+        var instance1 = scope1.ServiceProvider.GetRequiredService<ISocialRelationshipAccessService>();
+        var instance2 = scope2.ServiceProvider.GetRequiredService<ISocialRelationshipAccessService>();
+
+        Assert.NotNull(instance1);
+        Assert.NotNull(instance2);
+        Assert.NotSame(instance1, instance2);
+
+        var concrete1 = scope1.ServiceProvider.GetRequiredService<SocialRelationshipAccessService>();
+        var concrete2 = scope2.ServiceProvider.GetRequiredService<SocialRelationshipAccessService>();
+
+        Assert.Same(instance1, concrete1);
+        Assert.Same(instance2, concrete2);
+    }
+
+    [Fact]
+    public void AddSocialRelationshipServices_IncompatibleCustomInterface_FailsSafelyWithInvalidOperationException()
+    {
+        var services = new ServiceCollection();
+        var customMock = new StubSocialRelationshipAccessService();
+        services.AddScoped<ISocialRelationshipAccessService>(_ => customMock);
+        services.AddSocialRelationshipServices();
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var resolvedInterface = scope.ServiceProvider.GetRequiredService<ISocialRelationshipAccessService>();
+        Assert.Same(customMock, resolvedInterface);
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            scope.ServiceProvider.GetRequiredService<SocialRelationshipAccessService>());
+
+        Assert.Contains("is not compatible with concrete SocialRelationshipAccessService resolution", ex.Message);
+    }
+
+    [Fact]
+    public void AddSocialRelationshipServices_IncompatibleCustomInterface_DoesNotBypassCustomAuthorization()
+    {
+        var services = new ServiceCollection();
+        var customMock = new StubSocialRelationshipAccessService();
+        services.AddScoped<ISocialRelationshipAccessService>(_ => customMock);
+        services.AddSocialRelationshipServices();
+        services.AddScoped<IPrivateProfileService, StubProfileService>();
+        services.AddScoped<ISocialRelationshipTransactionRepository, StubTransactionRepository>();
+        services.AddScoped<ISocialRelationshipEvidenceProvider, StubEvidenceProvider>();
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            scope.ServiceProvider.GetRequiredService<SocialRelationshipAccessService>());
     }
 
     [Fact]
