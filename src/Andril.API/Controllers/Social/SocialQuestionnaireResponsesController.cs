@@ -152,6 +152,16 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
                 });
             }
 
+            if (!Enum.IsDefined(activeResponse.Status))
+            {
+                return StatusCode(StatusCodes.Status500InternalServerError, new ProblemDetails
+                {
+                    Status = StatusCodes.Status500InternalServerError,
+                    Title = "Invalid questionnaire response state.",
+                    Detail = "Stored questionnaire response contains an invalid participation status."
+                });
+            }
+
             var answerDtos = activeResponse.Answers
                 .Select(a => new SocialQuestionnaireAnswerItemDto(a.QuestionId, a.OptionId))
                 .ToArray();
@@ -210,6 +220,30 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
         @"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    private static readonly HashSet<string> ExactAllowedParseErrors = new(StringComparer.Ordinal)
+    {
+        "Payload cannot be null or empty.",
+        "Unexpected end of JSON payload.",
+        "Root payload must be a JSON object.",
+        "Expected JSON property name.",
+        "Property name cannot be null or empty.",
+        "Property 'version' must be a string.",
+        "Property 'version' must be a non-empty string within valid length bounds.",
+        "Property 'skip' must be a boolean value.",
+        "Property 'answers' must be an array.",
+        "Each element in 'answers' must be a JSON object.",
+        "Expected property name in answer object.",
+        "Property name in answer object cannot be empty.",
+        "'questionId' must be a string.",
+        "'questionId' must be a non-empty string within valid bounds.",
+        "'optionId' must be a string.",
+        "'optionId' must be a non-empty string within valid bounds.",
+        "Answer object is missing required 'questionId'.",
+        "Answer object is missing required 'optionId'.",
+        "Unexpected trailing content after JSON root object.",
+        "Missing required property 'version'."
+    };
+
     private static string SanitizeParseError(string? error)
     {
         if (string.IsNullOrWhiteSpace(error) || ContainsSensitiveDiagnostics(error))
@@ -223,7 +257,39 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
             return "Malformed JSON payload syntax.";
         }
 
-        return error;
+        // Never echo unknown, disallowed, or duplicate property names to prevent diagnostic or property probing
+        if (error.StartsWith("Unknown property", StringComparison.OrdinalIgnoreCase))
+        {
+            return error.Contains("answer object", StringComparison.OrdinalIgnoreCase)
+                ? "Unknown property in answer object is not permitted."
+                : "Unknown property in submission payload is not permitted.";
+        }
+
+        if (error.StartsWith("Disallowed property", StringComparison.OrdinalIgnoreCase))
+        {
+            return error.Contains("answer object", StringComparison.OrdinalIgnoreCase)
+                ? "Disallowed property in answer object detected."
+                : "Disallowed property detected in submission payload.";
+        }
+
+        if (error.StartsWith("Duplicate property", StringComparison.OrdinalIgnoreCase))
+        {
+            return error.Contains("answer object", StringComparison.OrdinalIgnoreCase)
+                ? "Duplicate property detected in answer object."
+                : "Duplicate property detected in root object.";
+        }
+
+        if (error.StartsWith("Payload size", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Payload size exceeds maximum allowable limit.";
+        }
+
+        if (ExactAllowedParseErrors.Contains(error))
+        {
+            return error;
+        }
+
+        return "Failed to parse questionnaire submission.";
     }
 
     private static bool IsSafeUserActionableError(string error)
@@ -297,6 +363,7 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
 
             if (!result.ResponseId.HasValue ||
                 result.ResponseId.Value == Guid.Empty ||
+                !Enum.IsDefined(result.Status) ||
                 result.Status == QuestionnaireParticipationStatus.NotStarted)
             {
                 return BadRequest(new ProblemDetails
