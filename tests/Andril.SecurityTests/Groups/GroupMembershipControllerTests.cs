@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.API.Controllers.Groups;
@@ -129,6 +130,7 @@ public sealed class GroupMembershipControllerTests
         var details = Assert.IsType<ProblemDetails>(badRequest.Value);
         Assert.Equal(StatusCodes.Status400BadRequest, details.Status);
         Assert.Equal("Incompatible group module scope.", details.Title);
+        Assert.Equal("The requested group kind is not compatible with the specified module scope.", details.Detail);
     }
 
     [Fact]
@@ -431,9 +433,10 @@ public sealed class GroupMembershipControllerTests
     [Fact]
     public async Task SubmitJoinRequest_WhenUnauthorizedAccessExceptionThrown_ReturnsForbiddenProblemDetails()
     {
+        const string secretDiagnostic = "DIAGNOSTIC_MARKER_JOIN_UNDERAGE_9941";
         var service = new StubGroupMembershipOperationService
         {
-            ExceptionToThrow = new UnauthorizedAccessException("Participation denied: underage.")
+            ExceptionToThrow = new UnauthorizedAccessException($"Participation denied: {secretDiagnostic}")
         };
         var controller = new GroupMembershipController(service);
         var request = new GroupJoinSubmissionRequest("learning", GroupKind.Classroom);
@@ -446,34 +449,21 @@ public sealed class GroupMembershipControllerTests
         var details = Assert.IsType<ProblemDetails>(objectResult.Value);
         Assert.Equal(StatusCodes.Status403Forbidden, details.Status);
         Assert.Equal("Join request unauthorized.", details.Title);
-    }
+        Assert.Equal("Caller is not authorized to submit a join request for the specified group.", details.Detail);
+        Assert.DoesNotContain(secretDiagnostic, details.Detail);
 
-    [Fact]
-    public async Task ProcessAdmission_WhenUnauthorizedAccessExceptionThrown_ReturnsForbiddenProblemDetails()
-    {
-        var service = new StubGroupMembershipOperationService
-        {
-            ExceptionToThrow = new UnauthorizedAccessException("Actor does not possess the required moderation role.")
-        };
-        var controller = new GroupMembershipController(service);
-        var request = new GroupProcessAdmissionRequest("learning", GroupKind.Classroom, Guid.NewGuid(), true);
-
-        var actionResult = await controller.ProcessAdmission(Guid.NewGuid(), request, CancellationToken.None);
-
-        var objectResult = Assert.IsType<ObjectResult>(actionResult.Result);
-        Assert.Equal(StatusCodes.Status403Forbidden, objectResult.StatusCode);
-
-        var details = Assert.IsType<ProblemDetails>(objectResult.Value);
-        Assert.Equal(StatusCodes.Status403Forbidden, details.Status);
-        Assert.Equal("Admission processing unauthorized.", details.Title);
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain(secretDiagnostic, serialized);
+        Assert.Contains("Caller is not authorized to submit a join request for the specified group.", serialized);
     }
 
     [Fact]
     public async Task SubmitJoinRequest_WhenInvalidOperationExceptionThrown_ReturnsBadRequestProblemDetails()
     {
+        const string secretDiagnostic = "DIAGNOSTIC_MARKER_CAPACITY_LIMIT_7721";
         var service = new StubGroupMembershipOperationService
         {
-            ExceptionToThrow = new InvalidOperationException("Group has reached maximum member capacity.")
+            ExceptionToThrow = new InvalidOperationException($"Group has reached maximum member capacity: {secretDiagnostic}")
         };
         var controller = new GroupMembershipController(service);
         var request = new GroupJoinSubmissionRequest("hobbies", GroupKind.Club);
@@ -484,6 +474,119 @@ public sealed class GroupMembershipControllerTests
         var details = Assert.IsType<ProblemDetails>(badRequest.Value);
         Assert.Equal(StatusCodes.Status400BadRequest, details.Status);
         Assert.Equal("Invalid join request operation.", details.Title);
+        Assert.Equal("The join request operation could not be completed in the current group state.", details.Detail);
+        Assert.DoesNotContain(secretDiagnostic, details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain(secretDiagnostic, serialized);
+    }
+
+    [Fact]
+    public async Task SubmitJoinRequest_WhenArgumentExceptionContainsSensitiveIdentifier_ConcealsExceptionDetails()
+    {
+        const string secretMarker = "DIAGNOSTIC_MARKER_INVALID_ARG_3321";
+        var privateId = Guid.NewGuid();
+        var service = new StubGroupMembershipOperationService
+        {
+            ExceptionToThrow = new ArgumentException($"Invalid arguments with secret: {secretMarker} and profile {privateId}")
+        };
+        var controller = new GroupMembershipController(service);
+        var request = new GroupJoinSubmissionRequest("learning", GroupKind.Classroom);
+
+        var actionResult = await controller.SubmitJoinRequest(Guid.NewGuid(), request, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(actionResult.Result);
+        var details = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, details.Status);
+        Assert.Equal("Invalid join request arguments.", details.Title);
+        Assert.Equal("The join request operation could not be completed with the provided arguments.", details.Detail);
+        Assert.DoesNotContain(secretMarker, details.Detail);
+        Assert.DoesNotContain(privateId.ToString(), details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain(secretMarker, serialized);
+        Assert.DoesNotContain(privateId.ToString(), serialized);
+    }
+
+    [Fact]
+    public async Task CancelJoinRequest_WhenUnauthorizedOrInvalidOperation_ConcealsDiagnostics()
+    {
+        const string secretMarker = "DIAGNOSTIC_MARKER_CANCEL_AUTH_4412";
+        var service = new StubGroupMembershipOperationService
+        {
+            ExceptionToThrow = new UnauthorizedAccessException($"Cancel denied: {secretMarker}")
+        };
+        var controller = new GroupMembershipController(service);
+        var request = new GroupCancelJoinRequest("learning", GroupKind.Classroom);
+
+        var actionResult = await controller.CancelJoinRequest(Guid.NewGuid(), request, CancellationToken.None);
+
+        var objectResult = Assert.IsType<ObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, objectResult.StatusCode);
+
+        var details = Assert.IsType<ProblemDetails>(objectResult.Value);
+        Assert.Equal(StatusCodes.Status403Forbidden, details.Status);
+        Assert.Equal("Cancel join request unauthorized.", details.Title);
+        Assert.Equal("Caller is not authorized to cancel a join request for the specified group.", details.Detail);
+        Assert.DoesNotContain(secretMarker, details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain(secretMarker, serialized);
+    }
+
+    [Fact]
+    public async Task ProcessAdmission_WhenUnauthorizedAccessExceptionThrown_ReturnsForbiddenProblemDetails()
+    {
+        const string secretDiagnostic = "DIAGNOSTIC_MARKER_MODERATION_ROLE_8831";
+        var applicantId = Guid.NewGuid();
+        var service = new StubGroupMembershipOperationService
+        {
+            ExceptionToThrow = new UnauthorizedAccessException($"Actor does not possess the required moderation role: {secretDiagnostic} for {applicantId}")
+        };
+        var controller = new GroupMembershipController(service);
+        var request = new GroupProcessAdmissionRequest("learning", GroupKind.Classroom, applicantId, true);
+
+        var actionResult = await controller.ProcessAdmission(Guid.NewGuid(), request, CancellationToken.None);
+
+        var objectResult = Assert.IsType<ObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, objectResult.StatusCode);
+
+        var details = Assert.IsType<ProblemDetails>(objectResult.Value);
+        Assert.Equal(StatusCodes.Status403Forbidden, details.Status);
+        Assert.Equal("Admission processing unauthorized.", details.Title);
+        Assert.Equal("Caller is not authorized to process admissions for the specified group.", details.Detail);
+        Assert.DoesNotContain(secretDiagnostic, details.Detail);
+        Assert.DoesNotContain(applicantId.ToString(), details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain(secretDiagnostic, serialized);
+        Assert.DoesNotContain(applicantId.ToString(), serialized);
+    }
+
+    [Fact]
+    public async Task LeaveGroup_WhenUnauthorizedOrInvalidOperation_ConcealsDiagnostics()
+    {
+        const string secretDiagnostic = "DIAGNOSTIC_MARKER_LEAVE_AUTH_1123";
+        var service = new StubGroupMembershipOperationService
+        {
+            ExceptionToThrow = new UnauthorizedAccessException($"Leave denied: {secretDiagnostic}")
+        };
+        var controller = new GroupMembershipController(service);
+        var request = new GroupDepartureRequest("learning", GroupKind.Classroom);
+
+        var actionResult = await controller.LeaveGroup(Guid.NewGuid(), request, CancellationToken.None);
+
+        var objectResult = Assert.IsType<ObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, objectResult.StatusCode);
+
+        var details = Assert.IsType<ProblemDetails>(objectResult.Value);
+        Assert.Equal(StatusCodes.Status403Forbidden, details.Status);
+        Assert.Equal("Leave group unauthorized.", details.Title);
+        Assert.Equal("Caller is not authorized to leave the specified group.", details.Detail);
+        Assert.DoesNotContain(secretDiagnostic, details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain(secretDiagnostic, serialized);
     }
 
     [Fact]
