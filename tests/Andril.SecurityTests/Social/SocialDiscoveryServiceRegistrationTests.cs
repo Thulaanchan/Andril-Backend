@@ -108,6 +108,91 @@ public sealed class SocialDiscoveryServiceRegistrationTests
 
         var concrete = scope.ServiceProvider.GetRequiredService<SocialDiscoveryAccessService>();
         Assert.NotNull(concrete);
+        Assert.Same(service, concrete);
+    }
+
+    [Fact]
+    public void AddSocialDiscoveryServices_RepeatedResolutionWithinScope_PreservesIdentity()
+    {
+        var services = new ServiceCollection();
+        services.AddSocialDiscoveryServices();
+        services.AddScoped<IPrivateProfileService, StubProfileService>();
+        services.AddScoped<ISocialDiscoveryEvidenceProvider, StubEvidenceProvider>();
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var s1 = scope.ServiceProvider.GetRequiredService<ISocialDiscoveryAccessService>();
+        var s2 = scope.ServiceProvider.GetRequiredService<ISocialDiscoveryAccessService>();
+        var c1 = scope.ServiceProvider.GetRequiredService<SocialDiscoveryAccessService>();
+        var c2 = scope.ServiceProvider.GetRequiredService<SocialDiscoveryAccessService>();
+
+        Assert.Same(s1, s2);
+        Assert.Same(s1, c1);
+        Assert.Same(c1, c2);
+    }
+
+    [Fact]
+    public void AddSocialDiscoveryServices_SeparateRequestScopes_ReceiveSeparateInstances()
+    {
+        var services = new ServiceCollection();
+        services.AddSocialDiscoveryServices();
+        services.AddScoped<IPrivateProfileService, StubProfileService>();
+        services.AddScoped<ISocialDiscoveryEvidenceProvider, StubEvidenceProvider>();
+
+        using var provider = services.BuildServiceProvider();
+        using var scope1 = provider.CreateScope();
+        using var scope2 = provider.CreateScope();
+
+        var instance1 = scope1.ServiceProvider.GetRequiredService<ISocialDiscoveryAccessService>();
+        var instance2 = scope2.ServiceProvider.GetRequiredService<ISocialDiscoveryAccessService>();
+
+        Assert.NotNull(instance1);
+        Assert.NotNull(instance2);
+        Assert.NotSame(instance1, instance2);
+
+        var concrete1 = scope1.ServiceProvider.GetRequiredService<SocialDiscoveryAccessService>();
+        var concrete2 = scope2.ServiceProvider.GetRequiredService<SocialDiscoveryAccessService>();
+
+        Assert.Same(instance1, concrete1);
+        Assert.Same(instance2, concrete2);
+    }
+
+    [Fact]
+    public void AddSocialDiscoveryServices_IncompatibleCustomInterface_FailsSafelyWithInvalidOperationException()
+    {
+        var services = new ServiceCollection();
+        var customMock = new StubSocialDiscoveryAccessService();
+        services.AddScoped<ISocialDiscoveryAccessService>(_ => customMock);
+        services.AddSocialDiscoveryServices();
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var resolvedInterface = scope.ServiceProvider.GetRequiredService<ISocialDiscoveryAccessService>();
+        Assert.Same(customMock, resolvedInterface);
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            scope.ServiceProvider.GetRequiredService<SocialDiscoveryAccessService>());
+
+        Assert.Contains("is not compatible with concrete SocialDiscoveryAccessService resolution", ex.Message);
+    }
+
+    [Fact]
+    public void AddSocialDiscoveryServices_IncompatibleCustomInterface_DoesNotBypassCustomAuthorization()
+    {
+        var services = new ServiceCollection();
+        var customMock = new StubSocialDiscoveryAccessService();
+        services.AddScoped<ISocialDiscoveryAccessService>(_ => customMock);
+        services.AddSocialDiscoveryServices();
+        services.AddScoped<IPrivateProfileService, StubProfileService>();
+        services.AddScoped<ISocialDiscoveryEvidenceProvider, StubEvidenceProvider>();
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            scope.ServiceProvider.GetRequiredService<SocialDiscoveryAccessService>());
     }
 
     [Fact]
