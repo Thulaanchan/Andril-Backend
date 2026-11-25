@@ -38,6 +38,15 @@ public sealed record ChatAuthorizedActor(
 /// </summary>
 public interface IChatAccessAuthorizer
 {
+    /// <summary>Operation grants require separately ratified authority. No legacy fallback.</summary>
+    Task<ChatAuthorizationOutcome> AuthorizeAsync(
+        ChatAuthorizationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(ChatAuthorizationOutcome.Unavailable);
+    }
+
     /// <summary>
     /// Returns a server-resolved actor for this exact module and conversation,
     /// or null for any denial without disclosing identities or resource existence.
@@ -48,4 +57,21 @@ public interface IChatAccessAuthorizer
         ChatModule module,
         Guid conversationId,
         CancellationToken cancellationToken = default);
+}
+
+public enum ChatOperation
+{
+    ListConversations = 1,
+    ReadConversationDetails = 2,
+    ReadMessageHistory = 3,
+    SubmitMessage = 4
+}
+
+// Zero-initialized outcomes fail closed. Allowed is reserved for future ratified integration.
+public enum ChatAuthorizationOutcome { Unavailable = 0, Denied = 1, Allowed = 2 }
+
+/// <summary>Target selectors only. Listing has no conversation target. Contains no identity evidence.</summary>
+public sealed record ChatAuthorizationRequest(ChatOperation Operation, ChatModule Module, Guid? ConversationId)
+{
+    public override string ToString() => nameof(ChatAuthorizationRequest);
 }

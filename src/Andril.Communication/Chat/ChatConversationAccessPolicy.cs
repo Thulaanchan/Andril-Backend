@@ -29,6 +29,73 @@ internal sealed class ChatConversationAccessPolicy : IChatAccessAuthorizer
         _clock = clock ?? TimeProvider.System;
     }
 
+    public async Task<ChatAuthorizationOutcome> AuthorizeAsync(
+        ChatAuthorizationRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (request is null || !Enum.IsDefined(request.Operation) || !Enum.IsDefined(request.Module) ||
+            (request.Operation == ChatOperation.ListConversations
+                ? request.ConversationId is not null
+                : request.ConversationId is null || request.ConversationId == Guid.Empty))
+        {
+            return ChatAuthorizationOutcome.Denied;
+        }
+
+        // M5 listing scope is pending. A profile or conversation cannot supply that scope.
+        if (request.Operation == ChatOperation.ListConversations || _currentUser is null || _reader is null)
+            return ChatAuthorizationOutcome.Unavailable;
+
+        try
+        {
+            if (!_currentUser.IsAuthenticated || _currentUser.UserId is not Guid subject || subject == Guid.Empty)
+                return ChatAuthorizationOutcome.Unavailable;
+
+            var evaluationId = Guid.NewGuid();
+            var startedAt = _clock.GetUtcNow();
+            var evidence = await _reader.ReadOperationAsync(subject, request, evaluationId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            var now = _clock.GetUtcNow();
+            if (!_currentUser.IsAuthenticated || _currentUser.UserId != subject || evidence is null)
+                return ChatAuthorizationOutcome.Unavailable;
+
+            var binding = evidence.Binding;
+            if (evidence.EvaluationId != evaluationId || evidence.Request != request || binding is null ||
+                binding.RequestId != evaluationId || binding.AccountSubjectId != subject ||
+                binding.AccountId == Guid.Empty || binding.ProfileAccountId != binding.AccountId ||
+                binding.ModuleProfileId == Guid.Empty || binding.ProfileModule != request.Module ||
+                binding.Conversation is not { } conversation || conversation.Module != request.Module ||
+                conversation.ConversationId != request.ConversationId ||
+                !conversation.Participants.Any(p => p.Module == request.Module &&
+                    p.AccountId == binding.AccountId && p.ModuleProfileId == binding.ModuleProfileId) ||
+                binding.IsCurrent is not true || now < startedAt ||
+                binding.ObservedAtUtc == DateTimeOffset.MinValue ||
+                binding.ObservedAtUtc == DateTimeOffset.MaxValue ||
+                binding.ValidUntilUtc == DateTimeOffset.MinValue ||
+                binding.ValidUntilUtc == DateTimeOffset.MaxValue ||
+                binding.ObservedAtUtc < startedAt || binding.ObservedAtUtc > now ||
+                binding.ValidUntilUtc <= binding.ObservedAtUtc || binding.ValidUntilUtc <= now)
+                return ChatAuthorizationOutcome.Unavailable;
+
+            if (binding.IsRevoked is true || binding.IsBlocked is true ||
+                evidence.Outcome == ChatAuthorizationOutcome.Denied)
+                return ChatAuthorizationOutcome.Denied;
+
+            // Positive operation permissions and M2 Chat-purpose evidence await owner ratification.
+            // Even a synthetic Allowed envelope cannot create a grant in this phase.
+            return ChatAuthorizationOutcome.Unavailable;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+        catch (Exception)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ChatAuthorizationOutcome.Unavailable;
+        }
+    }
+
     public async Task<ChatAuthorizedActor?> AuthorizeConversationAsync(
         ChatModule module,
         Guid conversationId,
