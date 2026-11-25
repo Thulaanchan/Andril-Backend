@@ -59,9 +59,14 @@ public sealed class AiContextualRecommendationServiceTests
     {
         public AiConsentLifecycle? Lifecycle { get; set; }
         public AiConsentResult Result { get; set; } = null!;
+        public Queue<AiConsentResult> Results { get; } = new();
+        public bool ShouldThrow { get; set; }
 
-        public Task<AiConsentLifecycle?> ReadLifecycleAsync(AiOperationReference operation, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Lifecycle);
+        public Task<AiConsentLifecycle?> ReadLifecycleAsync(AiOperationReference operation, CancellationToken cancellationToken = default)
+        {
+            if (ShouldThrow) throw new InvalidOperationException("Consent repository lifecycle failure");
+            return Task.FromResult(Lifecycle);
+        }
 
         public Task<AiConsentResult> ApplyAsync(AiConsentRequest request, AiConsentLifecycle lifecycle, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result);
@@ -69,8 +74,12 @@ public sealed class AiContextualRecommendationServiceTests
         public Task<AiConsentResult> ReadStatusAsync(AiConsentReference reference, AiConsentLifecycle lifecycle, CancellationToken cancellationToken = default) =>
             Task.FromResult(Result);
 
-        public Task<AiConsentResult> CheckPendingAsync(AiConsentPendingReference pending, AiConsentLifecycle lifecycle, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Result);
+        public Task<AiConsentResult> CheckPendingAsync(AiConsentPendingReference pending, AiConsentLifecycle lifecycle, CancellationToken cancellationToken = default)
+        {
+            if (ShouldThrow) throw new InvalidOperationException("Consent repository check pending failure");
+            if (Results.Count > 0) return Task.FromResult(Results.Dequeue());
+            return Task.FromResult(Result);
+        }
 
         public Task<AiConsentSystemResult> InvalidateFromSystemAsync(AiConsentSystemInvalidation evidence, CancellationToken cancellationToken = default) =>
             throw new NotImplementedException();
@@ -80,10 +89,12 @@ public sealed class AiContextualRecommendationServiceTests
     {
         public string Content { get; set; } = "Recommended: Review Chapter 4 Exercises";
         public bool GeneratorCalled { get; private set; }
+        public Action? OnGenerate { get; set; }
 
         public Task<string> GenerateRecommendationAsync(AiModule module, AiAuthorizedActor actor, AiConsentPurpose purpose, CancellationToken cancellationToken = default)
         {
             GeneratorCalled = true;
+            OnGenerate?.Invoke();
             return Task.FromResult(Content);
         }
     }
@@ -121,6 +132,259 @@ public sealed class AiContextualRecommendationServiceTests
         Assert.False(result.IsSuppressed);
         Assert.Equal("Recommended: Review Chapter 4 Exercises", result.RecommendationContent);
         Assert.True(gen.GeneratorCalled);
+    }
+
+    [Fact]
+    public async Task ProcessRecommendationAsync_ValidConsentThroughout_PermitsDelivery()
+    {
+        var (service, _, _, repo, gen) = CreateTestHarness(AiModule.Learning);
+        var reference = CreateReference(AiModule.Learning);
+        var attemptId = Id(8);
+        var revision = Id(7);
+
+        var pending = new AiConsentPendingReference(reference, revision, attemptId);
+        var snapshot = CreateSnapshot(AiConsentState.Started, attemptId, revision, AiModule.Learning);
+
+        repo.Result = new AiConsentResult(AiConsentOutcome.ContinuationVerified, snapshot, CreateLifecycle(AiModule.Learning));
+
+        var result = await service.ProcessRecommendationAsync(pending, AiModule.Learning, CancellationToken.None);
+
+        Assert.True(result.IsDelivered);
+        Assert.False(result.IsSuppressed);
+        Assert.Equal("Recommended: Review Chapter 4 Exercises", result.RecommendationContent);
+    }
+
+    [Fact]
+    public async Task ProcessRecommendationAsync_ConsentWithdrawalDuringGeneration_SuppressesDelivery()
+    {
+        var (service, _, _, repo, gen) = CreateTestHarness(AiModule.Learning);
+        var reference = CreateReference(AiModule.Learning);
+        var attemptId = Id(8);
+        var revision = Id(7);
+
+        var pending = new AiConsentPendingReference(reference, revision, attemptId);
+        var initialSnapshot = CreateSnapshot(AiConsentState.Started, attemptId, revision, AiModule.Learning);
+
+        // First call succeeds for initial check
+        repo.Results.Enqueue(new AiConsentResult(AiConsentOutcome.ContinuationVerified, initialSnapshot, CreateLifecycle(AiModule.Learning)));
+
+        // During generation, consent is withdrawn
+        gen.OnGenerate = () =>
+        {
+            repo.Results.Enqueue(new AiConsentResult(AiConsentOutcome.Withdrawn, null, null));
+        };
+
+        var result = await service.ProcessRecommendationAsync(pending, AiModule.Learning, CancellationToken.None);
+
+        Assert.True(result.IsSuppressed);
+        Assert.Equal(AiContextualSuppressionReason.ConsentWithdrawn, result.SuppressionReason);
+        Assert.Null(result.RecommendationContent);
+    }
+
+    [Fact]
+    public async Task ProcessRecommendationAsync_RevocationDuringProcessing_SuppressesDelivery()
+    {
+        var (service, _, _, repo, gen) = CreateTestHarness(AiModule.Learning);
+        var reference = CreateReference(AiModule.Learning);
+        var attemptId = Id(8);
+        var revision = Id(7);
+
+        var pending = new AiConsentPendingReference(reference, revision, attemptId);
+        var initialSnapshot = CreateSnapshot(AiConsentState.Started, attemptId, revision, AiModule.Learning);
+
+        repo.Results.Enqueue(new AiConsentResult(AiConsentOutcome.ContinuationVerified, initialSnapshot, CreateLifecycle(AiModule.Learning)));
+
+        gen.OnGenerate = () =>
+        {
+            repo.Results.Enqueue(new AiConsentResult(AiConsentOutcome.Revoked, null, null));
+        };
+
+        var result = await service.ProcessRecommendationAsync(pending, AiModule.Learning, CancellationToken.None);
+
+        Assert.True(result.IsSuppressed);
+        Assert.Equal(AiContextualSuppressionReason.ConsentWithdrawn, result.SuppressionReason);
+        Assert.Null(result.RecommendationContent);
+    }
+
+    [Fact]
+    public async Task ProcessRecommendationAsync_ModuleSwitchDuringProcessing_SuppressesDelivery()
+    {
+        var (service, auth, _, repo, gen) = CreateTestHarness(AiModule.Learning);
+        var reference = CreateReference(AiModule.Learning);
+        var attemptId = Id(8);
+        var revision = Id(7);
+
+        var pending = new AiConsentPendingReference(reference, revision, attemptId);
+        var snapshot = CreateSnapshot(AiConsentState.Started, attemptId, revision, AiModule.Learning);
+
+        repo.Result = new AiConsentResult(AiConsentOutcome.ContinuationVerified, snapshot, CreateLifecycle(AiModule.Learning));
+
+        gen.OnGenerate = () =>
+        {
+            // Authorized actor switches module to Hobbies
+            auth.Actor = new AiAuthorizedActor(Id(1), Id(2), AiModule.Hobbies);
+        };
+
+        var result = await service.ProcessRecommendationAsync(pending, AiModule.Learning, CancellationToken.None);
+
+        Assert.True(result.IsSuppressed);
+        Assert.True(result.SuppressionReason is AiContextualSuppressionReason.ModuleMismatch or AiContextualSuppressionReason.ConsentNotVerified);
+        Assert.Null(result.RecommendationContent);
+    }
+
+    [Fact]
+    public async Task ProcessRecommendationAsync_ChangedAuthorizedActorDuringGeneration_PreventsDelivery()
+    {
+        var (service, auth, _, repo, gen) = CreateTestHarness(AiModule.Learning);
+        var reference = CreateReference(AiModule.Learning);
+        var attemptId = Id(8);
+        var revision = Id(7);
+
+        var pending = new AiConsentPendingReference(reference, revision, attemptId);
+        var snapshot = CreateSnapshot(AiConsentState.Started, attemptId, revision, AiModule.Learning);
+
+        repo.Result = new AiConsentResult(AiConsentOutcome.ContinuationVerified, snapshot, CreateLifecycle(AiModule.Learning));
+
+        gen.OnGenerate = () =>
+        {
+            // Different user identity
+            auth.Actor = new AiAuthorizedActor(Guid.NewGuid(), Id(2), AiModule.Learning);
+        };
+
+        var result = await service.ProcessRecommendationAsync(pending, AiModule.Learning, CancellationToken.None);
+
+        Assert.True(result.IsSuppressed);
+        Assert.Equal(AiContextualSuppressionReason.ConsentNotVerified, result.SuppressionReason);
+        Assert.Null(result.RecommendationContent);
+    }
+
+    [Fact]
+    public async Task ProcessRecommendationAsync_MissingPrivacyAuthorizationDuringGeneration_PreventsDelivery()
+    {
+        var (service, _, gate, repo, gen) = CreateTestHarness(AiModule.Learning);
+        var reference = CreateReference(AiModule.Learning);
+        var attemptId = Id(8);
+        var revision = Id(7);
+
+        var pending = new AiConsentPendingReference(reference, revision, attemptId);
+        var snapshot = CreateSnapshot(AiConsentState.Started, attemptId, revision, AiModule.Learning);
+
+        repo.Result = new AiConsentResult(AiConsentOutcome.ContinuationVerified, snapshot, CreateLifecycle(AiModule.Learning));
+
+        gen.OnGenerate = () =>
+        {
+            // Privacy notice requires re-consent or is denied
+            gate.Outcome = AiPrivacyNoticeGateOutcome.NoticeRequired;
+        };
+
+        var result = await service.ProcessRecommendationAsync(pending, AiModule.Learning, CancellationToken.None);
+
+        Assert.True(result.IsSuppressed);
+        Assert.Equal(AiContextualSuppressionReason.PrivacyNoticeNotSatisfied, result.SuppressionReason);
+        Assert.Null(result.RecommendationContent);
+    }
+
+    [Fact]
+    public async Task ProcessRecommendationAsync_StaleConsentRevisionDuringGeneration_PreventsDelivery()
+    {
+        var (service, _, _, repo, gen) = CreateTestHarness(AiModule.Learning);
+        var reference = CreateReference(AiModule.Learning);
+        var attemptId = Id(8);
+        var revision = Id(7);
+
+        var pending = new AiConsentPendingReference(reference, revision, attemptId);
+        var initialSnapshot = CreateSnapshot(AiConsentState.Started, attemptId, revision, AiModule.Learning);
+
+        repo.Results.Enqueue(new AiConsentResult(AiConsentOutcome.ContinuationVerified, initialSnapshot, CreateLifecycle(AiModule.Learning)));
+
+        gen.OnGenerate = () =>
+        {
+            // Mismatched / superseded revision
+            var staleSnapshot = CreateSnapshot(AiConsentState.Started, attemptId, Guid.NewGuid(), AiModule.Learning);
+            repo.Results.Enqueue(new AiConsentResult(AiConsentOutcome.ContinuationVerified, staleSnapshot, CreateLifecycle(AiModule.Learning)));
+        };
+
+        var result = await service.ProcessRecommendationAsync(pending, AiModule.Learning, CancellationToken.None);
+
+        Assert.True(result.IsSuppressed);
+        Assert.True(result.SuppressionReason is AiContextualSuppressionReason.ConsentWithdrawn or AiContextualSuppressionReason.ConsentStateInvalid);
+        Assert.Null(result.RecommendationContent);
+    }
+
+    [Fact]
+    public async Task ProcessRecommendationAsync_MismatchedOperationOrAttemptDuringGeneration_PreventsDelivery()
+    {
+        var (service, _, _, repo, gen) = CreateTestHarness(AiModule.Learning);
+        var reference = CreateReference(AiModule.Learning);
+        var attemptId = Id(8);
+        var revision = Id(7);
+
+        var pending = new AiConsentPendingReference(reference, revision, attemptId);
+        var initialSnapshot = CreateSnapshot(AiConsentState.Started, attemptId, revision, AiModule.Learning);
+
+        repo.Results.Enqueue(new AiConsentResult(AiConsentOutcome.ContinuationVerified, initialSnapshot, CreateLifecycle(AiModule.Learning)));
+
+        gen.OnGenerate = () =>
+        {
+            // Mismatched attempt identifier
+            var mismatchedAttemptSnapshot = CreateSnapshot(AiConsentState.Started, Guid.NewGuid(), revision, AiModule.Learning);
+            repo.Results.Enqueue(new AiConsentResult(AiConsentOutcome.ContinuationVerified, mismatchedAttemptSnapshot, CreateLifecycle(AiModule.Learning)));
+        };
+
+        var result = await service.ProcessRecommendationAsync(pending, AiModule.Learning, CancellationToken.None);
+
+        Assert.True(result.IsSuppressed);
+        Assert.True(result.SuppressionReason is AiContextualSuppressionReason.ConsentWithdrawn or AiContextualSuppressionReason.ConsentStateInvalid);
+        Assert.Null(result.RecommendationContent);
+    }
+
+    [Fact]
+    public async Task ProcessRecommendationAsync_UnavailableConsentVerificationFailsClosed()
+    {
+        var (service, _, _, repo, gen) = CreateTestHarness(AiModule.Learning);
+        var reference = CreateReference(AiModule.Learning);
+        var attemptId = Id(8);
+        var revision = Id(7);
+
+        var pending = new AiConsentPendingReference(reference, revision, attemptId);
+        var initialSnapshot = CreateSnapshot(AiConsentState.Started, attemptId, revision, AiModule.Learning);
+
+        repo.Results.Enqueue(new AiConsentResult(AiConsentOutcome.ContinuationVerified, initialSnapshot, CreateLifecycle(AiModule.Learning)));
+
+        gen.OnGenerate = () =>
+        {
+            // Simulate repository failure during delivery check
+            repo.ShouldThrow = true;
+        };
+
+        var result = await service.ProcessRecommendationAsync(pending, AiModule.Learning, CancellationToken.None);
+
+        Assert.True(result.IsSuppressed);
+        Assert.Null(result.RecommendationContent);
+    }
+
+    [Fact]
+    public async Task ProcessRecommendationAsync_CancellationPreservedDuringDeliveryRevalidation()
+    {
+        var (service, _, _, repo, gen) = CreateTestHarness(AiModule.Learning);
+        var reference = CreateReference(AiModule.Learning);
+        var attemptId = Id(8);
+        var revision = Id(7);
+
+        var pending = new AiConsentPendingReference(reference, revision, attemptId);
+        var snapshot = CreateSnapshot(AiConsentState.Started, attemptId, revision, AiModule.Learning);
+
+        repo.Result = new AiConsentResult(AiConsentOutcome.ContinuationVerified, snapshot, CreateLifecycle(AiModule.Learning));
+
+        using var cts = new CancellationTokenSource();
+
+        gen.OnGenerate = () =>
+        {
+            cts.Cancel();
+        };
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            service.ProcessRecommendationAsync(pending, AiModule.Learning, cts.Token));
     }
 
     [Theory]
