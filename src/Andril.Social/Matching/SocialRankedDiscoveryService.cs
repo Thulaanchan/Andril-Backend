@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Serialization;
+using Andril.Social.Personality;
 
 namespace Andril.Social.Matching;
 
@@ -143,7 +144,7 @@ public static class SocialRankedDiscoveryService
         }
 
         var eligibleCandidatesWithCards = new List<(SocialScoringProfileEvidence Candidate, int? ApproximateDistanceKm, SocialCandidateEvaluationResult EvaluationResult, string DisplayName)>();
-        var candidateEvidenceByProfileId = new Dictionary<Guid, (SocialScoringProfileEvidence Evidence, SocialEvidenceRevisionSnapshot CachedRevision, SocialEvidenceRevisionSnapshot CommittedRevision)>();
+        var candidateEvidenceByProfileId = new Dictionary<Guid, SocialAuthoritativeCandidateItem>();
         var contradictoryProfileIds = new HashSet<Guid>();
         var processedCount = 0;
 
@@ -181,11 +182,9 @@ public static class SocialRankedDiscoveryService
                 continue;
             }
 
-            if (candidateEvidenceByProfileId.TryGetValue(candidate.ProfileId, out var existing))
+            if (candidateEvidenceByProfileId.TryGetValue(candidate.ProfileId, out var existingItem))
             {
-                if (!candidate.Equals(existing.Evidence) ||
-                    !item.CachedRevision.Equals(existing.CachedRevision) ||
-                    !item.CommittedRevision.Equals(existing.CommittedRevision))
+                if (HasContradictoryCandidateItem(item, existingItem))
                 {
                     contradictoryProfileIds.Add(candidate.ProfileId);
                     eligibleCandidatesWithCards.RemoveAll(x => x.Candidate.ProfileId == candidate.ProfileId);
@@ -193,7 +192,7 @@ public static class SocialRankedDiscoveryService
                 continue;
             }
 
-            candidateEvidenceByProfileId[candidate.ProfileId] = (candidate, item.CachedRevision, item.CommittedRevision);
+            candidateEvidenceByProfileId[candidate.ProfileId] = item;
 
             if (string.IsNullOrWhiteSpace(item.DisplayName) || (item.ApproximateDistanceKm.HasValue && item.ApproximateDistanceKm.Value < 0))
             {
@@ -347,7 +346,7 @@ public static class SocialRankedDiscoveryService
         }
 
         var eligibleCandidates = new List<(SocialScoringProfileEvidence Candidate, int? ApproximateDistanceKm)>();
-        var candidateEvidenceByProfileId = new Dictionary<Guid, SocialScoringProfileEvidence>();
+        var candidateEvidenceByProfileId = new Dictionary<Guid, (SocialScoringProfileEvidence Evidence, int? DistanceKm)>();
         var contradictoryProfileIds = new HashSet<Guid>();
 
         foreach (var (candidate, distanceKm) in candidates)
@@ -359,9 +358,9 @@ public static class SocialRankedDiscoveryService
                 continue;
             }
 
-            if (candidateEvidenceByProfileId.TryGetValue(candidate.ProfileId, out var existingEvidence))
+            if (candidateEvidenceByProfileId.TryGetValue(candidate.ProfileId, out var existing))
             {
-                if (!candidate.Equals(existingEvidence))
+                if (HasContradictoryEvidence(candidate, existing.Evidence) || distanceKm != existing.DistanceKm)
                 {
                     contradictoryProfileIds.Add(candidate.ProfileId);
                     eligibleCandidates.RemoveAll(x => x.Candidate.ProfileId == candidate.ProfileId);
@@ -369,7 +368,7 @@ public static class SocialRankedDiscoveryService
                 continue;
             }
 
-            candidateEvidenceByProfileId[candidate.ProfileId] = candidate;
+            candidateEvidenceByProfileId[candidate.ProfileId] = (candidate, distanceKm);
 
             // 2. Self-discovery and mutual blocking check
             if (caller.ProfileId == candidate.ProfileId)
@@ -428,5 +427,87 @@ public static class SocialRankedDiscoveryService
 
         // 5. Stage 3 & 4: Multi-factor compatibility scoring and deterministic ranking
         return SocialRecommendationRankingPolicy.RankCandidates(caller, eligibleCandidates, rotationOffset);
+    }
+
+    private static bool HasContradictoryCandidateItem(SocialAuthoritativeCandidateItem a, SocialAuthoritativeCandidateItem b)
+    {
+        if (a.ApproximateDistanceKm != b.ApproximateDistanceKm) return true;
+        if (!a.CachedRevision.Equals(b.CachedRevision)) return true;
+        if (!a.CommittedRevision.Equals(b.CommittedRevision)) return true;
+        if (!AreDisplayNamesSemanticallyEquivalent(a.DisplayName, b.DisplayName)) return true;
+        return HasContradictoryEvidence(a.Evidence, b.Evidence);
+    }
+
+    private static bool AreDisplayNamesSemanticallyEquivalent(string a, string b)
+    {
+        if (string.Equals(a, b, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var baseA = a.TrimEnd('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ' ', '_', '-');
+        var baseB = b.TrimEnd('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ' ', '_', '-');
+
+        if (!string.IsNullOrWhiteSpace(baseA) && string.Equals(baseA, baseB, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool HasContradictoryEvidence(SocialScoringProfileEvidence a, SocialScoringProfileEvidence b)
+    {
+        if (!a.Equals(b)) return true;
+
+        if (!a.BlockedProfileIds.SetEquals(b.BlockedProfileIds)) return true;
+
+        if (!AreNullableSetsEqual(a.ConfirmedLanguages, b.ConfirmedLanguages)) return true;
+        if (!AreNullableSetsEqual(a.ConfirmedConnectionGoals, b.ConfirmedConnectionGoals)) return true;
+        if (!AreNullableGuidSetsEqual(a.ConfirmedSocialInterestIds, b.ConfirmedSocialInterestIds)) return true;
+
+        if (!AreAnswersEqual(a.QuestionnaireAnswers, b.QuestionnaireAnswers)) return true;
+
+        if (!string.Equals(a.QuestionnaireVersion, b.QuestionnaireVersion, StringComparison.Ordinal) ||
+            !string.Equals(a.QuestionnaireRevision, b.QuestionnaireRevision, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool AreNullableSetsEqual(IReadOnlySet<string>? setA, IReadOnlySet<string>? setB)
+    {
+        if (setA is null && setB is null) return true;
+        if (setA is null || setB is null) return false;
+        return setA.SetEquals(setB);
+    }
+
+    private static bool AreNullableGuidSetsEqual(IReadOnlySet<Guid>? setA, IReadOnlySet<Guid>? setB)
+    {
+        if (setA is null && setB is null) return true;
+        if (setA is null || setB is null) return false;
+        return setA.SetEquals(setB);
+    }
+
+    private static bool AreAnswersEqual(IReadOnlyList<QuestionnaireAnswer>? listA, IReadOnlyList<QuestionnaireAnswer>? listB)
+    {
+        if (listA is null && listB is null) return true;
+        if (listA is null || listB is null) return false;
+        if (listA.Count != listB.Count) return false;
+        for (var i = 0; i < listA.Count; i++)
+        {
+            var a = listA[i];
+            var b = listB[i];
+            if (a is null && b is null) continue;
+            if (a is null || b is null) return false;
+            if (!string.Equals(a.QuestionId, b.QuestionId, StringComparison.Ordinal) ||
+                !string.Equals(a.OptionId, b.OptionId, StringComparison.Ordinal))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 }
