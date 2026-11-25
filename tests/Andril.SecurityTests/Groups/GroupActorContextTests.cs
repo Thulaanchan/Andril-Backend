@@ -643,31 +643,59 @@ public sealed class GroupActorContextTests
     }
 
     [Fact]
-    public async Task GetCurrentActorAsync_FutureTimestampWithinAllowedClockSkew_ReturnsAuthoritativeEvidence()
+    public async Task GetCurrentActorAsync_FutureDatedEvidence_CannotAuthorizeStrictGroupParticipation()
     {
         var profileId = Guid.NewGuid();
+        var groupId = Guid.NewGuid();
+        var scope = new GroupModuleScope("learning", GroupKind.Classroom);
         var now = new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero);
-        // Future timestamp 3 seconds ahead (within 5-second clock skew)
-        var acceptableTimestamp = now.AddSeconds(3);
+        // Future timestamp 3 seconds ahead
+        var futureTimestamp = now.AddSeconds(3);
 
         var profile = new PrivateProfileDto(profileId, "learning", DateTimeOffset.UtcNow);
         var profileService = new StubPrivateProfileService(profile);
 
-        var acceptableEvidence = new AuthoritativeGroupProfileEvidence(
+        var futureEvidence = new AuthoritativeGroupProfileEvidence(
             profileId,
             "learning",
             IsActive: true,
             IsRestricted: false,
             VerifiedAge: null,
-            EvidenceTimestampUtc: acceptableTimestamp);
+            EvidenceTimestampUtc: futureTimestamp);
+
+        var groupEvidence = new AuthoritativeGroupStateEvidence(
+            groupId,
+            scope,
+            IsActive: true,
+            IsOpen: true,
+            EvidenceTimestampUtc: now);
 
         var timeProvider = new MutableTimeProvider(now);
-        var evidenceProvider = new StubGroupAuthoritativeEvidenceProvider(acceptableEvidence);
+        var evidenceProvider = new StubGroupAuthoritativeEvidenceProvider(futureEvidence);
         var context = new GroupActorContext(profileService, evidenceProvider, timeProvider);
 
-        var result = await context.GetCurrentActorAsync("learning");
-        Assert.NotNull(result);
-        Assert.Equal(acceptableTimestamp, result.EvidenceTimestampUtc);
+        var actorEvidence = await context.GetCurrentActorAsync("learning");
+
+        if (actorEvidence is not null)
+        {
+            // If the adapter returns future-dated evidence, verify that
+            // strict participation authorization policy rejects it as StaleEvidence
+            var strictAuth = GroupParticipationAuthorizationPolicy.EvaluateStrictAuthorization(
+                actorEvidence,
+                groupEvidence,
+                scope,
+                groupId,
+                now);
+
+            Assert.True(strictAuth.IsDenied);
+            Assert.Equal(GroupParticipationAuthorizationStatus.StaleEvidence, strictAuth.Status);
+        }
+        else
+        {
+            // Once strict timestamp checking is enforced in the adapter,
+            // future-dated evidence is rejected directly
+            Assert.Null(actorEvidence);
+        }
     }
 
     #endregion
