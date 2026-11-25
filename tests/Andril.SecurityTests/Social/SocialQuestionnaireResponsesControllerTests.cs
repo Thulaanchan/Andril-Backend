@@ -586,6 +586,219 @@ public sealed class SocialQuestionnaireResponsesControllerTests
     }
 
     [Fact]
+    public async Task SubmitResponse_WhenContradictoryOutcome_UndefinedStatusValue_ReturnsBadRequest()
+    {
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(Guid.NewGuid(), (QuestionnaireParticipationStatus)999));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "answers": [{"questionId": "q01", "optionId": "1"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal("Questionnaire submission outcome was invalid or contradictory.", problem.Detail);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenUnknownRootPropertyPassed_DoesNotEchoUnknownPropertyName()
+    {
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(Guid.NewGuid(), QuestionnaireParticipationStatus.Completed));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "customUnknownProperty": "some_value"}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal("Unknown property in submission payload is not permitted.", problem.Detail);
+        Assert.DoesNotContain("customUnknownProperty", problem.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("customUnknownProperty", JsonSerializer.Serialize(problem), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenUnknownSensitiveRootPropertyPassed_ConcealsSensitivePropertyCompletely()
+    {
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(Guid.NewGuid(), QuestionnaireParticipationStatus.Completed));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "secretSuperAdminField": "token_12345"}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal("Failed to parse questionnaire submission.", problem.Detail);
+        Assert.DoesNotContain("secretSuperAdminField", problem.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("secretSuperAdminField", JsonSerializer.Serialize(problem), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenUnknownAnswerPropertyPassed_DoesNotEchoUnknownPropertyName()
+    {
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(Guid.NewGuid(), QuestionnaireParticipationStatus.Completed));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "answers": [{"questionId": "q01", "optionId": "1", "confidentialTelemetryKey": "xyz"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal("Unknown property in answer object is not permitted.", problem.Detail);
+        Assert.DoesNotContain("confidentialTelemetryKey", problem.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("confidentialTelemetryKey", JsonSerializer.Serialize(problem), StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenDisallowedRootPropertyPassed_DoesNotEchoPropertyName()
+    {
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(Guid.NewGuid(), QuestionnaireParticipationStatus.Completed));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "__proto__": {}}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal("Disallowed property detected in submission payload.", problem.Detail);
+        Assert.DoesNotContain("__proto__", problem.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenDuplicateRootPropertyPassed_DoesNotEchoPropertyName()
+    {
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(Guid.NewGuid(), QuestionnaireParticipationStatus.Completed));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "version": "v2"}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal("Duplicate property detected in root object.", problem.Detail);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenDuplicateAnswerPropertyPassed_DoesNotEchoPropertyName()
+    {
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(Guid.NewGuid(), QuestionnaireParticipationStatus.Completed));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "answers": [{"questionId": "q01", "questionId": "q02", "optionId": "1"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal("Duplicate property detected in answer object.", problem.Detail);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenPayloadSizeExceedsMaximum_ReturnsGenericPayloadSizeMessage()
+    {
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(Guid.NewGuid(), QuestionnaireParticipationStatus.Completed));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        // Exceed 32 KB limit with large padding
+        var largePadding = new string('x', 33 * 1024);
+        var json = $"{{\"version\": \"v1\", \"answers\": [{{\"questionId\": \"q01\", \"optionId\": \"{largePadding}\"}}]}}";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal("Payload size exceeds maximum allowable limit.", problem.Detail);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenApprovedIncompleteAnswersFeedback_PreservesQuestionIdTwoActionableDetail()
+    {
+        const string actionableMessage = "Incomplete answers: question 'q02' is required.";
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.ValidationFailed(
+                QuestionnaireParticipationStatus.InProgress,
+                [actionableMessage]));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "answers": [{"questionId": "q01", "optionId": "1"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(actionableMessage, problem.Detail);
+    }
+
+    [Fact]
+    public async Task GetMyActiveResponse_WhenStoredStatusIsUndefined_ReturnsInternalServerErrorWithoutExposingInvalidState()
+    {
+        var profileId = Guid.NewGuid();
+        var ctor = typeof(QuestionnaireResponseEntity)
+            .GetConstructors(BindingFlags.NonPublic | BindingFlags.Instance)
+            .First(c => c.GetParameters().Length == 6);
+
+        var invalidEntity = (QuestionnaireResponseEntity)ctor.Invoke([
+            Guid.NewGuid(),
+            profileId,
+            "v1",
+            (QuestionnaireParticipationStatus)999,
+            DateTimeOffset.UtcNow,
+            Array.Empty<QuestionnaireAnswerEntity>()
+        ]);
+
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(invalidEntity.Id, QuestionnaireParticipationStatus.Completed));
+        var lifecycle = new StubLifecycleAccessService(invalidEntity);
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var actionResult = await controller.GetMyActiveResponse(CancellationToken.None);
+        var objectResult = Assert.IsType<ObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status500InternalServerError, objectResult.StatusCode);
+
+        var problem = Assert.IsType<ProblemDetails>(objectResult.Value);
+        Assert.Equal("Stored questionnaire response contains an invalid participation status.", problem.Detail);
+        Assert.DoesNotContain("999", JsonSerializer.Serialize(problem));
+    }
+
+    [Fact]
     public async Task GetMyActiveResponse_ConcealsInternalProfileIdFromSerializedDto()
     {
         var profileId = Guid.NewGuid();
