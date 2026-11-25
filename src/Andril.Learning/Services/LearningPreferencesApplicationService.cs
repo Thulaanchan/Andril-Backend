@@ -51,8 +51,28 @@ public sealed class LearningPreferencesApplicationService(
         IEnumerable<Guid> learningSkills, string expectedRevision, CancellationToken cancellationToken = default) =>
         UpdateSelectionsCoreAsync(teachingSkills, learningSkills, expectedRevision, true, cancellationToken);
 
+    public Task<LearningSetupWriteOutcome> UpdateSelectionsWithOperationAsync(Guid operationId, IEnumerable<Guid> teachingSkills,
+        IEnumerable<Guid> learningSkills, string expectedRevision, CancellationToken cancellationToken = default) =>
+        UpdateSelectionsCoreAsync(teachingSkills, learningSkills, expectedRevision, true, cancellationToken, operationId);
+
+    public async Task<LearningSetupWriteOutcome> ChangeGoalAsync(Guid operationId, LearningGoalChange change,
+        string expectedRevision, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(change);
+        cancellationToken.ThrowIfCancellationRequested();
+        var grant = await access.CheckAsync(LearningSetupOperation.UpdateSetup, cancellationToken);
+        if (grant.State == LearningSetupAccessState.Denied) return LearningSetupWriteOutcome.Denied;
+        if (grant.State != LearningSetupAccessState.Allowed || grant.Scope is null) return LearningSetupWriteOutcome.Unavailable;
+        if (operationId == Guid.Empty || !LearningSetupRevision.TryParse(expectedRevision, out _))
+            throw new ArgumentException("A valid mutation identity and revision are required.");
+        return repository is ILearningSetupMutationRepository mutations
+            ? await mutations.ChangeGoalAsync(operationId, grant.Scope, change, expectedRevision, cancellationToken)
+            : LearningSetupWriteOutcome.Unavailable;
+    }
+
     private async Task<LearningSetupWriteOutcome> UpdateSelectionsCoreAsync(IEnumerable<Guid> teachingSkills,
-        IEnumerable<Guid> learningSkills, string? expectedRevision, bool requirePrecondition, CancellationToken cancellationToken)
+        IEnumerable<Guid> learningSkills, string? expectedRevision, bool requirePrecondition, CancellationToken cancellationToken,
+        Guid? operationId = null)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var authorization = await access.CheckAsync(LearningSetupOperation.UpdateSetup, cancellationToken);
@@ -91,6 +111,13 @@ public sealed class LearningPreferencesApplicationService(
         if (fresh.State == LearningSetupAccessState.Denied ||
             (fresh.Scope is not null && !SameScope(authorization.Scope, fresh.Scope))) return LearningSetupWriteOutcome.Denied;
         if (fresh.State != LearningSetupAccessState.Allowed || fresh.Scope is null) return LearningSetupWriteOutcome.Unavailable;
+        if (operationId is { } id)
+        {
+            if (id == Guid.Empty) throw new ArgumentException("A mutation identity is required.");
+            return repository is ILearningSetupMutationRepository mutations
+                ? await mutations.ReplaceWithOperationAsync(id, replacement, expected!.ToOpaqueToken(), evidence.Revision, cancellationToken)
+                : LearningSetupWriteOutcome.Unavailable;
+        }
         return await repository.ReplaceAsync(replacement, expected?.ToOpaqueToken() ?? current.StorageRevision, evidence.Revision, cancellationToken);
 
         LearningSkillSelection Row(Guid id, LearningSkillSelectionKind kind) => LearningSkillSelection.CreateFromPreferences(

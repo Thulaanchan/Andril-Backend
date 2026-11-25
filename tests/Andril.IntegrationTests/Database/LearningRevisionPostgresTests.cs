@@ -443,6 +443,61 @@ public sealed class LearningRevisionPostgresTests
     }
 
     [LocalPostgresFact]
+    public async Task ControlledGoalCommandsCreateEditNoOpAndRemoveAtomicallyWithoutChangingSelections()
+    {
+        await using var w = await Create(); var initial = await w.Read();
+        Assert.Equal(LearningSetupWriteOutcome.Committed, await Change(w, initial, w.Authority.Skill));
+        var selected = await w.Read(); var selection = Assert.Single(selected.Snapshot!.Selections);
+        var service = new LearningPreferencesApplicationService(w.Authority.Boundary, w.Repository(), w.Authority);
+        var create = LearningGoalChange.Create("SYNTHETIC-GOAL-A");
+        Assert.Equal(LearningSetupWriteOutcome.Committed, await service.ChangeGoalAsync(Guid.NewGuid(), create, selected.StorageRevision!));
+        var added = await w.Read(); Assert.Equal(create.GoalId, Assert.Single(added.Snapshot!.Goals).Id);
+        Assert.Equal(Revision(selected).Version + 1, Revision(added).Version);
+        Assert.Equal(LearningSetupWriteOutcome.Committed, await service.ChangeGoalAsync(Guid.NewGuid(), LearningGoalChange.Edit(create.GoalId, "SYNTHETIC-GOAL-A"), added.StorageRevision!));
+        Assert.Equal(added.StorageRevision, (await w.Read()).StorageRevision);
+        Assert.Equal(LearningSetupWriteOutcome.Committed, await service.ChangeGoalAsync(Guid.NewGuid(), LearningGoalChange.Edit(create.GoalId, "SYNTHETIC-GOAL-B"), added.StorageRevision!));
+        var edited = await w.Read(); Assert.Equal("SYNTHETIC-GOAL-B", Assert.Single(edited.Snapshot!.Goals).Text);
+        Assert.Equal(LearningSetupWriteOutcome.Committed, await service.ChangeGoalAsync(Guid.NewGuid(), LearningGoalChange.Remove(create.GoalId), edited.StorageRevision!));
+        var removed = await w.Read(); Assert.Empty(removed.Snapshot!.Goals); Assert.Equal(selection.Id, Assert.Single(removed.Snapshot.Selections).Id);
+        Assert.Equal(Revision(edited).Version + 1, Revision(removed).Version);
+    }
+
+    [LocalPostgresFact]
+    public async Task ControlledGoalCommandsRejectStaleUnknownAndRevokedOperationsWithoutMutation()
+    {
+        await using var w = await Create(); await w.Goal(); var before = await w.Read(); var goal = Assert.Single(before.Snapshot!.Goals);
+        var service = new LearningPreferencesApplicationService(w.Authority.Boundary, w.Repository(), w.Authority);
+        Assert.Equal(LearningSetupWriteOutcome.Conflict, await service.ChangeGoalAsync(Guid.NewGuid(), LearningGoalChange.Edit(Guid.NewGuid(), "changed"), before.StorageRevision!));
+        Assert.Equal(LearningSetupWriteOutcome.Committed, await service.ChangeGoalAsync(Guid.NewGuid(), LearningGoalChange.Edit(goal.Id, "changed"), before.StorageRevision!));
+        var current = await w.Read();
+        Assert.Equal(LearningSetupWriteOutcome.Conflict, await service.ChangeGoalAsync(Guid.NewGuid(), LearningGoalChange.Edit(goal.Id, "changed"), before.StorageRevision!));
+        w.Authority.Revoked = true;
+        Assert.Equal(LearningSetupWriteOutcome.Denied, await service.ChangeGoalAsync(Guid.NewGuid(), LearningGoalChange.Remove(goal.Id), current.StorageRevision!));
+        w.Authority.Revoked = false; Assert.Equal(current.StorageRevision, (await w.Read()).StorageRevision); Assert.Single((await w.Read()).Snapshot!.Goals);
+    }
+
+    [LocalPostgresFact]
+    public async Task ControlledGoalCancellationAfterPreparationRollsBackGoalAndRevision()
+    {
+        await using var w = await Create(); await w.Goal(); var before = await w.Read(); using var cts = new CancellationTokenSource(); bool reached = false;
+        var repository = w.Repository((phase, ct) => { if (phase == "prepared") { reached = true; cts.Cancel(); ct.ThrowIfCancellationRequested(); } return Task.CompletedTask; });
+        var service = new LearningPreferencesApplicationService(w.Authority.Boundary, repository, w.Authority);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.ChangeGoalAsync(Guid.NewGuid(), LearningGoalChange.Remove(before.Snapshot!.Goals.Single().Id), before.StorageRevision!, cts.Token));
+        Assert.True(reached); Assert.Equal(before.StorageRevision, (await w.Read()).StorageRevision); Assert.Single((await w.Read()).Snapshot!.Goals);
+    }
+
+    [LocalPostgresFact]
+    public async Task ControlledGoalConcurrencyHasOneCommitAndOneConflict()
+    {
+        await using var w = await Create(); await w.Goal(); var before = await w.Read(); var id = before.Snapshot!.Goals.Single().Id;
+        var service = new LearningPreferencesApplicationService(w.Authority.Boundary, w.Repository(), w.Authority);
+        var results = await Task.WhenAll(service.ChangeGoalAsync(Guid.NewGuid(), LearningGoalChange.Edit(id, "left"), before.StorageRevision!),
+            service.ChangeGoalAsync(Guid.NewGuid(), LearningGoalChange.Edit(id, "right"), before.StorageRevision!));
+        Assert.Single(results, result => result == LearningSetupWriteOutcome.Committed); Assert.Single(results, result => result == LearningSetupWriteOutcome.Conflict);
+        Assert.Equal(Revision(before).Version + 1, Revision(await w.Read()).Version);
+    }
+
+    [LocalPostgresFact]
     public async Task LearningMigrationRollsBackReappliesWithoutChangingAccountsHistory()
     {
         await using var fixture = await LocalAccountDatabase.CreateAsync(); await LearningPostgresFixture.Profile(fixture, new(Guid.NewGuid(), Guid.NewGuid()));
