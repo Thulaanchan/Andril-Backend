@@ -3,7 +3,7 @@ using Andril.Common.Accounts.Profiles;
 namespace Andril.Common.Diary;
 
 /// <summary>
-/// CF-13 isolated, unregistered composition of existing private Diary content operations.
+/// CF-13 isolated, unregistered composition of private Diary reads and content operations.
 /// Uses the existing module gate and server-resolved authorized profile callback; supplied
 /// entry/profile references never grant access. Production PrivateModuleAccess remains pending
 /// and fail-closed. No new M2 authority, Diary permission, persistence, endpoint or DI is supplied.
@@ -39,23 +39,31 @@ public sealed class IsolatedDiaryEditingService
     public Task RemovePlanAsync(ModuleDiaryEntry entry, Guid planId, CancellationToken cancellationToken = default) =>
         EditAsync(entry, () => entry.RemovePlan(planId), cancellationToken);
 
-    private async Task EditAsync(ModuleDiaryEntry entry, Action edit, CancellationToken ct)
+    /// <summary>Release a detached private snapshot only through the same owner/module checks.
+    /// This is not a public DTO, export, AI context or authorization receipt. Entry loading and
+    /// production read-release/revocation coordination remain separate pending integrations.</summary>
+    public Task<DiaryEntrySnapshot> ReadSnapshotAsync(ModuleDiaryEntry entry, CancellationToken cancellationToken = default) =>
+        WithOwnedEntryAsync(entry, () => new DiaryEntrySnapshot(entry), cancellationToken);
+
+    private Task EditAsync(ModuleDiaryEntry entry, Action edit, CancellationToken ct) =>
+        WithOwnedEntryAsync(entry, () => { edit(); return true; }, ct);
+
+    private async Task<T> WithOwnedEntryAsync<T>(ModuleDiaryEntry entry, Func<T> operation, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(entry);
         ct.ThrowIfCancellationRequested();
         await access.RequireAsync(entry.Module, ct);
         ct.ThrowIfCancellationRequested();
-        await profiles.WithAuthorizedProfileAsync(entry.Module, async profile =>
+        return await profiles.WithAuthorizedProfileAsync(entry.Module, async profile =>
         {
             ct.ThrowIfCancellationRequested();
             if (profile.ProfileId == Guid.Empty || profile.ProfileId != entry.OwnerModuleProfileId || profile.Module != entry.Module)
                 throw new ProfileAccessDeniedException();
-            // Repeat ordinary module/lifecycle access at mutation, within the existing profile
+            // Repeat ordinary module/lifecycle access at read release/mutation in the profile
             // callback. This is not a substitute for pending production revocation coordination.
             await access.RequireAsync(entry.Module, ct);
             ct.ThrowIfCancellationRequested();
-            edit(); // Existing validation finishes before content replacement. No await after mutation.
-            return true;
+            return operation(); // No asynchronous work or secondary dispatch after read/mutation.
         }, ct);
     }
 }
