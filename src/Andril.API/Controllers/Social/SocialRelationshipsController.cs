@@ -102,22 +102,31 @@ public sealed class SocialRelationshipsController : ControllerBase
 
             return Ok(dto);
         }
-        catch (ProfileAccessDeniedException ex)
+        catch (ProfileAccessDeniedException)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
             {
                 Status = StatusCodes.Status403Forbidden,
                 Title = "Profile access denied.",
-                Detail = ex.Message
+                Detail = "Caller is not authorized to perform the requested relationship action."
             });
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid interest operation.",
-                Detail = ex.Message
+                Detail = "The relationship interest operation could not be completed with the provided parameters."
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Status = StatusCodes.Status400BadRequest,
+                Title = "Invalid interest operation.",
+                Detail = "The relationship interest operation could not be completed due to a conflict or invalid state."
             });
         }
     }
@@ -160,22 +169,31 @@ public sealed class SocialRelationshipsController : ControllerBase
 
             return Ok(dto);
         }
-        catch (ProfileAccessDeniedException ex)
+        catch (ProfileAccessDeniedException)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
             {
                 Status = StatusCodes.Status403Forbidden,
                 Title = "Profile access denied.",
-                Detail = ex.Message
+                Detail = "Caller is not authorized to access relationship status."
             });
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid status operation.",
-                Detail = ex.Message
+                Detail = "The relationship status operation could not be completed with the provided parameters."
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Status = StatusCodes.Status400BadRequest,
+                Title = "Invalid status operation.",
+                Detail = "The relationship status operation could not be completed due to a conflict or invalid state."
             });
         }
     }
@@ -217,22 +235,31 @@ public sealed class SocialRelationshipsController : ControllerBase
 
             return Ok(dto);
         }
-        catch (ProfileAccessDeniedException ex)
+        catch (ProfileAccessDeniedException)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
             {
                 Status = StatusCodes.Status403Forbidden,
                 Title = "Profile access denied.",
-                Detail = ex.Message
+                Detail = "Caller is not authorized to revoke the specified relationship."
             });
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid revocation operation.",
-                Detail = ex.Message
+                Detail = "The relationship revocation operation could not be completed with the provided parameters."
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Status = StatusCodes.Status400BadRequest,
+                Title = "Invalid revocation operation.",
+                Detail = "The relationship revocation operation could not be completed due to a conflict or invalid state."
             });
         }
     }
