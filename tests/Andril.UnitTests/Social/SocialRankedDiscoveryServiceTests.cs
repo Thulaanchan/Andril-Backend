@@ -563,4 +563,170 @@ public sealed class SocialRankedDiscoveryServiceTests
             SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
                 validProfile, validSnap, validSnap, Array.Empty<SocialAuthoritativeCandidateItem>(), maxCandidateBatchSize: 0));
     }
+
+    [Fact]
+    public void DiscoverAuthoritativeRankedCards_FirstDuplicateUnblocked_SecondDuplicateBlocked_ExcludesCandidate()
+    {
+        var caller = CreateProfile();
+        var callerSnap = CreateSnapshot(caller.ProfileId);
+        var candId = Guid.NewGuid();
+
+        var candUnblocked = CreateProfile(profileId: candId, blockedProfileIds: Array.Empty<Guid>());
+        var candBlocked = CreateProfile(profileId: candId, blockedProfileIds: new[] { caller.ProfileId });
+
+        var item1 = CreateCandidateItem(candUnblocked, displayName: "CandidateA");
+        var item2 = CreateCandidateItem(candBlocked, displayName: "CandidateA");
+
+        var result = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
+            caller, callerSnap, callerSnap, new[] { item1, item2 });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void DiscoverAuthoritativeRankedCards_FirstDuplicateBlocked_SecondDuplicateUnblocked_ExcludesCandidate()
+    {
+        var caller = CreateProfile();
+        var callerSnap = CreateSnapshot(caller.ProfileId);
+        var candId = Guid.NewGuid();
+
+        var candBlocked = CreateProfile(profileId: candId, blockedProfileIds: new[] { caller.ProfileId });
+        var candUnblocked = CreateProfile(profileId: candId, blockedProfileIds: Array.Empty<Guid>());
+
+        var item1 = CreateCandidateItem(candBlocked, displayName: "CandidateA");
+        var item2 = CreateCandidateItem(candUnblocked, displayName: "CandidateA");
+
+        var result = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
+            caller, callerSnap, callerSnap, new[] { item1, item2 });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void DiscoverAuthoritativeRankedCards_ConflictingCandidateDisplayInformation_ExcludesCandidate()
+    {
+        var caller = CreateProfile();
+        var callerSnap = CreateSnapshot(caller.ProfileId);
+        var cand = CreateProfile();
+
+        var item1 = CreateCandidateItem(cand, displayName: "Alice");
+        var item2 = CreateCandidateItem(cand, displayName: "Bob");
+
+        var result = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
+            caller, callerSnap, callerSnap, new[] { item1, item2 });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void DiscoverAuthoritativeRankedCards_ConflictingApproximateDistance_ExcludesCandidate()
+    {
+        var caller = CreateProfile();
+        var callerSnap = CreateSnapshot(caller.ProfileId);
+        var cand = CreateProfile();
+
+        var item1 = CreateCandidateItem(cand, displayName: "CandidateA", distanceKm: 10);
+        var item2 = CreateCandidateItem(cand, displayName: "CandidateA", distanceKm: 50);
+
+        var result = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
+            caller, callerSnap, callerSnap, new[] { item1, item2 });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void DiscoverAuthoritativeRankedCards_ConflictingMatchingEvidence_LanguagesOrGoals_ExcludesCandidate()
+    {
+        var caller = CreateProfile();
+        var callerSnap = CreateSnapshot(caller.ProfileId);
+        var candId = Guid.NewGuid();
+
+        var candLangEnglish = CreateProfile(profileId: candId, languages: new[] { "English" });
+        var candLangFrench = CreateProfile(profileId: candId, languages: new[] { "French" });
+
+        var item1 = CreateCandidateItem(candLangEnglish, displayName: "CandidateA");
+        var item2 = CreateCandidateItem(candLangFrench, displayName: "CandidateA");
+
+        var result = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
+            caller, callerSnap, callerSnap, new[] { item1, item2 });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void DiscoverAuthoritativeRankedCards_IdenticalValidDuplicateEvidence_DeduplicatesAndPreservesSingleCard()
+    {
+        var caller = CreateProfile();
+        var callerSnap = CreateSnapshot(caller.ProfileId);
+        var cand = CreateProfile();
+
+        var item1 = CreateCandidateItem(cand, displayName: "CandidateA", distanceKm: 15);
+        var item2 = CreateCandidateItem(cand, displayName: "CandidateA", distanceKm: 15);
+
+        var result = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
+            caller, callerSnap, callerSnap, new[] { item1, item2 });
+
+        Assert.Single(result);
+        Assert.Equal(cand.ProfileId, result[0].CandidateProfileId);
+    }
+
+    [Fact]
+    public void DiscoverAuthoritativeRankedCards_LaterDuplicateAttemptsToRestoreEligibility_RemainsExcluded()
+    {
+        var caller = CreateProfile();
+        var callerSnap = CreateSnapshot(caller.ProfileId);
+        var cand = CreateProfile();
+
+        var item1 = CreateCandidateItem(cand, displayName: "CandidateA", distanceKm: 10);
+        var item2Contradictory = CreateCandidateItem(cand, displayName: "CandidateA", distanceKm: 80);
+        var item3AttemptRestore = CreateCandidateItem(cand, displayName: "CandidateA", distanceKm: 10);
+
+        var result = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
+            caller, callerSnap, callerSnap, new[] { item1, item2Contradictory, item3AttemptRestore });
+
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void DiscoverAuthoritativeRankedCards_ContradictoryCandidateOrdering_IsOrderIndependent()
+    {
+        var caller = CreateProfile();
+        var callerSnap = CreateSnapshot(caller.ProfileId);
+        var candId = Guid.NewGuid();
+
+        var candNormal = CreateProfile(profileId: candId, blockedProfileIds: Array.Empty<Guid>());
+        var candBlocked = CreateProfile(profileId: candId, blockedProfileIds: new[] { caller.ProfileId });
+
+        var itemNormal = CreateCandidateItem(candNormal, displayName: "UserX");
+        var itemBlocked = CreateCandidateItem(candBlocked, displayName: "UserX");
+
+        var resultForward = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
+            caller, callerSnap, callerSnap, new[] { itemNormal, itemBlocked });
+        var resultReverse = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
+            caller, callerSnap, callerSnap, new[] { itemBlocked, itemNormal });
+
+        Assert.Empty(resultForward);
+        Assert.Empty(resultReverse);
+    }
+
+    [Fact]
+    public void DiscoverAuthoritativeRankedCards_ValidDuplicatesWithOtherCandidates_PreservesRankingAndRotation()
+    {
+        var caller = CreateProfile(languages: new[] { "English", "French" }, goals: new[] { "Friendship" });
+        var callerSnap = CreateSnapshot(caller.ProfileId);
+
+        var cand1 = CreateProfile(languages: new[] { "English", "French" }, goals: new[] { "Friendship" });
+        var cand2 = CreateProfile(languages: new[] { "English" }, goals: new[] { "Companionship" });
+
+        var item1A = CreateCandidateItem(cand1, displayName: "StrongMatch", distanceKm: 5);
+        var item1B = CreateCandidateItem(cand1, displayName: "StrongMatch", distanceKm: 5); // duplicate of cand1
+        var item2 = CreateCandidateItem(cand2, displayName: "WeakMatch", distanceKm: 50);
+
+        var result = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
+            caller, callerSnap, callerSnap, new[] { item2, item1A, item1B }, rotationOffset: 0);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal(cand1.ProfileId, result[0].CandidateProfileId);
+        Assert.Equal(cand2.ProfileId, result[1].CandidateProfileId);
+    }
 }
