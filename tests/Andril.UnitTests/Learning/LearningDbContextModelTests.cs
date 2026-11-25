@@ -22,15 +22,15 @@ public sealed class LearningDbContextModelTests
         Assert.IsAssignableFrom<IProperty>(entity.FindProperty(name));
 
     [Fact]
-    public void ModelInitializesWithOnlyTheTwoLearningEntities()
+    public void ModelInitializesWithLearningDataAndDurableRevisionMetadataOnly()
     {
         using var fixture = new OfflineContext();
         var model = fixture.Context.Model;
         Assert.Equal("Npgsql.EntityFrameworkCore.PostgreSQL", fixture.Context.Database.ProviderName);
         Assert.Equal("andril_learning", model.GetDefaultSchema());
-        Assert.Equal(new[] { typeof(LearningPersonalGoal), typeof(LearningSkillSelection) },
-            model.GetEntityTypes().Select(entity => entity.ClrType).OrderBy(type => type.Name).ToArray());
-        Assert.Equal(2, model.GetRelationalModel().Tables.Count());
+        Assert.Equal(new[] { "LearningGenerationRow", "LearningMutationReceiptRow", "LearningPersonalGoal", "LearningProfileKeyRow", "LearningProfileRevisionRow", "LearningSkillSelection" },
+            model.GetEntityTypes().Select(entity => entity.ClrType.Name).OrderBy(name => name, StringComparer.Ordinal).ToArray());
+        Assert.Equal(6, model.GetRelationalModel().Tables.Count());
     }
 
     [Theory]
@@ -157,11 +157,14 @@ public sealed class LearningDbContextModelTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void NoAccountsRelationshipsCascadesOrUnapprovedIndexesAreIntroduced(bool selection)
+    public void DataReferencesOnlyItsLearningRevisionWithoutIntroducingUnapprovedIndexes(bool selection)
     {
         using var fixture = new OfflineContext();
         var entity = Entity(fixture, selection);
-        Assert.Empty(entity.GetForeignKeys());
+        var relationship = Assert.Single(entity.GetForeignKeys());
+        Assert.Equal("LearningProfileRevisionRow", relationship.PrincipalEntityType.ClrType.Name);
+        Assert.Equal(new[] { "LearningProfileId", "Module" }, relationship.Properties.Select(p => p.Name));
+        Assert.Equal(DeleteBehavior.Cascade, relationship.DeleteBehavior);
         Assert.Empty(entity.GetReferencingForeignKeys());
         Assert.Empty(entity.GetNavigations());
         Assert.Empty(entity.GetSkipNavigations());
@@ -289,7 +292,7 @@ public sealed class LearningDbContextModelTests
     }
 
     [Fact]
-    public void PostgreSqlCreateScriptIncludesAllLearningConstraintsWithoutSharedSchemaOrForeignKeys()
+    public void PostgreSqlCreateScriptIncludesApprovedRevisionRelationshipsWithoutCreatingSharedTables()
     {
         using var fixture = new OfflineContext();
         var script = fixture.Context.Database.GenerateCreateScript();
@@ -300,9 +303,10 @@ public sealed class LearningDbContextModelTests
         foreach (var selection in new[] { true, false })
         foreach (var check in Entity(fixture, selection).GetCheckConstraints())
             Assert.Contains("CONSTRAINT " + check.Name + " CHECK (" + check.Sql + ")", script);
-        Assert.DoesNotContain("FOREIGN KEY", script, StringComparison.OrdinalIgnoreCase);
-        Assert.DoesNotContain("andril_identity", script);
-        Assert.DoesNotContain("CASCADE", script, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("fk_learning_revision_profile", script);
+        Assert.Contains("fk_learning_selection_revision", script);
+        Assert.Contains("fk_learning_goal_revision", script);
+        Assert.DoesNotContain("CREATE TABLE andril_identity", script);
         Assert.DoesNotContain("DROP ", script, StringComparison.OrdinalIgnoreCase);
         // Script generation opens no connection and does not apply or verify a migration.
     }

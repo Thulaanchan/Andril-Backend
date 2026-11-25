@@ -5,7 +5,8 @@ namespace Andril.Learning.Interfaces;
 
 /// <summary>
 /// PROVISIONAL Learning-owned backend contract for the two existing setup entity mappings.
-/// No implementation, runtime registration, shared M2 authority or HTTP contract is supplied.
+/// An isolated persistence implementation exists; no production registration, shared M2 authority
+/// adapter or HTTP contract is supplied by this interface.
 /// Interests/preferences aggregate storage is not implied by these two mapped row collections.
 /// </summary>
 public interface ILearningSetupRepository

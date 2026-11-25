@@ -1,23 +1,31 @@
 using Andril.Learning.Entities;
+using Andril.Persistence.Repositories.Learning;
 using Microsoft.EntityFrameworkCore;
 
 namespace Andril.Persistence.DbContexts;
 
 /// <summary>
-/// Isolated, undeployed Learning model only. No runtime registration, connection configuration,
-/// migration, authorization, RLS or cross-schema relationship is supplied. Profile references
-/// are not access grants; future repositories must enforce fresh M2 Learning ownership checks.
-/// The future provider-options owner must configure migration history as
-/// andril_learning.__EFMigrationsHistory_Learning before any migration operation.
+/// Unregistered Learning model and Learning-only migration history. The approved revision migration
+/// references M2's existing composite profile key and supplies private RLS/transaction helpers.
+/// This context does not establish authorization or activate hosted migrations. The controlled
+/// repository requires current backend authority and only supports disposable local composition.
 /// </summary>
 public sealed class LearningDbContext(DbContextOptions<LearningDbContext> options) : DbContext(options)
 {
     public DbSet<LearningSkillSelection> SkillSelections => Set<LearningSkillSelection>();
     public DbSet<LearningPersonalGoal> PersonalGoals => Set<LearningPersonalGoal>();
 
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder) =>
+        optionsBuilder.UseNpgsql(options => options.MigrationsHistoryTable("__EFMigrationsHistory_Learning", "andril_learning"));
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+        ConfigureLearningModel(modelBuilder);
+    }
+
+    internal static void ConfigureLearningModel(ModelBuilder modelBuilder)
+    {
         modelBuilder.HasDefaultSchema("andril_learning");
 
         var selections = modelBuilder.Entity<LearningSkillSelection>();
@@ -66,9 +74,10 @@ public sealed class LearningDbContext(DbContextOptions<LearningDbContext> option
         goals.HasIndex(goal => new { goal.LearningProfileId, goal.Module })
             .HasDatabaseName("ix_learning_personal_goals_profile_module");
 
-        // Provisional Learning-owned constraints only. No ownership FK, cascade or catalogue
-        // relationship is inferred. Shared profile keys/delete behavior and runtime grants/RLS
-        // require coordinated M2/M6 integration. No goal-text uniqueness or retention policy.
-        // Required columns do not replace domain validation, authorization or database role review.
+        LearningRevisionConfiguration.Configure(modelBuilder);
+
+        // The M2 projection is excluded from Learning migrations. Lifecycle cascade and revision
+        // ownership are approved explicitly; no catalogue FK, text uniqueness or retention TTL.
+        // Required columns still do not replace current session/standing/purpose authorization.
     }
 }

@@ -49,17 +49,17 @@ public sealed class LearningModelPostgresTests
         const string identityInventory = "SELECT string_agg(tablename, ',' ORDER BY tablename) FROM pg_tables WHERE schemaname='andril_identity'";
         var before = await Scalar(connection, identityInventory);
         Assert.NotEmpty(before);
-        Assert.Empty(db.Database.GetMigrations());
+        Assert.Equal("20261125100000_LearningDurableRevisions", Assert.Single(db.Database.GetMigrations()));
         var ddl = db.Database.GenerateCreateScript();
         await using (var transaction = await connection.BeginTransactionAsync())
         {
             await Execute(connection, ddl);
-            Assert.Equal("2", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_learning'"));
+            Assert.Equal("5", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_learning'"));
             await transaction.RollbackAsync();
         }
         Assert.Equal("0", await Scalar(connection, "SELECT count(*) FROM pg_namespace WHERE nspname='andril_learning'"));
         await Execute(connection, ddl);
-        Assert.Equal("2", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_learning'"));
+        Assert.Equal("5", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_learning'"));
         Assert.Equal(before, await Scalar(connection, identityInventory));
         Assert.Equal("0", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_learning' AND tablename LIKE '%EFMigrationsHistory%'"));
         Assert.Equal("1", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_identity' AND tablename='__EFMigrationsHistory'"));
@@ -71,8 +71,9 @@ public sealed class LearningModelPostgresTests
         await using var fixture = await LocalAccountDatabase.CreateAsync();
         await using var db = Open(fixture);
         await using var connection = await Connect(db);
-        await Execute(connection, db.Database.GenerateCreateScript());
+        await db.Database.MigrateAsync();
         var profile = Guid.NewGuid(); var skill = Guid.NewGuid(); var id = Guid.NewGuid();
+        await LearningPostgresFixture.Profile(fixture, new(Guid.NewGuid(), profile));
         string Selection(Guid row, Guid owner, Guid selected, int kind = 1, string module = "learning") =>
             $"INSERT INTO andril_learning.learning_skill_selections(id,learning_profile_id,module,skill_id,kind) VALUES ('{row}','{owner}','{module}','{selected}',{kind})";
         string Goal(Guid row, Guid owner, string module = "learning") =>
@@ -99,7 +100,9 @@ public sealed class LearningModelPostgresTests
         Assert.Equal(PostgresErrorCodes.UniqueViolation, duplicate.SqlState);
         Assert.Equal("uq_learning_skill_selections_profile_purpose_skill", duplicate.ConstraintName);
         await Execute(connection, Selection(Guid.NewGuid(), profile, skill, 2));
-        await Execute(connection, Selection(Guid.NewGuid(), Guid.NewGuid(), skill));
+        var independentProfile = Guid.NewGuid();
+        await LearningPostgresFixture.Profile(fixture, new(Guid.NewGuid(), independentProfile));
+        await Execute(connection, Selection(Guid.NewGuid(), independentProfile, skill));
         Assert.Equal("3", await Scalar(connection, "SELECT count(*) FROM andril_learning.learning_skill_selections"));
         Assert.Equal("0", await Scalar(connection, "SELECT count(*) FROM andril_learning.learning_personal_goals"));
     }
@@ -110,8 +113,9 @@ public sealed class LearningModelPostgresTests
         await using var fixture = await LocalAccountDatabase.CreateAsync();
         await using var db = Open(fixture);
         await using var connection = await Connect(db);
-        await Execute(connection, db.Database.GenerateCreateScript());
+        await db.Database.MigrateAsync();
         var preferences = new LearningPreferences(Guid.NewGuid(), Guid.NewGuid());
+        await LearningPostgresFixture.Profile(fixture, new(preferences.AccountId, preferences.LearningProfileId));
         var skill = Guid.NewGuid(); preferences.UpdateSelections([], [skill], []);
         var goal = preferences.CreateGoal("Synthetic தமிழ் goal"); var id = Guid.NewGuid();
         db.SkillSelections.Add(LearningSkillSelection.CreateFromPreferences(id, preferences, skill, LearningSkillSelectionKind.Teaching));
@@ -137,13 +141,14 @@ public sealed class LearningModelPostgresTests
         await using var fixture = await LocalAccountDatabase.CreateAsync();
         await using var db = Open(fixture);
         await using var connection = await Connect(db);
-        await Execute(connection, db.Database.GenerateCreateScript());
+        await db.Database.MigrateAsync();
         var role = "andril_learning_test_" + Guid.NewGuid().ToString("N");
         await Execute(connection, $"CREATE ROLE {role} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS");
         try
         {
             await Execute(connection, $"GRANT {role} TO CURRENT_USER WITH SET TRUE, INHERIT FALSE");
             await Execute(connection, $"GRANT USAGE ON SCHEMA andril_learning TO {role}; GRANT SELECT ON ALL TABLES IN SCHEMA andril_learning TO {role}");
+            await Execute(connection, $"GRANT EXECUTE ON FUNCTION andril_learning.scope_visible(uuid,text) TO {role}");
             await Execute(connection, $"SET ROLE {role}");
             Assert.Equal("0", await Scalar(connection, "SELECT count(*) FROM andril_learning.learning_personal_goals"));
             foreach (var sql in new[] { "SELECT count(*) FROM andril_identity.accounts", "CREATE TABLE andril_learning.forbidden(id integer)", "CREATE DATABASE forbidden_learning_test" })
@@ -164,6 +169,7 @@ public sealed class LearningModelPostgresTests
             // would require those privileges after RESET ROLE. No objects can be created by
             // the restricted role: revoke our explicit grants as their fixture owner instead.
             await Execute(connection, $"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA andril_learning FROM {role}");
+            await Execute(connection, $"REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA andril_learning FROM {role}");
             await Execute(connection, $"REVOKE ALL PRIVILEGES ON SCHEMA andril_learning FROM {role}");
             await Execute(connection, $"DROP ROLE {role}");
             Assert.Equal("0", await Scalar(connection, $"SELECT count(*) FROM pg_roles WHERE rolname='{role}'"));

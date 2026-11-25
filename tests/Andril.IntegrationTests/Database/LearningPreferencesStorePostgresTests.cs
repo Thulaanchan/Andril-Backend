@@ -40,7 +40,7 @@ public sealed class LearningPreferencesStorePostgresTests
     private static async Task CreateModel(LocalAccountDatabase fixture)
     {
         await using var db = Open(fixture);
-        await db.Database.ExecuteSqlRawAsync(db.Database.GenerateCreateScript());
+        await db.Database.MigrateAsync();
     }
 
     private static async Task Sql(LearningDbContext db, string sql)
@@ -62,6 +62,7 @@ public sealed class LearningPreferencesStorePostgresTests
 
     private static async Task<LearningSetupSnapshot> Seed(LocalAccountDatabase fixture, LearningSetupScope scope, Guid skill)
     {
+        await LearningPostgresFixture.Profile(fixture, scope);
         var p = new LearningPreferences(scope.AccountId, scope.LearningProfileId); p.UpdateSelections([], [skill], []);
         var goal = p.CreateGoal("synthetic-private-goal");
         await using var db = Open(fixture);
@@ -236,7 +237,7 @@ public sealed class LearningPreferencesStorePostgresTests
         await Sql(db, $"CREATE ROLE {role} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS");
         try
         {
-            await Sql(db, $"GRANT {role} TO CURRENT_USER WITH SET TRUE, INHERIT FALSE; GRANT USAGE ON SCHEMA andril_learning TO {role}; GRANT SELECT ON ALL TABLES IN SCHEMA andril_learning TO {role}; GRANT INSERT,DELETE ON andril_learning.learning_skill_selections TO {role}; SET ROLE {role}");
+            await Sql(db, $"GRANT {role} TO CURRENT_USER WITH SET TRUE, INHERIT FALSE; GRANT USAGE ON SCHEMA andril_learning TO {role}; GRANT SELECT ON ALL TABLES IN SCHEMA andril_learning TO {role}; GRANT INSERT,DELETE ON andril_learning.learning_skill_selections TO {role}; GRANT EXECUTE ON FUNCTION andril_learning.scope_visible(uuid,text),andril_learning.lock_profile_revision(uuid,uuid) TO {role}; SELECT set_config('andril.subject','{a.Account}',false),set_config('andril.account','{a.Account}',false),set_config('andril.module','learning',false); SET ROLE {role}");
             var before = await Read(fixture, a.Scope);
             await using (var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable))
             {
@@ -251,7 +252,7 @@ public sealed class LearningPreferencesStorePostgresTests
         }
         finally
         {
-            await Sql(db, $"RESET ROLE; REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA andril_learning FROM {role}; REVOKE ALL PRIVILEGES ON SCHEMA andril_learning FROM {role}; DROP ROLE {role}");
+            await Sql(db, $"RESET ROLE; REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA andril_learning FROM {role}; REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA andril_learning FROM {role}; REVOKE ALL PRIVILEGES ON SCHEMA andril_learning FROM {role}; DROP ROLE {role}");
         }
     }
 
