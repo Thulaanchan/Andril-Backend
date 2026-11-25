@@ -143,7 +143,8 @@ public static class SocialRankedDiscoveryService
         }
 
         var eligibleCandidatesWithCards = new List<(SocialScoringProfileEvidence Candidate, int? ApproximateDistanceKm, SocialCandidateEvaluationResult EvaluationResult, string DisplayName)>();
-        var seenProfileIds = new HashSet<Guid>();
+        var candidateEvidenceByProfileId = new Dictionary<Guid, (SocialScoringProfileEvidence Evidence, SocialEvidenceRevisionSnapshot CachedRevision, SocialEvidenceRevisionSnapshot CommittedRevision)>();
+        var contradictoryProfileIds = new HashSet<Guid>();
         var processedCount = 0;
 
         foreach (var item in candidates)
@@ -153,12 +154,12 @@ public static class SocialRankedDiscoveryService
                 break;
             }
 
+            processedCount++;
+
             if (item is null)
             {
                 continue;
             }
-
-            processedCount++;
 
             var candidate = item.Evidence;
             if (candidate is null || item.CachedRevision is null || item.CommittedRevision is null)
@@ -166,7 +167,7 @@ public static class SocialRankedDiscoveryService
                 continue;
             }
 
-            // 4. Reject empty, self-discovery, duplicate, or contradictory candidate identities
+            // 4. Reject empty, self-discovery, or contradictory candidate identities
             if (candidate.ProfileId == Guid.Empty ||
                 candidate.ProfileId == caller.ProfileId ||
                 item.CachedRevision.ProfileId != candidate.ProfileId ||
@@ -175,10 +176,24 @@ public static class SocialRankedDiscoveryService
                 continue;
             }
 
-            if (!seenProfileIds.Add(candidate.ProfileId))
+            if (contradictoryProfileIds.Contains(candidate.ProfileId))
             {
                 continue;
             }
+
+            if (candidateEvidenceByProfileId.TryGetValue(candidate.ProfileId, out var existing))
+            {
+                if (!candidate.Equals(existing.Evidence) ||
+                    !item.CachedRevision.Equals(existing.CachedRevision) ||
+                    !item.CommittedRevision.Equals(existing.CommittedRevision))
+                {
+                    contradictoryProfileIds.Add(candidate.ProfileId);
+                    eligibleCandidatesWithCards.RemoveAll(x => x.Candidate.ProfileId == candidate.ProfileId);
+                }
+                continue;
+            }
+
+            candidateEvidenceByProfileId[candidate.ProfileId] = (candidate, item.CachedRevision, item.CommittedRevision);
 
             if (string.IsNullOrWhiteSpace(item.DisplayName) || (item.ApproximateDistanceKm.HasValue && item.ApproximateDistanceKm.Value < 0))
             {
@@ -332,10 +347,29 @@ public static class SocialRankedDiscoveryService
         }
 
         var eligibleCandidates = new List<(SocialScoringProfileEvidence Candidate, int? ApproximateDistanceKm)>();
+        var candidateEvidenceByProfileId = new Dictionary<Guid, SocialScoringProfileEvidence>();
+        var contradictoryProfileIds = new HashSet<Guid>();
 
         foreach (var (candidate, distanceKm) in candidates)
         {
             if (candidate is null) continue;
+
+            if (contradictoryProfileIds.Contains(candidate.ProfileId))
+            {
+                continue;
+            }
+
+            if (candidateEvidenceByProfileId.TryGetValue(candidate.ProfileId, out var existingEvidence))
+            {
+                if (!candidate.Equals(existingEvidence))
+                {
+                    contradictoryProfileIds.Add(candidate.ProfileId);
+                    eligibleCandidates.RemoveAll(x => x.Candidate.ProfileId == candidate.ProfileId);
+                }
+                continue;
+            }
+
+            candidateEvidenceByProfileId[candidate.ProfileId] = candidate;
 
             // 2. Self-discovery and mutual blocking check
             if (caller.ProfileId == candidate.ProfileId)
