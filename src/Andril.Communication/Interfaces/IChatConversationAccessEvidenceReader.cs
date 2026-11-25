@@ -13,6 +13,17 @@ namespace Andril.Communication.Interfaces;
 /// </summary>
 internal interface IChatConversationAccessEvidenceReader
 {
+    /// <summary>Fresh operation evidence. Owner mappings remain pending. Never delegates to ReadAsync.</summary>
+    Task<ChatOperationAccessEvidence?> ReadOperationAsync(
+        Guid verifiedSubjectId,
+        ChatAuthorizationRequest request,
+        Guid evaluationId,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult<ChatOperationAccessEvidence?>(null);
+    }
+
     /// <summary>
     /// Freshly read all required evidence for this exact target and requestId.
     /// ObservedAtUtc must fall within this invocation and ValidUntilUtc must be
