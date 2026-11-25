@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.API.Authorization.Social;
@@ -97,11 +98,12 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
         var parseResult = _bodyParser.Parse(json);
         if (!parseResult.IsSuccess || parseResult.Submission is null)
         {
+            var detail = SanitizeParseError(parseResult.Error);
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid submission payload.",
-                Detail = parseResult.Error ?? "Failed to parse questionnaire submission."
+                Detail = detail
             });
         }
 
@@ -183,6 +185,91 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
         }
     }
 
+    private static readonly HashSet<string> SafeValidationCodes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "INVALID_SUBMISSION",
+        "VERSION_MISMATCH",
+        "SKIP_WITH_ANSWERS",
+        "INVALID_ANSWER",
+        "DUPLICATE_ANSWER",
+        "UNKNOWN_QUESTION",
+        "INVALID_OPTION",
+        "INCOMPLETE_ANSWERS",
+        "NOT_FOUND"
+    };
+
+    private static readonly string[] SensitiveKeywords =
+    [
+        "select ", "insert ", "update ", "delete ", "drop ", "where ", "from ",
+        "table ", "database", "sql", "npgsql", "postgres",
+        "exception", "stack trace", "stacktrace", "system.", "andril.",
+        "secret", "password", "token", "connection", "profileid", "credential"
+    ];
+
+    private static readonly Regex GuidPattern = new(
+        @"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static string SanitizeParseError(string? error)
+    {
+        if (string.IsNullOrWhiteSpace(error) || ContainsSensitiveDiagnostics(error))
+        {
+            return "Failed to parse questionnaire submission.";
+        }
+
+        if (error.StartsWith("Malformed JSON syntax", StringComparison.OrdinalIgnoreCase) ||
+            error.StartsWith("Invalid payload structure", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Malformed JSON payload syntax.";
+        }
+
+        return error;
+    }
+
+    private static bool IsSafeUserActionableError(string error)
+    {
+        if (string.IsNullOrWhiteSpace(error) || ContainsSensitiveDiagnostics(error))
+        {
+            return false;
+        }
+
+        if (SafeValidationCodes.Contains(error))
+        {
+            return true;
+        }
+
+        if (error.StartsWith("Incomplete answers", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool ContainsSensitiveDiagnostics(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var lower = text.ToLowerInvariant();
+        foreach (var keyword in SensitiveKeywords)
+        {
+            if (lower.Contains(keyword))
+            {
+                return true;
+            }
+        }
+
+        if (GuidPattern.IsMatch(text))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
     private async Task<ActionResult<SocialQuestionnaireSubmissionResponseDto>> ExecuteSubmissionAsync(
         QuestionnaireSubmission submission,
         CancellationToken cancellationToken)
@@ -192,16 +279,36 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
             var result = await _orchestrator.SubmitAndPersistAsync(submission, cancellationToken);
             if (!result.IsSuccess)
             {
+                var safeErrors = result.Errors
+                    .Where(IsSafeUserActionableError)
+                    .ToArray();
+
+                var detail = safeErrors.Length > 0
+                    ? string.Join("; ", safeErrors)
+                    : "Questionnaire submission failed validation.";
+
                 return BadRequest(new ProblemDetails
                 {
                     Status = StatusCodes.Status400BadRequest,
                     Title = "Questionnaire submission rejected.",
-                    Detail = result.Errors.Count > 0 ? string.Join("; ", result.Errors) : result.DiagnosticMessage
+                    Detail = detail
+                });
+            }
+
+            if (!result.ResponseId.HasValue ||
+                result.ResponseId.Value == Guid.Empty ||
+                result.Status == QuestionnaireParticipationStatus.NotStarted)
+            {
+                return BadRequest(new ProblemDetails
+                {
+                    Status = StatusCodes.Status400BadRequest,
+                    Title = "Questionnaire submission rejected.",
+                    Detail = "Questionnaire submission outcome was invalid or contradictory."
                 });
             }
 
             return Ok(new SocialQuestionnaireSubmissionResponseDto(
-                result.ResponseId!.Value,
+                result.ResponseId.Value,
                 result.Status.ToString()));
         }
         catch (ProfileAccessDeniedException)
