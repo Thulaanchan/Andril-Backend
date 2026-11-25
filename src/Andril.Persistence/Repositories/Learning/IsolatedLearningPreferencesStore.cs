@@ -110,6 +110,34 @@ internal sealed class IsolatedLearningPreferencesStore(LearningDbContext db)
         return ReplacementState.Prepared;
     }
 
+    internal async Task<ReplacementState> PrepareGoalAsync(LearningSetupScope scope, LearningGoalChange change,
+        string expectedRevision, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested(); RequireTransaction();
+        if (!LearningSetupRevision.TryParse(expectedRevision, out _)) return ReplacementState.Conflict;
+        await db.Database.ExecuteSqlRawAsync("SET LOCAL enable_seqscan=off; SET LOCAL enable_bitmapscan=off", ct);
+        await db.Database.ExecuteSqlInterpolatedAsync($"SELECT andril_learning.lock_profile_revision({scope.LearningProfileId},{scope.AccountId})", ct);
+        var current = await ReadUnderTransactionAsync(scope, ct);
+        if (current.State != LearningSetupReadState.Available) return ReplacementState.Unavailable;
+        if (current.StorageRevision != expectedRevision) return ReplacementState.Conflict;
+        var existing = current.Snapshot!.Goals.SingleOrDefault(g => g.Id == change.GoalId);
+        if (change.Kind == LearningGoalChangeKind.Create)
+        {
+            if (existing is not null) return ReplacementState.Conflict;
+            await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO andril_learning.learning_personal_goals(id,learning_profile_id,module,text) VALUES({change.GoalId},{scope.LearningProfileId},'learning',{change.Text!})", ct);
+        }
+        else
+        {
+            if (existing is null) return ReplacementState.Conflict;
+            if (change.Kind == LearningGoalChangeKind.Edit && existing.Text != change.Text)
+                await db.Database.ExecuteSqlInterpolatedAsync($"UPDATE andril_learning.learning_personal_goals SET text={change.Text!} WHERE id={change.GoalId} AND learning_profile_id={scope.LearningProfileId} AND module='learning'", ct);
+            else if (change.Kind == LearningGoalChangeKind.Remove)
+                await db.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM andril_learning.learning_personal_goals WHERE id={change.GoalId} AND learning_profile_id={scope.LearningProfileId} AND module='learning'", ct);
+        }
+        ct.ThrowIfCancellationRequested();
+        return ReplacementState.Prepared;
+    }
+
     internal static bool IsConflict(Exception error) => error is PostgresException
         { SqlState: PostgresErrorCodes.SerializationFailure or PostgresErrorCodes.DeadlockDetected }
         || error is DbUpdateException { InnerException: PostgresException

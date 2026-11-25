@@ -19,7 +19,7 @@ namespace Andril.Persistence.Repositories.Learning;
 /// Database locks reuse the existing M2 subject fence and Account -> Membership -> Profile order.
 /// No positive authorization cache or transaction retry is used.
 /// </summary>
-internal sealed class IsolatedLearningSetupRepository : ILearningSetupRepository
+internal sealed class IsolatedLearningSetupRepository : ILearningSetupMutationRepository
 {
     private readonly DbContextOptions<LearningDbContext> options;
     private readonly ICurrentUser user;
@@ -102,11 +102,20 @@ internal sealed class IsolatedLearningSetupRepository : ILearningSetupRepository
         string catalogueRevision, CancellationToken cancellationToken = default) =>
         ReplaceWithOperationAsync(Guid.NewGuid(), replacement, expectedStorageRevision, catalogueRevision, cancellationToken);
 
-    internal async Task<LearningSetupWriteOutcome> ReplaceWithOperationAsync(Guid operationId, LearningSetupSnapshot replacement,
-        string expectedStorageRevision, string catalogueRevision, CancellationToken ct = default)
+    public Task<LearningSetupWriteOutcome> ReplaceWithOperationAsync(Guid operationId, LearningSetupSnapshot replacement,
+        string expectedStorageRevision, string catalogueRevision, CancellationToken ct = default) =>
+        MutateAsync(operationId, replacement.Scope, replacement, null, expectedStorageRevision, catalogueRevision, ct);
+
+    public Task<LearningSetupWriteOutcome> ChangeGoalAsync(Guid operationId, LearningSetupScope scope,
+        LearningGoalChange change, string expectedRevision, CancellationToken cancellationToken = default) =>
+        MutateAsync(operationId, scope, null, change ?? throw new ArgumentNullException(nameof(change)), expectedRevision, null, cancellationToken);
+
+    private async Task<LearningSetupWriteOutcome> MutateAsync(Guid operationId, LearningSetupScope scope,
+        LearningSetupSnapshot? replacement, LearningGoalChange? goal, string expectedStorageRevision,
+        string? catalogueRevision, CancellationToken ct)
     {
         if (operationId == Guid.Empty) throw new ArgumentException("A server operation identity is required.", nameof(operationId));
-        var access = await Authorize(replacement.Scope, LearningSetupOperation.UpdateSetup, ct);
+        var access = await Authorize(scope, LearningSetupOperation.UpdateSetup, ct);
         if (access != LearningSetupAccessState.Allowed) return WriteFailure(access);
         if (!LearningSetupRevision.TryParse(expectedStorageRevision, out var expected)) return LearningSetupWriteOutcome.Conflict;
         try
@@ -114,37 +123,49 @@ internal sealed class IsolatedLearningSetupRepository : ILearningSetupRepository
             await using var db = Open();
             await OpenFence(db, ct);
             await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.Serializable, ct);
-            if (!await LockOwners(db, replacement.Scope, ct)) return LearningSetupWriteOutcome.Denied;
-            access = await Authorize(replacement.Scope, LearningSetupOperation.UpdateSetup, ct);
+            if (!await LockOwners(db, scope, ct)) return LearningSetupWriteOutcome.Denied;
+            access = await Authorize(scope, LearningSetupOperation.UpdateSetup, ct);
             if (access != LearningSetupAccessState.Allowed) return WriteFailure(access);
-            var catalogue = await catalogues.ReadCurrentAsync(ct);
-            if (catalogue.State != LearningSkillCatalogueReadState.Available) return LearningSetupWriteOutcome.Unavailable;
-            if (catalogue.Revision != catalogueRevision) return LearningSetupWriteOutcome.Conflict;
             var store = new IsolatedLearningPreferencesStore(db);
-            var prepared = await store.PrepareReplacementAsync(replacement, expectedStorageRevision, catalogue.Catalogue!, ct);
+            IsolatedLearningPreferencesStore.ReplacementState prepared;
+            if (replacement is not null)
+            {
+                var catalogue = await catalogues.ReadCurrentAsync(ct);
+                if (catalogue.State != LearningSkillCatalogueReadState.Available) return LearningSetupWriteOutcome.Unavailable;
+                if (catalogue.Revision != catalogueRevision) return LearningSetupWriteOutcome.Conflict;
+                prepared = await store.PrepareReplacementAsync(replacement, expectedStorageRevision, catalogue.Catalogue!, ct);
+            }
+            else prepared = await store.PrepareGoalAsync(scope, goal!, expectedStorageRevision, ct);
             if (prepared == IsolatedLearningPreferencesStore.ReplacementState.Conflict) return LearningSetupWriteOutcome.Conflict;
             if (prepared == IsolatedLearningPreferencesStore.ReplacementState.Unavailable) return LearningSetupWriteOutcome.Unavailable;
             await Checkpoint("prepared", ct);
-            access = await Authorize(replacement.Scope, LearningSetupOperation.UpdateSetup, ct);
+            access = await Authorize(scope, LearningSetupOperation.UpdateSetup, ct);
             if (access != LearningSetupAccessState.Allowed) return WriteFailure(access);
-            var currentCatalogue = await catalogues.ReadCurrentAsync(ct);
-            if (currentCatalogue.State != LearningSkillCatalogueReadState.Available) return LearningSetupWriteOutcome.Unavailable;
-            if (currentCatalogue.Revision != catalogueRevision) return LearningSetupWriteOutcome.Conflict;
-            var current = await store.ReadUnderTransactionAsync(replacement.Scope, ct);
+            if (replacement is not null)
+            {
+                var currentCatalogue = await catalogues.ReadCurrentAsync(ct);
+                if (currentCatalogue.State != LearningSkillCatalogueReadState.Available) return LearningSetupWriteOutcome.Unavailable;
+                if (currentCatalogue.Revision != catalogueRevision) return LearningSetupWriteOutcome.Conflict;
+            }
+            var current = await store.ReadUnderTransactionAsync(scope, ct);
             if (!LearningSetupRevision.TryParse(current.StorageRevision, out var result)) return LearningSetupWriteOutcome.Unavailable;
             var intent = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
             {
-                Selections = replacement.Selections.OrderBy(s => s.Id).Select(s => new { s.Id, s.SkillId, s.Kind }),
-                Goals = replacement.Goals.OrderBy(g => g.Id).Select(g => new { g.Id, g.Text })
+                Kind = goal?.Kind.ToString() ?? "selections", GoalId = goal?.GoalId, Text = goal?.Text,
+                Selections = replacement?.Selections.OrderBy(s => s.Id).Select(s => new { s.Id, s.SkillId, s.Kind }),
+                Goals = replacement?.Goals.OrderBy(g => g.Id).Select(g => new { g.Id, g.Text })
             }))));
-            await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO andril_learning.learning_mutation_receipts(operation_id,learning_profile_id,module,generation_id,expected_version,result_version,intent_hash) VALUES({operationId},{replacement.Scope.LearningProfileId},'learning',{result!.GenerationId},{expected!.Version},{result.Version},{intent})", ct);
+            await db.Database.ExecuteSqlInterpolatedAsync($"INSERT INTO andril_learning.learning_mutation_receipts(operation_id,learning_profile_id,module,generation_id,expected_version,result_version,intent_hash) VALUES({operationId},{scope.LearningProfileId},'learning',{result!.GenerationId},{expected!.Version},{result.Version},{intent})", ct);
             await Checkpoint("before-commit", ct);
             // Revalidate after every potentially injectable/awaited checkpoint. No network authority
             // is configured here; production authority adapters remain a separate integration gate.
-            var releaseCatalogue = await catalogues.ReadCurrentAsync(ct);
-            if (releaseCatalogue.State != LearningSkillCatalogueReadState.Available) return LearningSetupWriteOutcome.Unavailable;
-            if (releaseCatalogue.Revision != catalogueRevision) return LearningSetupWriteOutcome.Conflict;
-            access = await Authorize(replacement.Scope, LearningSetupOperation.UpdateSetup, ct);
+            if (replacement is not null)
+            {
+                var releaseCatalogue = await catalogues.ReadCurrentAsync(ct);
+                if (releaseCatalogue.State != LearningSkillCatalogueReadState.Available) return LearningSetupWriteOutcome.Unavailable;
+                if (releaseCatalogue.Revision != catalogueRevision) return LearningSetupWriteOutcome.Conflict;
+            }
+            access = await Authorize(scope, LearningSetupOperation.UpdateSetup, ct);
             if (access != LearningSetupAccessState.Allowed) return WriteFailure(access);
             return await store.CommitPreparedAsync(ct);
         }
