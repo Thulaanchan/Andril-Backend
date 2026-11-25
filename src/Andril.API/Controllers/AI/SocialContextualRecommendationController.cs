@@ -47,6 +47,15 @@ public sealed record SocialContextualRecommendationResponse(
 /// and privacy notice compliance via <see cref="AiContextualRecommendationService"/>.
 /// Excluded from automatic MVC discovery via [NonController] until persistence and provider activation is approved.
 /// </summary>
+/// <remarks>
+/// CF-18 Contextual AI Dormant Invocation Boundaries and Authoritative Dispatch Acceptance Requirements:
+/// 1. Single-Use Authoritative Dispatch: A consent start request must never authorize duplicate or redundant redispatch.
+///    Continuation verification (CheckPendingAsync) validates active consent state continuation and is NOT equivalent to new dispatch authorization.
+/// 2. Quota Admission & Budgeting: Authoritative quota deduction and rate limiting must execute against durable persistence prior to provider dispatch.
+/// 3. Completion Fencing: Once generation finishes or suppresses, the consent attempt must atomically transition to a terminal state (Completed or Failed) in the repository.
+/// 4. Replay Prevention: In-memory caches are strictly prohibited as substitutes for durable transaction coordination. Multi-round state machine safety requires database transactions.
+/// 5. Dormant-Only Invocations: HTTP routing and programmatic overloads are explicitly excluded from MVC action discovery via [NonAction] and [NonController] pending authoritative dispatch acceptance.
+/// </remarks>
 [ApiController]
 [Authorize]
 [NonController]
@@ -71,8 +80,10 @@ public sealed class SocialContextualRecommendationController : ControllerBase
     /// <summary>
     /// Evaluates consent continuation and delivers a contextual recommendation if authorized.
     /// Conceals internal suppression reasons and never discloses generated content upon suppression.
+    /// Excluded from MVC action discovery via [NonAction] while dispatch coordination remains dormant.
     /// </summary>
     [HttpPost("")]
+    [NonAction]
     public async Task<ActionResult<SocialContextualRecommendationResponse>> GetRecommendationAsync(
         [FromBody] SocialContextualRecommendationRequest request,
         CancellationToken cancellationToken = default)
@@ -94,8 +105,10 @@ public sealed class SocialContextualRecommendationController : ControllerBase
 
     /// <summary>
     /// Direct domain invocation overload for direct security testing and in-memory authorization pipelines.
+    /// Excluded from MVC action discovery via [NonAction].
     /// Verifies trusted caller identity, foreign actor rejection, and module isolation.
     /// </summary>
+    [NonAction]
     public async Task<ActionResult<SocialContextualRecommendationResponse>> GetRecommendationAsync(
         AiConsentPendingReference pendingConsent,
         CancellationToken cancellationToken = default)
