@@ -128,13 +128,16 @@ public sealed class SocialDiscoveryAccessService : ISocialDiscoveryAccessService
             var callerBundle = await _evidenceProvider.GetCallerBundleAsync(profile.ProfileId, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (callerBundle is null || callerBundle.Evidence is null)
+            if (callerBundle is null || callerBundle.Evidence is null ||
+                callerBundle.CachedRevision is null || callerBundle.CommittedRevision is null)
             {
                 // Fail closed when caller evidence is missing
                 return Array.Empty<SocialExploreCandidateCard>();
             }
 
-            if (callerBundle.Evidence.ProfileId != profile.ProfileId)
+            if (callerBundle.Evidence.ProfileId != profile.ProfileId ||
+                callerBundle.CachedRevision.ProfileId != profile.ProfileId ||
+                callerBundle.CommittedRevision.ProfileId != profile.ProfileId)
             {
                 throw new ProfileAccessDeniedException();
             }
@@ -146,6 +149,21 @@ public sealed class SocialDiscoveryAccessService : ISocialDiscoveryAccessService
                 !callerBundle.Evidence.HasAuthoritativeEvidence)
             {
                 // Fail closed returning empty discovery feed for ineligible callers
+                return Array.Empty<SocialExploreCandidateCard>();
+            }
+
+            // Matching engine policy version validation
+            if (!string.Equals(callerBundle.CommittedRevision.PolicyVersion, SocialCompatibilityScoringEngine.PolicyVersion, StringComparison.Ordinal))
+            {
+                // Fail closed on outdated or incompatible matching policy version
+                return Array.Empty<SocialExploreCandidateCard>();
+            }
+
+            // Caller evidence currency check: reject stale revisions, restriction, or deactivation before candidate retrieval
+            var callerCurrency = SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(callerBundle.CachedRevision, callerBundle.CommittedRevision);
+            if (!callerCurrency.IsCurrent)
+            {
+                // Fail closed without invoking candidate provider when caller evidence is stale, restricted, or deactivated
                 return Array.Empty<SocialExploreCandidateCard>();
             }
 
