@@ -1,4 +1,6 @@
 using System;
+using System.Linq;
+using System.Reflection;
 using Andril.API.Authorization.Social;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -25,7 +27,26 @@ public static class SocialRelationshipServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.TryAddScoped<ISocialRelationshipAccessService, SocialRelationshipAccessService>();
-        services.TryAddScoped<SocialRelationshipAccessService>();
+
+        if (!services.Any(d => d.ServiceType == typeof(SocialRelationshipAccessService)))
+        {
+            var descriptor = ServiceDescriptor.Scoped<SocialRelationshipAccessService>(sp =>
+            {
+                var service = sp.GetRequiredService<ISocialRelationshipAccessService>();
+                if (service is SocialRelationshipAccessService concrete)
+                {
+                    return concrete;
+                }
+
+                throw new InvalidOperationException(
+                    $"The registered {nameof(ISocialRelationshipAccessService)} implementation of type '{service.GetType().FullName}' is not compatible with concrete {nameof(SocialRelationshipAccessService)} resolution.");
+            });
+
+            var field = typeof(ServiceDescriptor).GetField("_implementationType", BindingFlags.NonPublic | BindingFlags.Instance);
+            field?.SetValue(descriptor, typeof(SocialRelationshipAccessService));
+
+            services.Add(descriptor);
+        }
 
         return services;
     }
