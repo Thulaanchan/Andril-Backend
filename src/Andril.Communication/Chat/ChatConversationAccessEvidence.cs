@@ -2,6 +2,16 @@ using Andril.Communication.Interfaces;
 
 namespace Andril.Communication.Chat;
 
+/// <summary>Internal association envelope. Existing identity evidence cannot establish new operation permissions.</summary>
+internal sealed record ChatOperationAccessEvidence(
+    Guid EvaluationId,
+    ChatAuthorizationRequest Request,
+    ChatAuthorizationOutcome Outcome,
+    ChatConversationAccessEvidence? Binding)
+{
+    public override string ToString() => nameof(ChatOperationAccessEvidence);
+}
+
 /// <summary>
 /// Proposed internal reader result, not an approved M2/M5 adapter, API DTO or
 /// reusable access token. Nullable flags deliberately distinguish missing evidence
