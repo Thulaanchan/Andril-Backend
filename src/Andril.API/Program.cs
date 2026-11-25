@@ -13,6 +13,7 @@ builder.Services.AddAccounts(builder.Configuration);
 builder.Services.AddNotifications();
 builder.Services.AddSupabaseIdentityVerification(builder.Configuration);
 builder.Services.AddSocialQuestionnaireServices();
+builder.Services.AddModerationReportAuthorization();
 
 if (builder.Environment.IsDevelopment())
 {
