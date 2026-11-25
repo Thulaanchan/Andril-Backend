@@ -37,20 +37,44 @@ public sealed class LearningPreferencesApplicationService(
     /// propagates existing validation exceptions before ReplaceAsync; existing snapshots are
     /// never mutated. Repository outcomes, including Conflict/CommitUnknown, are not retried.
     /// Never check cancellation after a known commit and falsely imply it rolled back.</summary>
-    public async Task<LearningSetupWriteOutcome> UpdateSelectionsAsync(IEnumerable<Guid> teachingSkills,
-        IEnumerable<Guid> learningSkills, CancellationToken cancellationToken = default)
+    /// <remarks>Legacy offline orchestration only; it obtains the current revision internally.
+    /// Controlled HTTP handlers must use UpdateSelectionsIfCurrentAsync with the caller's
+    /// required precondition. Neither path is registered in production.</remarks>
+    public Task<LearningSetupWriteOutcome> UpdateSelectionsAsync(IEnumerable<Guid> teachingSkills,
+        IEnumerable<Guid> learningSkills, CancellationToken cancellationToken = default) =>
+        UpdateSelectionsCoreAsync(teachingSkills, learningSkills, null, false, cancellationToken);
+
+    /// <summary>Preserve the caller's expected persisted generation/version. Never refresh a
+    /// stale precondition or replay a conditional write. Database coordination still belongs
+    /// to the repository; this preflight does not establish atomicity or permission.</summary>
+    public Task<LearningSetupWriteOutcome> UpdateSelectionsIfCurrentAsync(IEnumerable<Guid> teachingSkills,
+        IEnumerable<Guid> learningSkills, string expectedRevision, CancellationToken cancellationToken = default) =>
+        UpdateSelectionsCoreAsync(teachingSkills, learningSkills, expectedRevision, true, cancellationToken);
+
+    private async Task<LearningSetupWriteOutcome> UpdateSelectionsCoreAsync(IEnumerable<Guid> teachingSkills,
+        IEnumerable<Guid> learningSkills, string? expectedRevision, bool requirePrecondition, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var authorization = await access.CheckAsync(LearningSetupOperation.UpdateSetup, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         if (authorization.State == LearningSetupAccessState.Denied) return LearningSetupWriteOutcome.Denied;
         if (authorization.State != LearningSetupAccessState.Allowed || authorization.Scope is null) return LearningSetupWriteOutcome.Unavailable;
+        LearningSetupRevision? expected = null;
+        if (requirePrecondition && !LearningSetupRevision.TryParse(expectedRevision, out expected))
+            throw new ArgumentException("A valid Learning revision precondition is required.", nameof(expectedRevision));
         var current = await repository.ReadAsync(authorization.Scope, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         if (current.State == LearningSetupReadState.Denied) return LearningSetupWriteOutcome.Denied;
         if (current.State != LearningSetupReadState.Available || current.Snapshot is null || string.IsNullOrWhiteSpace(current.StorageRevision))
             return LearningSetupWriteOutcome.Unavailable;
         if (!SameScope(authorization.Scope, current.Snapshot.Scope)) return LearningSetupWriteOutcome.Denied;
+        if (requirePrecondition)
+        {
+            // A legacy global snapshot result cannot establish a durable scoped revision.
+            if (!LearningSetupRevision.TryParse(current.StorageRevision, out _)) return LearningSetupWriteOutcome.Unavailable;
+            if (!string.Equals(expected!.ToOpaqueToken(), current.StorageRevision, StringComparison.Ordinal))
+                return LearningSetupWriteOutcome.Conflict;
+        }
         var evidence = await catalogue.ReadCurrentAsync(cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         if (evidence.State != LearningSkillCatalogueReadState.Available || evidence.Catalogue is null || string.IsNullOrWhiteSpace(evidence.Revision))
@@ -67,7 +91,7 @@ public sealed class LearningPreferencesApplicationService(
         if (fresh.State == LearningSetupAccessState.Denied ||
             (fresh.Scope is not null && !SameScope(authorization.Scope, fresh.Scope))) return LearningSetupWriteOutcome.Denied;
         if (fresh.State != LearningSetupAccessState.Allowed || fresh.Scope is null) return LearningSetupWriteOutcome.Unavailable;
-        return await repository.ReplaceAsync(replacement, current.StorageRevision, evidence.Revision, cancellationToken);
+        return await repository.ReplaceAsync(replacement, expected?.ToOpaqueToken() ?? current.StorageRevision, evidence.Revision, cancellationToken);
 
         LearningSkillSelection Row(Guid id, LearningSkillSelectionKind kind) => LearningSkillSelection.CreateFromPreferences(
             oldIds.TryGetValue((kind, id), out var existingId) ? existingId : Guid.NewGuid(), preferences, id, kind);

@@ -192,4 +192,60 @@ public sealed class LearningPreferencesApplicationServiceTests
         Assert.Equal(LearningSetupWriteOutcome.Committed, await f.Service.UpdateSelectionsAsync([f.Skill], [], cts.Token));
         Assert.True(cts.IsCancellationRequested); Assert.Equal(1, f.Writes);
     }
+
+    [Theory]
+    [InlineData(LearningSetupWriteOutcome.Committed)] [InlineData(LearningSetupWriteOutcome.Denied)]
+    [InlineData(LearningSetupWriteOutcome.Unavailable)] [InlineData(LearningSetupWriteOutcome.Conflict)]
+    [InlineData(LearningSetupWriteOutcome.CommitUnknown)]
+    public async Task ConditionalUpdatePreservesExactExpectedRevisionAndNeverRetriesRepositoryOutcome(LearningSetupWriteOutcome outcome)
+    {
+        var f = new Fixture { Outcome = outcome }; var before = f.Stored.Snapshot!;
+        var token = LearningSetupRevision.FromPersisted(Guid.NewGuid(), 7).ToOpaqueToken();
+        f.Stored = LearningSetupReadResult.Available(before, token);
+        Assert.Equal(outcome, await f.Service.UpdateSelectionsIfCurrentAsync([f.Skill], [f.Skill], token));
+        Assert.Equal(token, f.ExpectedRevision); Assert.Equal(1, f.Writes); Assert.Equal(2, f.AuthCalls);
+        Assert.Equal(before.Selections[0].Id, f.Written!.Selections.Single(s => s.Kind == LearningSkillSelectionKind.Teaching).Id);
+        Assert.Same(before.Goals, f.Written.Goals); Assert.Single(before.Selections);
+    }
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public async Task ConditionalStaleVersionOrGenerationCannotBeReplacedByLatestRevision(bool differentGeneration)
+    {
+        var f = new Fixture(); var generation = Guid.NewGuid();
+        f.Stored = LearningSetupReadResult.Available(f.Stored.Snapshot!, LearningSetupRevision.FromPersisted(generation, 8).ToOpaqueToken());
+        var expected = LearningSetupRevision.FromPersisted(differentGeneration ? Guid.NewGuid() : generation, differentGeneration ? 8 : 7).ToOpaqueToken();
+        Assert.Equal(LearningSetupWriteOutcome.Conflict, await f.Service.UpdateSelectionsIfCurrentAsync([f.Skill], [], expected));
+        Assert.Equal(0, f.Writes); Assert.Equal(0, f.CatalogueReads); Assert.Single(f.Stored.Snapshot!.Selections);
+    }
+
+    [Theory]
+    [InlineData(null)] [InlineData("")] [InlineData(" ")] [InlineData("storage-v1")]
+    public async Task ConditionalMissingInvalidOrLegacyClientPreconditionNeverReadsOrWritesRepository(string? token)
+    {
+        var f = new Fixture();
+        await Assert.ThrowsAsync<ArgumentException>(() => f.Service.UpdateSelectionsIfCurrentAsync([f.Skill], [], token!));
+        Assert.Equal(0, f.Reads); Assert.Equal(0, f.Writes); Assert.Equal(0, f.CatalogueReads);
+    }
+
+    [Fact]
+    public async Task ConditionalPathFailsClosedWhenRepositoryStillReturnsLegacyGlobalSnapshotRevision()
+    {
+        var f = new Fixture(); var token = LearningSetupRevision.FromPersisted(Guid.NewGuid(), 1).ToOpaqueToken();
+        Assert.Equal(LearningSetupWriteOutcome.Unavailable, await f.Service.UpdateSelectionsIfCurrentAsync([f.Skill], [], token));
+        Assert.Equal(0, f.Writes); Assert.Equal(0, f.CatalogueReads);
+    }
+
+    [Fact]
+    public async Task ConditionalPathStillRequiresFreshAuthorityAndPropagatesCancellation()
+    {
+        var f = new Fixture(); var token = LearningSetupRevision.FromPersisted(Guid.NewGuid(), 1).ToOpaqueToken();
+        f.Stored = LearningSetupReadResult.Available(f.Stored.Snapshot!, token);
+        f.Change = (call, e) => call == 1 ? e : e with { Revoked = true };
+        Assert.Equal(LearningSetupWriteOutcome.Denied, await f.Service.UpdateSelectionsIfCurrentAsync([f.Skill], [], token));
+        Assert.Equal(0, f.Writes);
+        using var cts = new CancellationTokenSource(); cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => f.Service.UpdateSelectionsIfCurrentAsync([f.Skill], [], token, cts.Token));
+        Assert.Equal(0, f.Writes);
+    }
 }

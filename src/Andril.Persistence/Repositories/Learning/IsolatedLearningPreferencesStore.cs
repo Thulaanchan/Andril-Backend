@@ -1,7 +1,4 @@
 using System.Data;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
 using Andril.Learning.Entities;
 using Andril.Learning.Interfaces;
 using Andril.Persistence.DbContexts;
@@ -20,7 +17,7 @@ namespace Andril.Persistence.Repositories.Learning;
 /// </summary>
 internal sealed class IsolatedLearningPreferencesStore(LearningDbContext db)
 {
-    internal enum ReplacementState { Prepared, Conflict }
+    internal enum ReplacementState { Prepared, Conflict, Unavailable }
 
     private void RequireTransaction()
     {
@@ -34,31 +31,25 @@ internal sealed class IsolatedLearningPreferencesStore(LearningDbContext db)
     {
         ArgumentNullException.ThrowIfNull(scope);
         ct.ThrowIfCancellationRequested(); RequireTransaction();
-        // PostgreSQL resource locks only, deliberately conservative/table-wide in this isolated
-        // prototype. Not an independent M2 lock namespace or a production revocation fence.
-        // Lock selections first; Serializable provides one MVCC snapshot for both collections
-        // and SSI conflict detection. Goal SELECT uses only ACCESS SHARE/predicate locks and
-        // needs no goal UPDATE/DELETE/MAINTAIN privilege. Concurrent goal writers must also use
-        // Serializable for SSI guarantees. A valid concurrent goal write can serialize after
-        // this transaction; this is not a promise of latest-at-commit goal values or M2 fencing.
-        await db.Database.ExecuteSqlRawAsync("LOCK TABLE andril_learning.learning_skill_selections IN SHARE ROW EXCLUSIVE MODE", ct);
-        var selections = await db.SkillSelections.AsNoTracking().Where(s => s.LearningProfileId == scope.LearningProfileId && s.Module == scope.Module)
+        // Point lookups avoid relation-wide SSI predicate locks for empty profile collections.
+        // These are local plan choices, not weaker isolation or automatic conflict retries.
+        await db.Database.ExecuteSqlRawAsync("SET LOCAL enable_seqscan=off; SET LOCAL enable_bitmapscan=off", ct);
+        // Serializable gives the revision and both collections the same MVCC snapshot.
+        // Reads do not take writer locks; the coordinated adapter owns authorization fencing.
+        var revision = await db.Set<LearningProfileRevisionRow>().AsNoTracking().SingleOrDefaultAsync(
+            r => r.LearningProfileId == scope.LearningProfileId && r.Module == scope.Module && r.AccountId == scope.AccountId, ct);
+        if (revision is null) return LearningSetupReadResult.Unavailable();
+        LearningSkillSelection[] selections = revision.SelectionIds.Length == 0 ? [] : await db.SkillSelections.AsNoTracking()
+            .Where(s => revision.SelectionIds.Contains(s.Id) && s.LearningProfileId == scope.LearningProfileId && s.Module == scope.Module)
             .OrderBy(s => s.Id).ToArrayAsync(ct);
-        var goals = await db.PersonalGoals.AsNoTracking().Where(g => g.LearningProfileId == scope.LearningProfileId && g.Module == scope.Module)
+        LearningPersonalGoal[] goals = revision.GoalIds.Length == 0 ? [] : await db.PersonalGoals.AsNoTracking()
+            .Where(g => revision.GoalIds.Contains(g.Id) && g.LearningProfileId == scope.LearningProfileId && g.Module == scope.Module)
             .OrderBy(g => g.Id).ToArrayAsync(ct);
-        // Global MVCC snapshot is intentionally conservative: unrelated committed writes can
-        // invalidate a revision. Includes empty scopes/ABA, not a new durable revision schema.
-        // This is not the still-pending production scoped revision source or an access receipt.
-        var snapshot = await db.Database.SqlQueryRaw<string>("SELECT txid_current_snapshot()::text AS \"Value\"").SingleAsync(ct);
-        var serialized = JsonSerializer.Serialize(new
-        {
-            scope.AccountId, scope.LearningProfileId, scope.Module, Snapshot = snapshot,
-            Selections = selections.Select(s => new { s.Id, s.SkillId, s.Kind }),
-            Goals = goals.Select(g => new { g.Id, g.Text })
-        });
-        var revision = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(serialized)));
+        if (selections.Length != revision.SelectionIds.Length || goals.Length != revision.GoalIds.Length)
+            return LearningSetupReadResult.Unavailable();
         ct.ThrowIfCancellationRequested();
-        return LearningSetupReadResult.Available(new(scope, selections, goals), revision);
+        return LearningSetupReadResult.Available(new(scope, selections, goals),
+            LearningSetupRevision.FromPersisted(revision.GenerationId, revision.Version).ToOpaqueToken());
     }
 
     /// <summary>Only prepares database changes in the caller transaction; never reports a
@@ -74,13 +65,25 @@ internal sealed class IsolatedLearningPreferencesStore(LearningDbContext db)
             // not reuse the tracked context or retry. No partial changes may be committed.
             return ReplacementState.Conflict;
         }
+        catch (PostgresException error) when (error.SqlState is "P2001" or "P2002")
+        { return ReplacementState.Unavailable; }
+        catch (DbUpdateException error) when (error.InnerException is PostgresException { SqlState: "P2001" or "P2002" })
+        { return ReplacementState.Unavailable; }
     }
 
     private async Task<ReplacementState> PrepareCoreAsync(LearningSetupSnapshot replacement,
         string expectedRevision, LearningSkillCatalogue catalogue, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(replacement); ArgumentNullException.ThrowIfNull(catalogue);
+        ct.ThrowIfCancellationRequested(); RequireTransaction();
+        await db.Database.ExecuteSqlRawAsync("SET LOCAL enable_seqscan=off; SET LOCAL enable_bitmapscan=off", ct);
+        if (!LearningSetupRevision.TryParse(expectedRevision, out _)) return ReplacementState.Conflict;
+        // Profile row, not a table-wide lock. SELECT-only goal permissions remain sufficient.
+        // FOR NO KEY UPDATE avoids DELETE/UPDATE privileges on the goals table.
+        // The dedicated security-definer function exposes only this lock, not revision writes.
+        await db.Database.ExecuteSqlInterpolatedAsync($"SELECT andril_learning.lock_profile_revision({replacement.Scope.LearningProfileId}, {replacement.Scope.AccountId})", ct);
         var current = await ReadUnderTransactionAsync(replacement.Scope, ct);
+        if (current.State != LearningSetupReadState.Available) return ReplacementState.Unavailable;
         if (string.IsNullOrWhiteSpace(expectedRevision) || current.StorageRevision != expectedRevision)
             return ReplacementState.Conflict;
         var old = current.Snapshot!;
@@ -95,8 +98,9 @@ internal sealed class IsolatedLearningPreferencesStore(LearningDbContext db)
         preferences.UpdateSelections([], replacement.Selections.Where(s => s.Kind == LearningSkillSelectionKind.Teaching).Select(s => s.SkillId),
             replacement.Selections.Where(s => s.Kind == LearningSkillSelectionKind.Learning).Select(s => s.SkillId), catalogue);
         var retained = replacement.Selections.Select(s => s.Id).ToHashSet();
-        var removed = await db.SkillSelections.Where(s => s.LearningProfileId == replacement.Scope.LearningProfileId
-            && s.Module == replacement.Scope.Module && !retained.Contains(s.Id)).ToArrayAsync(ct);
+        var removedIds = old.Selections.Where(s => !retained.Contains(s.Id)).Select(s => s.Id).ToArray();
+        LearningSkillSelection[] removed = removedIds.Length == 0 ? [] : await db.SkillSelections.Where(s => removedIds.Contains(s.Id)
+            && s.LearningProfileId == replacement.Scope.LearningProfileId && s.Module == replacement.Scope.Module).ToArrayAsync(ct);
         db.SkillSelections.RemoveRange(removed);
         var existing = old.Selections.Select(s => s.Id).ToHashSet();
         foreach (var row in replacement.Selections.Where(s => !existing.Contains(s.Id)))
@@ -106,13 +110,13 @@ internal sealed class IsolatedLearningPreferencesStore(LearningDbContext db)
         return ReplacementState.Prepared;
     }
 
-    private static bool IsConflict(Exception error) => error is PostgresException
+    internal static bool IsConflict(Exception error) => error is PostgresException
         { SqlState: PostgresErrorCodes.SerializationFailure or PostgresErrorCodes.DeadlockDetected }
         || error is DbUpdateException { InnerException: PostgresException
             { SqlState: PostgresErrorCodes.SerializationFailure or PostgresErrorCodes.DeadlockDetected } }
         || error is DbUpdateException { InnerException: PostgresException
             { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName:
-                "uq_learning_skill_selections_profile_purpose_skill" or "pk_learning_skill_selections" } }
+                "uq_learning_skill_selections_profile_purpose_skill" or "pk_learning_skill_selections" or "pk_learning_mutation_receipts" } }
         // Verified Npgsql non-retrying execution strategy wrapper from the real SSI test.
         // Match the precise exception chain and SQLSTATE; never infer conflict from the
         // generic outer "transient failure" message or arbitrary nested database errors.
