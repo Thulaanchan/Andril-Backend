@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.API.Authorization.Social;
+using Andril.API.Contracts.Social;
 using Andril.API.Controllers.Social;
 using Andril.Common.Accounts.Profiles;
 using Andril.Social.Entities;
@@ -424,7 +425,205 @@ public sealed class SocialQuestionnaireResponsesControllerTests
 
     #endregion
 
+    #region Diagnostic and Sensitive Data Concealment
+
+    [Fact]
+    public async Task SubmitResponse_WhenDiagnosticMessageContainsSecretMarkers_ConcealsSecretMarkersFromProblemDetails()
+    {
+        const string secretMarker = "SYNTHETIC_SECRET_TOKEN_4928194";
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Rejected(
+                "ERR_INTERNAL",
+                $"Internal diagnostic failed with secret: {secretMarker}"));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "answers": [{"questionId": "q01", "optionId": "1"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.DoesNotContain(secretMarker, problem.Detail);
+
+        var serialized = JsonSerializer.Serialize(problem);
+        Assert.DoesNotContain(secretMarker, serialized);
+        Assert.Equal("Questionnaire submission failed validation.", problem.Detail);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenErrorsContainPrivateProfileGuid_ConcealsProfileGuidFromProblemDetails()
+    {
+        var privateProfileId = Guid.NewGuid();
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.ValidationFailed(
+                QuestionnaireParticipationStatus.InProgress,
+                [$"Internal validation failed for profile {privateProfileId}"]));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "answers": [{"questionId": "q01", "optionId": "1"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.DoesNotContain(privateProfileId.ToString(), problem.Detail);
+
+        var serialized = JsonSerializer.Serialize(problem);
+        Assert.DoesNotContain(privateProfileId.ToString(), serialized);
+        Assert.Equal("Questionnaire submission failed validation.", problem.Detail);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenErrorsContainSqlOrExceptionDiagnostics_ConcealsSqlFromProblemDetails()
+    {
+        const string sqlPayload = "SELECT * FROM public.social_questionnaires WHERE id = 'secret'";
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.ValidationFailed(
+                QuestionnaireParticipationStatus.InProgress,
+                [$"NpgsqlException: syntax error in query: {sqlPayload}"]));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "answers": [{"questionId": "q01", "optionId": "1"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.DoesNotContain("SELECT", problem.Detail, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Npgsql", problem.Detail, StringComparison.OrdinalIgnoreCase);
+
+        var serialized = JsonSerializer.Serialize(problem);
+        Assert.DoesNotContain("SELECT", serialized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenParserErrorContainsSyntaxException_ConcealsExceptionDetails()
+    {
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(Guid.NewGuid(), QuestionnaireParticipationStatus.Completed));
+        var lifecycle = new StubLifecycleAccessService();
+        var badParser = new SocialQuestionnaireSubmissionBodyParser();
+        var controllerWithParser = new SocialQuestionnaireResponsesController(orchestrator, lifecycle, badParser);
+
+        var parseResult = badParser.Parse("""{"version": "v1", "answers": [""");
+        Assert.False(parseResult.IsSuccess);
+        Assert.Contains("Malformed JSON syntax", parseResult.Error);
+
+        using var malformedDoc = JsonDocument.Parse("""{"version": "v1", "extra": "invalid"}""");
+        var result = await controllerWithParser.SubmitResponse(malformedDoc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.NotNull(problem.Detail);
+        Assert.DoesNotContain("Exception", problem.Detail, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenApprovedIncompleteAnswersFeedback_PreservesActionableDetail()
+    {
+        const string actionableMessage = "Incomplete answers: question 'q05' is required.";
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.ValidationFailed(
+                QuestionnaireParticipationStatus.InProgress,
+                [actionableMessage]));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "answers": [{"questionId": "q01", "optionId": "1"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(actionableMessage, problem.Detail);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenContradictoryOutcome_EmptyResponseId_ReturnsBadRequest()
+    {
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(Guid.Empty, QuestionnaireParticipationStatus.Completed));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "answers": [{"questionId": "q01", "optionId": "1"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal("Questionnaire submission outcome was invalid or contradictory.", problem.Detail);
+    }
+
+    [Fact]
+    public async Task SubmitResponse_WhenContradictoryOutcome_NotStartedStatus_ReturnsBadRequest()
+    {
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(Guid.NewGuid(), QuestionnaireParticipationStatus.NotStarted));
+        var lifecycle = new StubLifecycleAccessService();
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var json = """{"version": "v1", "answers": [{"questionId": "q01", "optionId": "1"}]}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var result = await controller.SubmitResponse(doc.RootElement, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(result.Result);
+        var problem = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, problem.Status);
+        Assert.Equal("Questionnaire submission outcome was invalid or contradictory.", problem.Detail);
+    }
+
+    [Fact]
+    public async Task GetMyActiveResponse_ConcealsInternalProfileIdFromSerializedDto()
+    {
+        var profileId = Guid.NewGuid();
+        var entity = CreateTestResponseEntity(profileId);
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(entity.Id, QuestionnaireParticipationStatus.Completed));
+        var lifecycle = new StubLifecycleAccessService(entity);
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, lifecycle);
+
+        var actionResult = await controller.GetMyActiveResponse(CancellationToken.None);
+        var okResult = Assert.IsType<OkObjectResult>(actionResult.Result);
+        var dto = Assert.IsType<SocialQuestionnaireActiveResponseDto>(okResult.Value);
+
+        var serialized = JsonSerializer.Serialize(dto);
+        Assert.DoesNotContain(profileId.ToString(), serialized);
+        Assert.DoesNotContain("profileId", serialized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    #endregion
+
     #region Helpers & Test Doubles
+
+    private static QuestionnaireResponseEntity CreateTestResponseEntity(Guid profileId)
+    {
+        var responseId = Guid.NewGuid();
+        var definition = QuestionnaireV1Definition.Create();
+        var answers = new[]
+        {
+            new QuestionnaireAnswerEntity(Guid.NewGuid(), responseId, "q01", "1", DateTimeOffset.UtcNow)
+        };
+        return QuestionnaireResponseEntity.Create(
+            responseId,
+            profileId,
+            definition,
+            answers,
+            skip: false,
+            createdAtUtc: DateTimeOffset.UtcNow);
+    }
 
     private static string ReadProgramSource()
     {
