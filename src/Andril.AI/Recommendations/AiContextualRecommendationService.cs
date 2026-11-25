@@ -181,6 +181,112 @@ public sealed class AiContextualRecommendationService
             targetModule, currentActor, pendingConsent.Reference.Purpose, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
 
+        // 6. Re-verify consent continuation immediately before delivery
+        // Module context verification
+        if (targetModule != pendingConsent.Reference.Operation.Actor.Module)
+        {
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ModuleMismatch);
+        }
+
+        // Re-resolve and verify current authorized actor
+        AiAuthorizedActor? deliveryActor;
+        try
+        {
+            deliveryActor = await _authorization.GetAuthorizedActorAsync(targetModule, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ConsentNotVerified);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (deliveryActor is null || deliveryActor != currentActor || deliveryActor != pendingConsent.Reference.Operation.Actor)
+        {
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ConsentNotVerified);
+        }
+
+        if (deliveryActor.Module != targetModule)
+        {
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ModuleMismatch);
+        }
+
+        // Re-verify privacy notice satisfaction
+        try
+        {
+            await _privacyGuard.RequireSameActorSatisfiedAsync(deliveryActor, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.PrivacyNoticeNotSatisfied);
+        }
+        catch
+        {
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.PrivacyNoticeNotSatisfied);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Re-verify exact pending consent continuation
+        AiConsentResult deliveryConsentResult;
+        try
+        {
+            deliveryConsentResult = await _consentService.CheckPendingAsync(pendingConsent, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (InvalidOperationException)
+        {
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ConsentWithdrawn);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ConsentNotVerified);
+        }
+        catch
+        {
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ConsentNotVerified);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (deliveryConsentResult.Outcome != AiConsentOutcome.ContinuationVerified)
+        {
+            if (deliveryConsentResult.Outcome is AiConsentOutcome.Revoked or AiConsentOutcome.Withdrawn or AiConsentOutcome.Expired)
+            {
+                return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ConsentWithdrawn);
+            }
+
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ConsentNotVerified);
+        }
+
+        if (deliveryConsentResult.Snapshot is null || deliveryConsentResult.Snapshot.State != AiConsentState.Started)
+        {
+            if (deliveryConsentResult.Snapshot?.State is AiConsentState.Revoked or AiConsentState.Expired or AiConsentState.Declined)
+            {
+                return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ConsentWithdrawn);
+            }
+
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ConsentStateInvalid);
+        }
+
+        if (deliveryConsentResult.Snapshot.AttemptId != pendingConsent.AttemptId ||
+            deliveryConsentResult.Snapshot.Revision != pendingConsent.ConsentRevision ||
+            deliveryConsentResult.Snapshot.Reference != pendingConsent.Reference)
+        {
+            return AiContextualRecommendationDeliveryResult.Suppressed(AiContextualSuppressionReason.ConsentStateInvalid);
+        }
+
         return AiContextualRecommendationDeliveryResult.Delivered(content);
     }
 }
