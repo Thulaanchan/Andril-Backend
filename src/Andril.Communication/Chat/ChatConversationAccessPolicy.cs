@@ -68,8 +68,13 @@ internal sealed class ChatConversationAccessPolicy : IChatAccessAuthorizer
                 conversation.ConversationId != request.ConversationId ||
                 !conversation.Participants.Any(p => p.Module == request.Module &&
                     p.AccountId == binding.AccountId && p.ModuleProfileId == binding.ModuleProfileId) ||
-                binding.IsCurrent is not true || binding.ObservedAtUtc < startedAt ||
-                binding.ObservedAtUtc > now || binding.ValidUntilUtc <= now)
+                binding.IsCurrent is not true || now < startedAt ||
+                binding.ObservedAtUtc == DateTimeOffset.MinValue ||
+                binding.ObservedAtUtc == DateTimeOffset.MaxValue ||
+                binding.ValidUntilUtc == DateTimeOffset.MinValue ||
+                binding.ValidUntilUtc == DateTimeOffset.MaxValue ||
+                binding.ObservedAtUtc < startedAt || binding.ObservedAtUtc > now ||
+                binding.ValidUntilUtc <= binding.ObservedAtUtc || binding.ValidUntilUtc <= now)
                 return ChatAuthorizationOutcome.Unavailable;
 
             if (binding.IsRevoked is true || binding.IsBlocked is true ||
