@@ -587,7 +587,114 @@ public sealed class GroupActorContextTests
 
     #endregion
 
-    #region 7. Evidence Timestamp Freshness and Clock Skew
+    #region 7. Evidence Timestamp Freshness and Strict Boundary Verification
+
+    [Fact]
+    public async Task GetCurrentActorAsync_CurrentEvidenceWithExactNowTimestamp_ReturnsActorEvidence()
+    {
+        var profileId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero);
+
+        var profile = new PrivateProfileDto(profileId, "learning", DateTimeOffset.UtcNow);
+        var profileService = new StubPrivateProfileService(profile);
+
+        var validEvidence = new AuthoritativeGroupProfileEvidence(
+            profileId,
+            "learning",
+            IsActive: true,
+            IsRestricted: false,
+            VerifiedAge: null,
+            EvidenceTimestampUtc: now);
+
+        var timeProvider = new MutableTimeProvider(now);
+        var evidenceProvider = new StubGroupAuthoritativeEvidenceProvider(validEvidence);
+        var context = new GroupActorContext(profileService, evidenceProvider, timeProvider);
+
+        var result = await context.GetCurrentActorAsync("learning");
+        Assert.NotNull(result);
+        Assert.Equal(profileId, result.ProfileId);
+        Assert.Equal(now, result.EvidenceTimestampUtc);
+    }
+
+    [Fact]
+    public async Task GetCurrentActorAsync_EvidenceAtExactMaximumAgeBoundary_ReturnsActorEvidence()
+    {
+        var profileId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero);
+        var exactBoundaryTimestamp = now - GroupParticipationAuthorizationPolicy.MaximumEvidenceAge;
+
+        var profile = new PrivateProfileDto(profileId, "learning", DateTimeOffset.UtcNow);
+        var profileService = new StubPrivateProfileService(profile);
+
+        var boundaryEvidence = new AuthoritativeGroupProfileEvidence(
+            profileId,
+            "learning",
+            IsActive: true,
+            IsRestricted: false,
+            VerifiedAge: null,
+            EvidenceTimestampUtc: exactBoundaryTimestamp);
+
+        var timeProvider = new MutableTimeProvider(now);
+        var evidenceProvider = new StubGroupAuthoritativeEvidenceProvider(boundaryEvidence);
+        var context = new GroupActorContext(profileService, evidenceProvider, timeProvider);
+
+        var result = await context.GetCurrentActorAsync("learning");
+        Assert.NotNull(result);
+        Assert.Equal(profileId, result.ProfileId);
+        Assert.Equal(exactBoundaryTimestamp, result.EvidenceTimestampUtc);
+    }
+
+    [Fact]
+    public async Task GetCurrentActorAsync_EvidenceExceedingMaximumAgeByOneTick_FailsClosedReturningNull()
+    {
+        var profileId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero);
+        var staleTimestamp = now - GroupParticipationAuthorizationPolicy.MaximumEvidenceAge - TimeSpan.FromTicks(1);
+
+        var profile = new PrivateProfileDto(profileId, "learning", DateTimeOffset.UtcNow);
+        var profileService = new StubPrivateProfileService(profile);
+
+        var staleEvidence = new AuthoritativeGroupProfileEvidence(
+            profileId,
+            "learning",
+            IsActive: true,
+            IsRestricted: false,
+            VerifiedAge: null,
+            EvidenceTimestampUtc: staleTimestamp);
+
+        var timeProvider = new MutableTimeProvider(now);
+        var evidenceProvider = new StubGroupAuthoritativeEvidenceProvider(staleEvidence);
+        var context = new GroupActorContext(profileService, evidenceProvider, timeProvider);
+
+        var result = await context.GetCurrentActorAsync("learning");
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task GetCurrentActorAsync_EvidenceExceedingMaximumAgeByOneSecond_FailsClosedReturningNull()
+    {
+        var profileId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero);
+        var staleTimestamp = now - GroupParticipationAuthorizationPolicy.MaximumEvidenceAge - TimeSpan.FromSeconds(1);
+
+        var profile = new PrivateProfileDto(profileId, "learning", DateTimeOffset.UtcNow);
+        var profileService = new StubPrivateProfileService(profile);
+
+        var staleEvidence = new AuthoritativeGroupProfileEvidence(
+            profileId,
+            "learning",
+            IsActive: true,
+            IsRestricted: false,
+            VerifiedAge: null,
+            EvidenceTimestampUtc: staleTimestamp);
+
+        var timeProvider = new MutableTimeProvider(now);
+        var evidenceProvider = new StubGroupAuthoritativeEvidenceProvider(staleEvidence);
+        var context = new GroupActorContext(profileService, evidenceProvider, timeProvider);
+
+        var result = await context.GetCurrentActorAsync("learning");
+        Assert.Null(result);
+    }
 
     [Fact]
     public async Task GetCurrentActorAsync_StaleEvidenceOlderThanMaximumAge_FailsClosedReturningNull()
@@ -616,11 +723,62 @@ public sealed class GroupActorContextTests
     }
 
     [Fact]
-    public async Task GetCurrentActorAsync_FutureTimestampBeyondClockSkew_FailsClosedReturningNull()
+    public async Task GetCurrentActorAsync_FutureTimestampByOneTick_FailsClosedReturningNull()
     {
         var profileId = Guid.NewGuid();
         var now = new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero);
-        // Future timestamp 10 seconds ahead (exceeds 5 second allowed clock skew)
+        var futureTimestamp = now.AddTicks(1);
+
+        var profile = new PrivateProfileDto(profileId, "learning", DateTimeOffset.UtcNow);
+        var profileService = new StubPrivateProfileService(profile);
+
+        var futureEvidence = new AuthoritativeGroupProfileEvidence(
+            profileId,
+            "learning",
+            IsActive: true,
+            IsRestricted: false,
+            VerifiedAge: null,
+            EvidenceTimestampUtc: futureTimestamp);
+
+        var timeProvider = new MutableTimeProvider(now);
+        var evidenceProvider = new StubGroupAuthoritativeEvidenceProvider(futureEvidence);
+        var context = new GroupActorContext(profileService, evidenceProvider, timeProvider);
+
+        var result = await context.GetCurrentActorAsync("learning");
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task GetCurrentActorAsync_FutureTimestampByThreeSeconds_FailsClosedReturningNull()
+    {
+        var profileId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero);
+        var futureTimestamp = now.AddSeconds(3);
+
+        var profile = new PrivateProfileDto(profileId, "learning", DateTimeOffset.UtcNow);
+        var profileService = new StubPrivateProfileService(profile);
+
+        var futureEvidence = new AuthoritativeGroupProfileEvidence(
+            profileId,
+            "learning",
+            IsActive: true,
+            IsRestricted: false,
+            VerifiedAge: null,
+            EvidenceTimestampUtc: futureTimestamp);
+
+        var timeProvider = new MutableTimeProvider(now);
+        var evidenceProvider = new StubGroupAuthoritativeEvidenceProvider(futureEvidence);
+        var context = new GroupActorContext(profileService, evidenceProvider, timeProvider);
+
+        var result = await context.GetCurrentActorAsync("learning");
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task GetCurrentActorAsync_FutureTimestampBeyondFiveSeconds_FailsClosedReturningNull()
+    {
+        var profileId = Guid.NewGuid();
+        var now = new DateTimeOffset(2026, 11, 25, 12, 0, 0, TimeSpan.Zero);
         var futureTimestamp = now.AddSeconds(10);
 
         var profile = new PrivateProfileDto(profileId, "learning", DateTimeOffset.UtcNow);
@@ -715,6 +873,27 @@ public sealed class GroupActorContextTests
 
         using var cts = new CancellationTokenSource();
         cts.Cancel();
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() =>
+            context.GetCurrentActorAsync("learning", cts.Token));
+    }
+
+    [Fact]
+    public async Task GetCurrentActorAsync_CancellationDuringProfileResolution_ThrowsOperationCanceledException()
+    {
+        var profileId = Guid.NewGuid();
+        var profile = new PrivateProfileDto(profileId, "learning", DateTimeOffset.UtcNow);
+        var evidence = new AuthoritativeGroupProfileEvidence(profileId, "learning", true, false, null, DateTimeOffset.UtcNow);
+
+        using var cts = new CancellationTokenSource();
+        var profileService = new StubPrivateProfileService(async _ =>
+        {
+            await Task.Yield();
+            cts.Cancel();
+            return profile;
+        });
+        var evidenceProvider = new StubGroupAuthoritativeEvidenceProvider(evidence);
+        var context = new GroupActorContext(profileService, evidenceProvider);
 
         await Assert.ThrowsAsync<OperationCanceledException>(() =>
             context.GetCurrentActorAsync("learning", cts.Token));
