@@ -108,13 +108,13 @@ public sealed class GroupMembershipController : ControllerBase
         {
             scope = new GroupModuleScope(request.Module, request.GroupKind);
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Incompatible group module scope.",
-                Detail = ex.Message
+                Detail = "The requested group kind is not compatible with the specified module scope."
             });
         }
 
@@ -132,31 +132,31 @@ public sealed class GroupMembershipController : ControllerBase
 
             return Ok(dto);
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
             {
                 Status = StatusCodes.Status403Forbidden,
                 Title = "Join request unauthorized.",
-                Detail = ex.Message
+                Detail = "Caller is not authorized to submit a join request for the specified group."
             });
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid join request operation.",
-                Detail = ex.Message
+                Detail = "The join request operation could not be completed in the current group state."
             });
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid join request arguments.",
-                Detail = ex.Message
+                Detail = "The join request operation could not be completed with the provided arguments."
             });
         }
     }
@@ -202,13 +202,13 @@ public sealed class GroupMembershipController : ControllerBase
         {
             scope = new GroupModuleScope(request.Module, request.GroupKind);
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Incompatible group module scope.",
-                Detail = ex.Message
+                Detail = "The requested group kind is not compatible with the specified module scope."
             });
         }
 
@@ -226,31 +226,31 @@ public sealed class GroupMembershipController : ControllerBase
 
             return Ok(dto);
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
             {
                 Status = StatusCodes.Status403Forbidden,
                 Title = "Cancel join request unauthorized.",
-                Detail = ex.Message
+                Detail = "Caller is not authorized to cancel a join request for the specified group."
             });
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid cancel operation.",
-                Detail = ex.Message
+                Detail = "The cancel join request operation could not be completed in the current group state."
             });
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid cancel arguments.",
-                Detail = ex.Message
+                Detail = "The cancel join request operation could not be completed with the provided arguments."
             });
         }
     }
@@ -305,13 +305,13 @@ public sealed class GroupMembershipController : ControllerBase
         {
             scope = new GroupModuleScope(request.Module, request.GroupKind);
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Incompatible group module scope.",
-                Detail = ex.Message
+                Detail = "The requested group kind is not compatible with the specified module scope."
             });
         }
 
@@ -331,31 +331,31 @@ public sealed class GroupMembershipController : ControllerBase
 
             return Ok(dto);
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
             {
                 Status = StatusCodes.Status403Forbidden,
                 Title = "Admission processing unauthorized.",
-                Detail = ex.Message
+                Detail = "Caller is not authorized to process admissions for the specified group."
             });
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid admission operation.",
-                Detail = ex.Message
+                Detail = "The admission processing operation could not be completed in the current group state."
             });
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid admission arguments.",
-                Detail = ex.Message
+                Detail = "The admission processing operation could not be completed with the provided arguments."
             });
         }
     }
@@ -401,13 +401,13 @@ public sealed class GroupMembershipController : ControllerBase
         {
             scope = new GroupModuleScope(request.Module, request.GroupKind);
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Incompatible group module scope.",
-                Detail = ex.Message
+                Detail = "The requested group kind is not compatible with the specified module scope."
             });
         }
 
@@ -425,31 +425,31 @@ public sealed class GroupMembershipController : ControllerBase
 
             return Ok(dto);
         }
-        catch (UnauthorizedAccessException ex)
+        catch (UnauthorizedAccessException)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
             {
                 Status = StatusCodes.Status403Forbidden,
                 Title = "Leave group unauthorized.",
-                Detail = ex.Message
+                Detail = "Caller is not authorized to leave the specified group."
             });
         }
-        catch (InvalidOperationException ex)
+        catch (InvalidOperationException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid leave operation.",
-                Detail = ex.Message
+                Detail = "The leave group operation could not be completed in the current group state."
             });
         }
-        catch (ArgumentException ex)
+        catch (ArgumentException)
         {
             return BadRequest(new ProblemDetails
             {
                 Status = StatusCodes.Status400BadRequest,
                 Title = "Invalid leave arguments.",
-                Detail = ex.Message
+                Detail = "The leave group operation could not be completed with the provided arguments."
             });
         }
     }
