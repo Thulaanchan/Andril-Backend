@@ -46,7 +46,16 @@ public static class GroupMembershipServiceCollectionExtensions
         });
 
         services.TryAddScoped<GroupMembershipOperationService>(sp =>
-            (GroupMembershipOperationService)sp.GetRequiredService<IGroupMembershipOperationService>());
+        {
+            var service = sp.GetRequiredService<IGroupMembershipOperationService>();
+            if (service is GroupMembershipOperationService concrete)
+            {
+                return concrete;
+            }
+
+            throw new InvalidOperationException(
+                $"The registered {nameof(IGroupMembershipOperationService)} implementation of type '{service.GetType().FullName}' is not compatible with concrete {nameof(GroupMembershipOperationService)} resolution.");
+        });
 
         return services;
     }
