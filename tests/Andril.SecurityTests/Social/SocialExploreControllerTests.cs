@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.API.Authorization.Social;
@@ -235,6 +236,69 @@ public sealed class SocialExploreControllerTests
         var details = Assert.IsType<ProblemDetails>(objectResult.Value);
         Assert.Equal(StatusCodes.Status403Forbidden, details.Status);
         Assert.Equal("Profile access denied.", details.Title);
+        Assert.Equal("Caller is not authorized to access Social discovery recommendations.", details.Detail);
+    }
+
+    [Fact]
+    public async Task GetExploreFeed_WhenProfileAccessDenied_ConcealsInternalTypeDiagnosticsAndReturnsSafeDetail()
+    {
+        var service = StubSocialDiscoveryAccessService.Throwing(new ProfileAccessDeniedException());
+        var controller = new SocialExploreController(service);
+
+        var actionResult = await controller.GetExploreFeed();
+
+        var objectResult = Assert.IsType<ObjectResult>(actionResult.Result);
+        Assert.Equal(StatusCodes.Status403Forbidden, objectResult.StatusCode);
+
+        var details = Assert.IsType<ProblemDetails>(objectResult.Value);
+        Assert.Equal(StatusCodes.Status403Forbidden, details.Status);
+        Assert.Equal("Profile access denied.", details.Title);
+        Assert.Equal("Caller is not authorized to access Social discovery recommendations.", details.Detail);
+
+        // Security / privacy: Exception type name and namespace must NOT leak in Detail
+        Assert.DoesNotContain("ProfileAccessDeniedException", details.Detail);
+        Assert.DoesNotContain("Andril.Common", details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain("ProfileAccessDeniedException", serialized);
+        Assert.DoesNotContain("Andril.Common", serialized);
+        Assert.Contains("Caller is not authorized to access Social discovery recommendations.", serialized);
+    }
+
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(-100)]
+    public async Task GetExploreFeed_WhenNegativeOffset_ReturnsSafeBadRequestWithoutDiagnostics(int negativeOffset)
+    {
+        var service = new StubSocialDiscoveryAccessService();
+        var controller = new SocialExploreController(service);
+
+        var actionResult = await controller.GetExploreFeed(rotationOffset: negativeOffset);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(actionResult.Result);
+        var details = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, details.Status);
+        Assert.Equal("Invalid rotation offset.", details.Title);
+        Assert.Equal("Rotation offset cannot be negative.", details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain("Exception", serialized, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ProblemDetails_SerializesSafelyWithoutInternalDiagnostics()
+    {
+        var problem = new ProblemDetails
+        {
+            Status = StatusCodes.Status403Forbidden,
+            Title = "Profile access denied.",
+            Detail = "Caller is not authorized to access Social discovery recommendations."
+        };
+
+        var serialized = JsonSerializer.Serialize(problem);
+        Assert.DoesNotContain("Exception", serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("ProfileId", serialized, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Caller is not authorized to access Social discovery recommendations.", serialized);
     }
 
     #endregion
