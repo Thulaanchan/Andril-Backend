@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,6 +13,10 @@ using Andril.AI.Services;
 using Andril.API.Controllers.AI;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.ApplicationParts;
+using Microsoft.AspNetCore.Mvc.Controllers;
+using Microsoft.AspNetCore.Mvc.Infrastructure;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Andril.SecurityTests.AI;
@@ -20,6 +25,13 @@ namespace Andril.SecurityTests.AI;
 /// Verifies architectural constraints, trusted caller authorization, module isolation,
 /// consent privacy preservation, and fail-closed security for <see cref="SocialContextualRecommendationController"/> (CF-18).
 /// </summary>
+/// <remarks>
+/// Authoritative Acceptance and Non-Relational Boundary Note:
+/// Unit and security tests verify dormant MVC exclusion and in-memory authorization contracts.
+/// They do NOT constitute relational acceptance, physical database verification, or durable exactly-once replay prevention.
+/// Authoritative single-use dispatch, quota verification, and completion fencing remain outstanding acceptance requirements
+/// subject to durable transaction repository implementation and separate production authorization.
+/// </remarks>
 public sealed class SocialContextualRecommendationControllerTests
 {
     private static readonly DateTime TestNow = new(2026, 11, 25, 12, 0, 0, DateTimeKind.Utc);
@@ -35,6 +47,55 @@ public sealed class SocialContextualRecommendationControllerTests
             .GetCustomAttribute<NonControllerAttribute>(inherit: false);
 
         Assert.NotNull(attr);
+    }
+
+    [Fact]
+    public void DomainOverload_HasNonActionAttribute()
+    {
+        var method = typeof(SocialContextualRecommendationController)
+            .GetMethod(nameof(SocialContextualRecommendationController.GetRecommendationAsync),
+                [typeof(AiConsentPendingReference), typeof(CancellationToken)]);
+
+        Assert.NotNull(method);
+        var attr = method.GetCustomAttribute<NonActionAttribute>(inherit: false);
+        Assert.NotNull(attr);
+    }
+
+    [Fact]
+    public void HttpOverload_HasNonActionAttribute()
+    {
+        var method = typeof(SocialContextualRecommendationController)
+            .GetMethod(nameof(SocialContextualRecommendationController.GetRecommendationAsync),
+                [typeof(SocialContextualRecommendationRequest), typeof(CancellationToken)]);
+
+        Assert.NotNull(method);
+        var attr = method.GetCustomAttribute<NonActionAttribute>(inherit: false);
+        Assert.NotNull(attr);
+    }
+
+    [Fact]
+    public void MvcFeatureDiscovery_ExcludesSocialContextualRecommendationController()
+    {
+        var services = new ServiceCollection();
+        var mvc = services.AddControllers().AddApplicationPart(typeof(SocialContextualRecommendationController).Assembly);
+        var feature = new ControllerFeature();
+        mvc.PartManager.PopulateFeature(feature);
+
+        Assert.NotEmpty(feature.Controllers);
+        Assert.DoesNotContain(feature.Controllers, t => t.AsType() == typeof(SocialContextualRecommendationController));
+    }
+
+    [Fact]
+    public void MvcActionDescriptors_DoNotExposeSocialContextualRecommendationController()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddControllers().AddApplicationPart(typeof(SocialContextualRecommendationController).Assembly);
+        using var provider = services.BuildServiceProvider();
+
+        var actionDescriptors = provider.GetRequiredService<IActionDescriptorCollectionProvider>().ActionDescriptors.Items;
+        Assert.DoesNotContain(actionDescriptors,
+            a => a is ControllerActionDescriptor c && c.ControllerTypeInfo.AsType() == typeof(SocialContextualRecommendationController));
     }
 
     [Fact]
