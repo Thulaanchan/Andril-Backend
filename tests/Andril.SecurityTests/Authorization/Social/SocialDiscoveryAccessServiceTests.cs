@@ -616,6 +616,197 @@ public sealed class SocialDiscoveryAccessServiceTests
 
     #endregion
 
+    #region 6. Early Caller Evidence Freshness and Candidate Retrieval Guards (SOC-02)
+
+    [Fact]
+    public async Task DiscoverCandidatesAsync_CallerEvidenceStale_FailsClosed_WithoutInvokingCandidateBatch()
+    {
+        var callerId = Guid.NewGuid();
+        var profileService = new StubPrivateProfileService(callerId);
+
+        var callerEvidence = CreateProfile(callerId);
+        var candidate = CreateProfile(age: 25);
+        var candidateItem = CreateCandidateItem(candidate);
+
+        var staleCachedRevision = CreateSnapshot(callerId, questionnaireRevision: 1);
+        var committedRevision = CreateSnapshot(callerId, questionnaireRevision: 2);
+
+        var provider = new StubEvidenceProvider
+        {
+            CallerBundle = new SocialDiscoveryCallerBundle(callerEvidence, staleCachedRevision, committedRevision),
+            CandidateBatch = new[] { candidateItem }
+        };
+
+        var service = new SocialDiscoveryAccessService(profileService, provider);
+        var result = await service.DiscoverCandidatesAsync();
+
+        Assert.Empty(result);
+        Assert.Equal(0, provider.CandidateBatchInvocationCount);
+    }
+
+    [Fact]
+    public async Task DiscoverCandidatesAsync_CallerAccountRestricted_FailsClosed_WithoutInvokingCandidateBatch()
+    {
+        var callerId = Guid.NewGuid();
+        var profileService = new StubPrivateProfileService(callerId);
+
+        var callerEvidence = CreateProfile(callerId);
+        var candidate = CreateProfile(age: 25);
+        var candidateItem = CreateCandidateItem(candidate);
+
+        var provider = new StubEvidenceProvider
+        {
+            CallerBundle = new SocialDiscoveryCallerBundle(
+                callerEvidence,
+                CreateSnapshot(callerId),
+                CreateSnapshot(callerId, isAccountRestricted: true)),
+            CandidateBatch = new[] { candidateItem }
+        };
+
+        var service = new SocialDiscoveryAccessService(profileService, provider);
+        var result = await service.DiscoverCandidatesAsync();
+
+        Assert.Empty(result);
+        Assert.Equal(0, provider.CandidateBatchInvocationCount);
+    }
+
+    [Fact]
+    public async Task DiscoverCandidatesAsync_CallerProfileDeactivated_FailsClosed_WithoutInvokingCandidateBatch()
+    {
+        var callerId = Guid.NewGuid();
+        var profileService = new StubPrivateProfileService(callerId);
+
+        var callerEvidence = CreateProfile(callerId);
+        var candidate = CreateProfile(age: 25);
+        var candidateItem = CreateCandidateItem(candidate);
+
+        var provider = new StubEvidenceProvider
+        {
+            CallerBundle = new SocialDiscoveryCallerBundle(
+                callerEvidence,
+                CreateSnapshot(callerId),
+                CreateSnapshot(callerId, isProfileActive: false)),
+            CandidateBatch = new[] { candidateItem }
+        };
+
+        var service = new SocialDiscoveryAccessService(profileService, provider);
+        var result = await service.DiscoverCandidatesAsync();
+
+        Assert.Empty(result);
+        Assert.Equal(0, provider.CandidateBatchInvocationCount);
+    }
+
+    [Fact]
+    public async Task DiscoverCandidatesAsync_CallerPolicyVersionMismatch_FailsClosed_WithoutInvokingCandidateBatch()
+    {
+        var callerId = Guid.NewGuid();
+        var profileService = new StubPrivateProfileService(callerId);
+
+        var callerEvidence = CreateProfile(callerId);
+        var candidate = CreateProfile(age: 25);
+        var candidateItem = CreateCandidateItem(candidate);
+
+        var provider = new StubEvidenceProvider
+        {
+            CallerBundle = new SocialDiscoveryCallerBundle(
+                callerEvidence,
+                CreateSnapshot(callerId),
+                CreateSnapshot(callerId, policyVersion: "v0.0-incompatible")),
+            CandidateBatch = new[] { candidateItem }
+        };
+
+        var service = new SocialDiscoveryAccessService(profileService, provider);
+        var result = await service.DiscoverCandidatesAsync();
+
+        Assert.Empty(result);
+        Assert.Equal(0, provider.CandidateBatchInvocationCount);
+    }
+
+    [Fact]
+    public async Task DiscoverCandidatesAsync_CallerCachedRevisionProfileMismatch_ThrowsProfileAccessDenied_WithoutInvokingCandidateBatch()
+    {
+        var callerId = Guid.NewGuid();
+        var foreignProfileId = Guid.NewGuid();
+        var profileService = new StubPrivateProfileService(callerId);
+
+        var callerEvidence = CreateProfile(callerId);
+        var candidate = CreateProfile(age: 25);
+        var candidateItem = CreateCandidateItem(candidate);
+
+        var provider = new StubEvidenceProvider
+        {
+            CallerBundle = new SocialDiscoveryCallerBundle(
+                callerEvidence,
+                CreateSnapshot(foreignProfileId),
+                CreateSnapshot(callerId)),
+            CandidateBatch = new[] { candidateItem }
+        };
+
+        var service = new SocialDiscoveryAccessService(profileService, provider);
+
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() =>
+            service.DiscoverCandidatesAsync());
+
+        Assert.Equal(0, provider.CandidateBatchInvocationCount);
+    }
+
+    [Fact]
+    public async Task DiscoverCandidatesAsync_CallerCommittedRevisionProfileMismatch_ThrowsProfileAccessDenied_WithoutInvokingCandidateBatch()
+    {
+        var callerId = Guid.NewGuid();
+        var foreignProfileId = Guid.NewGuid();
+        var profileService = new StubPrivateProfileService(callerId);
+
+        var callerEvidence = CreateProfile(callerId);
+        var candidate = CreateProfile(age: 25);
+        var candidateItem = CreateCandidateItem(candidate);
+
+        var provider = new StubEvidenceProvider
+        {
+            CallerBundle = new SocialDiscoveryCallerBundle(
+                callerEvidence,
+                CreateSnapshot(callerId),
+                CreateSnapshot(foreignProfileId)),
+            CandidateBatch = new[] { candidateItem }
+        };
+
+        var service = new SocialDiscoveryAccessService(profileService, provider);
+
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() =>
+            service.DiscoverCandidatesAsync());
+
+        Assert.Equal(0, provider.CandidateBatchInvocationCount);
+    }
+
+    [Fact]
+    public async Task DiscoverCandidatesAsync_CallerEvidenceCurrent_InvokesCandidateBatch_AndReturnsRankedCards()
+    {
+        var callerId = Guid.NewGuid();
+        var profileService = new StubPrivateProfileService(callerId);
+
+        var callerEvidence = CreateProfile(callerId);
+        var candidate = CreateProfile(age: 25);
+        var candidateItem = CreateCandidateItem(candidate);
+
+        var provider = new StubEvidenceProvider
+        {
+            CallerBundle = new SocialDiscoveryCallerBundle(
+                callerEvidence,
+                CreateSnapshot(callerId),
+                CreateSnapshot(callerId)),
+            CandidateBatch = new[] { candidateItem }
+        };
+
+        var service = new SocialDiscoveryAccessService(profileService, provider);
+        var result = await service.DiscoverCandidatesAsync();
+
+        var card = Assert.Single(result);
+        Assert.Equal(candidate.ProfileId, card.CandidateProfileId);
+        Assert.Equal(1, provider.CandidateBatchInvocationCount);
+    }
+
+    #endregion
+
     #region Helper Stubs and Factories
 
     private sealed class StubPrivateProfileService : IPrivateProfileService
@@ -661,12 +852,16 @@ public sealed class SocialDiscoveryAccessServiceTests
     {
         public SocialDiscoveryCallerBundle? CallerBundle { get; set; }
         public IReadOnlyList<SocialAuthoritativeCandidateItem> CandidateBatch { get; set; } = Array.Empty<SocialAuthoritativeCandidateItem>();
+        public int CandidateBatchInvocationCount { get; private set; }
 
         public Task<SocialDiscoveryCallerBundle?> GetCallerBundleAsync(Guid callerProfileId, CancellationToken cancellationToken = default) =>
             Task.FromResult(CallerBundle);
 
-        public Task<IReadOnlyList<SocialAuthoritativeCandidateItem>> GetCandidateBatchAsync(Guid callerProfileId, int maxCandidateBatchSize, CancellationToken cancellationToken = default) =>
-            Task.FromResult(CandidateBatch);
+        public Task<IReadOnlyList<SocialAuthoritativeCandidateItem>> GetCandidateBatchAsync(Guid callerProfileId, int maxCandidateBatchSize, CancellationToken cancellationToken = default)
+        {
+            CandidateBatchInvocationCount++;
+            return Task.FromResult(CandidateBatch);
+        }
     }
 
     private static SocialEvidenceRevisionSnapshot CreateSnapshot(
