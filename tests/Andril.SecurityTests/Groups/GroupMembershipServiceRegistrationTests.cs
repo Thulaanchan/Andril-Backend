@@ -113,6 +113,67 @@ public sealed class GroupMembershipServiceRegistrationTests
     }
 
     [Fact]
+    public void AddGroupMembershipServices_SeparateRequestScopes_ReceiveSeparateInstances()
+    {
+        var services = new ServiceCollection();
+        services.AddGroupMembershipServices();
+        RegisterAllSixStrictDependencies(services);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope1 = provider.CreateScope();
+        using var scope2 = provider.CreateScope();
+
+        var instance1 = scope1.ServiceProvider.GetRequiredService<IGroupMembershipOperationService>();
+        var instance2 = scope2.ServiceProvider.GetRequiredService<IGroupMembershipOperationService>();
+
+        Assert.NotNull(instance1);
+        Assert.NotNull(instance2);
+        Assert.NotSame(instance1, instance2);
+
+        var concrete1 = scope1.ServiceProvider.GetRequiredService<GroupMembershipOperationService>();
+        var concrete2 = scope2.ServiceProvider.GetRequiredService<GroupMembershipOperationService>();
+
+        Assert.Same(instance1, concrete1);
+        Assert.Same(instance2, concrete2);
+    }
+
+    [Fact]
+    public void AddGroupMembershipServices_IncompatibleCustomInterface_FailsSafelyWithInvalidOperationException()
+    {
+        var services = new ServiceCollection();
+        var customMock = new StubCustomGroupMembershipOperationService();
+        services.AddScoped<IGroupMembershipOperationService>(_ => customMock);
+        services.AddGroupMembershipServices();
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        var resolvedInterface = scope.ServiceProvider.GetRequiredService<IGroupMembershipOperationService>();
+        Assert.Same(customMock, resolvedInterface);
+
+        var ex = Assert.Throws<InvalidOperationException>(() =>
+            scope.ServiceProvider.GetRequiredService<GroupMembershipOperationService>());
+
+        Assert.Contains("is not compatible with concrete GroupMembershipOperationService resolution", ex.Message);
+    }
+
+    [Fact]
+    public void AddGroupMembershipServices_IncompatibleCustomInterface_DoesNotBypassOrConstructIndependentService()
+    {
+        var services = new ServiceCollection();
+        var customMock = new StubCustomGroupMembershipOperationService();
+        services.AddScoped<IGroupMembershipOperationService>(_ => customMock);
+        services.AddGroupMembershipServices();
+        RegisterAllSixStrictDependencies(services);
+
+        using var provider = services.BuildServiceProvider();
+        using var scope = provider.CreateScope();
+
+        Assert.Throws<InvalidOperationException>(() =>
+            scope.ServiceProvider.GetRequiredService<GroupMembershipOperationService>());
+    }
+
+    [Fact]
     public void AddGroupMembershipServices_MissingEntryRepository_FailsClosedWhenResolving()
     {
         var services = new ServiceCollection();
