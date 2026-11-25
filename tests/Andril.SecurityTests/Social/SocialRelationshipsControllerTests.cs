@@ -1,6 +1,7 @@
 using System;
 using System.Linq;
 using System.Reflection;
+using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.API.Authorization.Social;
@@ -304,6 +305,12 @@ public sealed class SocialRelationshipsControllerTests
 
         var details = Assert.IsType<ProblemDetails>(objectResult.Value);
         Assert.Equal(StatusCodes.Status403Forbidden, details.Status);
+        Assert.Equal("Profile access denied.", details.Title);
+        Assert.Equal("Caller is not authorized to perform the requested relationship action.", details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain("ProfileAccessDeniedException", serialized);
+        Assert.Contains("Caller is not authorized to perform the requested relationship action.", serialized);
     }
 
     [Fact]
@@ -322,6 +329,12 @@ public sealed class SocialRelationshipsControllerTests
 
         var details = Assert.IsType<ProblemDetails>(objectResult.Value);
         Assert.Equal(StatusCodes.Status403Forbidden, details.Status);
+        Assert.Equal("Profile access denied.", details.Title);
+        Assert.Equal("Caller is not authorized to access relationship status.", details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain("ProfileAccessDeniedException", serialized);
+        Assert.Contains("Caller is not authorized to access relationship status.", serialized);
     }
 
     [Fact]
@@ -340,6 +353,87 @@ public sealed class SocialRelationshipsControllerTests
 
         var details = Assert.IsType<ProblemDetails>(objectResult.Value);
         Assert.Equal(StatusCodes.Status403Forbidden, details.Status);
+        Assert.Equal("Profile access denied.", details.Title);
+        Assert.Equal("Caller is not authorized to revoke the specified relationship.", details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain("ProfileAccessDeniedException", serialized);
+        Assert.Contains("Caller is not authorized to revoke the specified relationship.", serialized);
+    }
+
+    [Fact]
+    public async Task RecordInterest_WhenArgumentExceptionContainsSensitiveDiagnostics_ConcealsExceptionDetails()
+    {
+        const string secretMarker = "DIAGNOSTIC_MARKER_RELATIONSHIP_INTEREST_9812";
+        var targetId = Guid.NewGuid();
+        var service = new StubSocialRelationshipAccessService
+        {
+            ExceptionToThrow = new ArgumentException($"Failed with private token: {secretMarker} for target {targetId}")
+        };
+        var controller = new SocialRelationshipsController(service);
+        var request = new SocialRecordInterestRequest(targetId, true);
+
+        var actionResult = await controller.RecordInterest(request, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(actionResult.Result);
+        var details = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, details.Status);
+        Assert.Equal("Invalid interest operation.", details.Title);
+        Assert.Equal("The relationship interest operation could not be completed with the provided parameters.", details.Detail);
+        Assert.DoesNotContain(secretMarker, details.Detail);
+        Assert.DoesNotContain(targetId.ToString(), details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain(secretMarker, serialized);
+        Assert.DoesNotContain(targetId.ToString(), serialized);
+    }
+
+    [Fact]
+    public async Task GetRelationshipStatus_WhenArgumentExceptionContainsSensitiveDiagnostics_ConcealsExceptionDetails()
+    {
+        const string secretMarker = "DIAGNOSTIC_MARKER_RELATIONSHIP_STATUS_7712";
+        var targetId = Guid.NewGuid();
+        var service = new StubSocialRelationshipAccessService
+        {
+            ExceptionToThrow = new ArgumentException($"Failed status query with private token: {secretMarker}")
+        };
+        var controller = new SocialRelationshipsController(service);
+
+        var actionResult = await controller.GetRelationshipStatus(targetId, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(actionResult.Result);
+        var details = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, details.Status);
+        Assert.Equal("Invalid status operation.", details.Title);
+        Assert.Equal("The relationship status operation could not be completed with the provided parameters.", details.Detail);
+        Assert.DoesNotContain(secretMarker, details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain(secretMarker, serialized);
+    }
+
+    [Fact]
+    public async Task RevokeMatch_WhenArgumentOrInvalidOperationExceptionThrown_ConcealsTransactionDiagnostics()
+    {
+        const string secretMarker = "TRANSACTION_CONFLICT_SECRET_5541";
+        var targetId = Guid.NewGuid();
+        var service = new StubSocialRelationshipAccessService
+        {
+            ExceptionToThrow = new InvalidOperationException($"Revocation transaction failed: {secretMarker}")
+        };
+        var controller = new SocialRelationshipsController(service);
+
+        var actionResult = await controller.RevokeMatch(targetId, CancellationToken.None);
+
+        var badRequest = Assert.IsType<BadRequestObjectResult>(actionResult.Result);
+        var details = Assert.IsType<ProblemDetails>(badRequest.Value);
+        Assert.Equal(StatusCodes.Status400BadRequest, details.Status);
+        Assert.Equal("Invalid revocation operation.", details.Title);
+        Assert.Equal("The relationship revocation operation could not be completed due to a conflict or invalid state.", details.Detail);
+        Assert.DoesNotContain(secretMarker, details.Detail);
+
+        var serialized = JsonSerializer.Serialize(details);
+        Assert.DoesNotContain(secretMarker, serialized);
     }
 
     #endregion
