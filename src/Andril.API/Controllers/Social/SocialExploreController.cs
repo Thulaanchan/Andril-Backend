@@ -95,13 +95,13 @@ public sealed class SocialExploreController : ControllerBase
 
             return Ok(dtos);
         }
-        catch (ProfileAccessDeniedException ex)
+        catch (ProfileAccessDeniedException)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
             {
                 Status = StatusCodes.Status403Forbidden,
                 Title = "Profile access denied.",
-                Detail = ex.Message
+                Detail = "Caller is not authorized to access Social discovery recommendations."
             });
         }
     }
