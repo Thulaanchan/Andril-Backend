@@ -107,19 +107,19 @@ public sealed class SocialScoringProfileEvidence : IEquatable<SocialScoringProfi
         IdealAgeBand = idealAgeBand;
 
         ConfirmedLanguages = confirmedLanguages is not null
-            ? new HashSet<string>(confirmedLanguages.Where(l => !string.IsNullOrWhiteSpace(l)), StringComparer.OrdinalIgnoreCase)
+            ? new ReadOnlySet<string>(new HashSet<string>(confirmedLanguages.Where(l => !string.IsNullOrWhiteSpace(l)), StringComparer.OrdinalIgnoreCase))
             : null;
 
         ConfirmedConnectionGoals = confirmedConnectionGoals is not null
-            ? new HashSet<string>(confirmedConnectionGoals.Where(g => !string.IsNullOrWhiteSpace(g)), StringComparer.OrdinalIgnoreCase)
+            ? new ReadOnlySet<string>(new HashSet<string>(confirmedConnectionGoals.Where(g => !string.IsNullOrWhiteSpace(g)), StringComparer.OrdinalIgnoreCase))
             : null;
 
         ConfirmedSocialInterestIds = confirmedSocialInterestIds is not null
-            ? new HashSet<Guid>(confirmedSocialInterestIds.Where(id => id != Guid.Empty))
+            ? new ReadOnlySet<Guid>(new HashSet<Guid>(confirmedSocialInterestIds.Where(id => id != Guid.Empty)))
             : null;
 
         QuestionnaireResponse = questionnaireResponse;
-        QuestionnaireAnswers = questionnaireAnswers is not null ? questionnaireAnswers.ToArray() : null;
+        QuestionnaireAnswers = questionnaireAnswers is not null ? Array.AsReadOnly(questionnaireAnswers.ToArray()) : null;
         QuestionnaireVersion = questionnaireVersion;
         QuestionnaireRevision = questionnaireRevision;
         PartnerPreferences = partnerPreferences;
@@ -129,8 +129,8 @@ public sealed class SocialScoringProfileEvidence : IEquatable<SocialScoringProfi
         IsDiscoverable = isDiscoverable;
         HasAuthoritativeEvidence = hasAuthoritativeEvidence;
         BlockedProfileIds = blockedProfileIds is not null
-            ? new HashSet<Guid>(blockedProfileIds.Where(id => id != Guid.Empty))
-            : new HashSet<Guid>();
+            ? new ReadOnlySet<Guid>(new HashSet<Guid>(blockedProfileIds.Where(id => id != Guid.Empty)))
+            : new ReadOnlySet<Guid>(new HashSet<Guid>());
     }
 
     /// <summary>
