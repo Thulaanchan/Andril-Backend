@@ -70,6 +70,47 @@ public sealed class SocialQuestionnaireLifecycleAccessServiceTests
     }
 
     [Fact]
+    public async Task GetActiveResponseAsync_WhenRepositoryReturnsDifferentProfileResponse_ThrowsProfileAccessDeniedException()
+    {
+        var authorizedProfileId = Guid.NewGuid();
+        var foreignProfileId = Guid.NewGuid();
+        var profile = new PrivateProfileDto(authorizedProfileId, "social", DateTimeOffset.UtcNow);
+        var foreignEntity = CreateTestResponse(foreignProfileId);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubLifecycleRepository(foreignEntity, bypassProfileFilter: true);
+        var service = new SocialQuestionnaireLifecycleAccessService(stubProfileService, stubRepo);
+
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() =>
+            service.GetActiveResponseAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task GetActiveResponseAsync_WhenRepositoryReturnsContradictoryForeignEntity_FailsClosedAndDoesNotDiscloseData()
+    {
+        var authorizedProfileId = Guid.NewGuid();
+        var foreignProfileId = Guid.NewGuid();
+        var profile = new PrivateProfileDto(authorizedProfileId, "social", DateTimeOffset.UtcNow);
+        var contradictoryEntity = CreateTestResponse(foreignProfileId);
+
+        var stubProfileService = new StubPrivateProfileService(profile);
+        var stubRepo = new StubLifecycleRepository(contradictoryEntity, bypassProfileFilter: true);
+        var service = new SocialQuestionnaireLifecycleAccessService(stubProfileService, stubRepo);
+
+        QuestionnaireResponseEntity? leaked = null;
+        try
+        {
+            leaked = await service.GetActiveResponseAsync(CancellationToken.None);
+        }
+        catch (ProfileAccessDeniedException)
+        {
+            // Expected fail-closed behavior
+        }
+
+        Assert.Null(leaked);
+    }
+
+    [Fact]
     public async Task GetActiveResponseAsync_WhenEmptyProfileId_ThrowsProfileAccessDeniedException()
     {
         var profile = new PrivateProfileDto(Guid.Empty, "social", DateTimeOffset.UtcNow);
@@ -219,12 +260,19 @@ public sealed class SocialQuestionnaireLifecycleAccessServiceTests
 
         var profileId = Guid.NewGuid();
         var profile = new PrivateProfileDto(profileId, "social", DateTimeOffset.UtcNow);
+        var responseEntity = CreateTestResponse(profileId);
         var stubProfileService = new StubPrivateProfileService(profile);
         var stubRepo = new StubLifecycleRepository(null);
         var service = new SocialQuestionnaireLifecycleAccessService(stubProfileService, stubRepo);
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             service.GetActiveResponseAsync(cts.Token));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.CreateInitialResponseAsync(responseEntity, cts.Token));
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.ReplaceResponseAsync(Guid.NewGuid(), responseEntity, cts.Token));
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             service.WithdrawResponseAsync(Guid.NewGuid(), cts.Token));
@@ -242,7 +290,9 @@ public sealed class SocialQuestionnaireLifecycleAccessServiceTests
         public Task<PrivateProfileDto> CreateAsync(string module, CancellationToken cancellationToken = default) => Task.FromResult(profile);
     }
 
-    private sealed class StubLifecycleRepository(QuestionnaireResponseEntity? activeResponse) : ISocialQuestionnaireLifecycleRepository
+    private sealed class StubLifecycleRepository(
+        QuestionnaireResponseEntity? activeResponse,
+        bool bypassProfileFilter = false) : ISocialQuestionnaireLifecycleRepository
     {
         public bool CreateInitialCalled { get; private set; }
         public QuestionnaireResponseEntity? LastInitialResponse { get; private set; }
@@ -257,6 +307,10 @@ public sealed class SocialQuestionnaireLifecycleAccessServiceTests
         public Task<QuestionnaireResponseEntity?> GetActiveResponseAsync(Guid profileId, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (bypassProfileFilter)
+            {
+                return Task.FromResult(activeResponse);
+            }
             return Task.FromResult(activeResponse?.ProfileId == profileId ? activeResponse : null);
         }
 
