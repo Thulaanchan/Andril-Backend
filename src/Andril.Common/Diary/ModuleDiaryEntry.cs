@@ -8,7 +8,7 @@ namespace Andril.Common.Diary;
 /// The backend's social identifier represents the third product module, not a fourth identity.
 /// Supplied profile IDs are not authentication. M2 must authorize ownership and eligibility;
 /// persistence must enforce module/profile/date uniqueness and concurrency. The selected date
-/// is supplied in the owning profile's calendar context; timezone conversion remains pending.
+/// is supplied literally or resolved offline using the explicitly selected profile timezone.
 /// No publishing, AI ingestion, rewards, cross-module transfer or external requests occur.
 /// </summary>
 public sealed class ModuleDiaryEntry
@@ -27,14 +27,36 @@ public sealed class ModuleDiaryEntry
 
     public ModuleDiaryEntry(Guid ownerModuleProfileId, string module, DateOnly date)
     {
-        if (ownerModuleProfileId == Guid.Empty)
-            throw new ArgumentException("A module-profile owner ID is required.", nameof(ownerModuleProfileId));
-        if (!ModuleNames.IsValid(module))
-            throw new ArgumentException("Unsupported Diary module.", nameof(module));
+        RequireScope(ownerModuleProfileId, module);
         OwnerModuleProfileId = ownerModuleProfileId;
         Module = module;
         Date = date;
         Plans = Array.AsReadOnly(Array.Empty<DiaryPlan>());
+    }
+
+    /// <summary>
+    /// CF-13 / DEC-M1-05: create a new private in-memory entry for a literal explicit date,
+    /// or today's date from the resolver's injected UTC clock and selected IANA timezone.
+    /// Return null when implicit date resolution is unavailable; never fall back to local time.
+    /// Scope references are structural inputs, not authorization. This never loads, rekeys,
+    /// merges or changes an existing entry, persists a preference or grants module access.
+    /// The existing resolver preserves explicit dates even without timezone evidence.
+    /// </summary>
+    public static ModuleDiaryEntry? CreateOffline(Guid ownerModuleProfileId, string module,
+        DiaryCalendarResolver calendar, string? ianaTimeZone, DateOnly? explicitDate = null)
+    {
+        ArgumentNullException.ThrowIfNull(calendar);
+        RequireScope(ownerModuleProfileId, module);
+        var date = calendar.ResolveDate(ianaTimeZone, explicitDate);
+        return date.HasValue ? new ModuleDiaryEntry(ownerModuleProfileId, module, date.Value) : null;
+    }
+
+    private static void RequireScope(Guid ownerModuleProfileId, string module)
+    {
+        if (ownerModuleProfileId == Guid.Empty)
+            throw new ArgumentException("A module-profile owner ID is required.", nameof(ownerModuleProfileId));
+        if (!ModuleNames.IsValid(module))
+            throw new ArgumentException("Unsupported Diary module.", nameof(module));
     }
 
     /// <summary>Explicitly set or replace the single reflection after its domain validation.

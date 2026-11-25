@@ -372,6 +372,118 @@ public sealed class ModuleDiaryEntryTests
     }
 
     private static ModuleDiaryEntry Empty() => new(Owner, "learning", Day);
+
+    private sealed class CalendarClock(DateTimeOffset instant) : TimeProvider
+    {
+        internal DateTimeOffset Instant = instant;
+        internal int Calls;
+        internal bool Fail;
+        public override TimeZoneInfo LocalTimeZone => throw new InvalidOperationException("Local time is forbidden.");
+        public override DateTimeOffset GetUtcNow()
+        {
+            Calls++;
+            if (Fail) throw new InvalidOperationException("Synthetic clock unavailable.");
+            return Instant;
+        }
+    }
+
+    [Theory]
+    [InlineData("2026-11-24T18:29:59Z", "Asia/Colombo", 2026, 11, 24)]
+    [InlineData("2026-11-24T18:30:00Z", "Asia/Colombo", 2026, 11, 25)]
+    [InlineData("2026-01-01T00:00:00Z", "America/Los_Angeles", 2025, 12, 31)]
+    [InlineData("2026-12-31T10:00:00Z", "Pacific/Kiritimati", 2027, 1, 1)]
+    [InlineData("2024-02-28T18:30:00Z", "Asia/Colombo", 2024, 2, 29)]
+    [InlineData("2024-02-29T18:30:00Z", "Asia/Colombo", 2024, 3, 1)]
+    [InlineData("2026-03-08T06:59:59Z", "America/New_York", 2026, 3, 8)]
+    [InlineData("2026-03-08T07:00:00Z", "America/New_York", 2026, 3, 8)]
+    [InlineData("2026-11-01T05:30:00Z", "America/New_York", 2026, 11, 1)]
+    [InlineData("2026-11-01T06:30:00Z", "America/New_York", 2026, 11, 1)]
+    public void CalendarCreation_UsesInjectedClockAtMidnightDstAndLeapBoundaries(string instant, string zone, int year, int month, int day)
+    {
+        var clock = new CalendarClock(DateTimeOffset.Parse(instant, System.Globalization.CultureInfo.InvariantCulture));
+        var entry = ModuleDiaryEntry.CreateOffline(Owner, "learning", new(clock), zone);
+        Assert.NotNull(entry); Assert.Equal(new DateOnly(year, month, day), entry.Date);
+        Assert.Equal(Owner, entry.OwnerModuleProfileId); Assert.Equal("learning", entry.Module);
+        Assert.True(entry.IsPrivate); Assert.Null(entry.Reflection); Assert.Empty(entry.Plans); Assert.Equal(1, clock.Calls);
+    }
+
+    [Theory]
+    [InlineData(null)] [InlineData("")] [InlineData(" ")]
+    [InlineData("Invalid/PrivateTimezone")] [InlineData("Eastern Standard Time")] [InlineData(" Asia/Colombo ")]
+    public void CalendarCreation_UnavailableZoneCreatesNoEntryAndNeverReadsClock(string? zone)
+    {
+        var clock = new CalendarClock(DateTimeOffset.UnixEpoch) { Fail = true };
+        Assert.Null(ModuleDiaryEntry.CreateOffline(Owner, "learning", new(clock), zone));
+        Assert.Equal(0, clock.Calls);
+    }
+
+    [Theory]
+    [InlineData(null)] [InlineData("Invalid/PrivateTimezone")]
+    [InlineData("Asia/Colombo")] [InlineData("America/Los_Angeles")]
+    public void CalendarCreation_ExplicitHistoricalDatesRemainLiteralWithoutClock(string? zone)
+    {
+        var clock = new CalendarClock(DateTimeOffset.UnixEpoch) { Fail = true };
+        foreach (var date in new[] { DateOnly.MinValue, new DateOnly(2024, 2, 29), DateOnly.MaxValue })
+            Assert.Equal(date, ModuleDiaryEntry.CreateOffline(Owner, "learning", new(clock), zone, date)!.Date);
+        Assert.Equal(0, clock.Calls);
+    }
+
+    [Fact]
+    public void CalendarCreation_ZoneAndClockChangesNeverMoveMergeOrMutateExistingContent()
+    {
+        var clock = new CalendarClock(new DateTimeOffset(2026, 11, 24, 20, 0, 0, TimeSpan.Zero));
+        var resolver = new DiaryCalendarResolver(clock);
+        var first = ModuleDiaryEntry.CreateOffline(Owner, "learning", resolver, "Asia/Colombo")!;
+        first.SetReflection(ReflectionTitle, ReflectionBody); first.AddPlan(Plan(1)); var before = Capture(first);
+        var western = ModuleDiaryEntry.CreateOffline(Owner, "learning", resolver, "America/Los_Angeles")!;
+        Assert.Equal(new DateOnly(2026, 11, 25), first.Date); Assert.Equal(new DateOnly(2026, 11, 24), western.Date);
+        clock.Instant = clock.Instant.AddDays(1);
+        Assert.Equal(new DateOnly(2026, 11, 26), ModuleDiaryEntry.CreateOffline(Owner, "learning", resolver, "Asia/Colombo")!.Date);
+        Assert.Null(ModuleDiaryEntry.CreateOffline(Owner, "learning", resolver, null));
+        var sameDate = ModuleDiaryEntry.CreateOffline(Owner, "learning", resolver, null, first.Date)!;
+        Assert.NotSame(first, sameDate); Assert.Null(sameDate.Reflection); Assert.Empty(sameDate.Plans);
+        AssertUnchanged(first, before); Assert.Null(western.Reflection); Assert.Empty(western.Plans);
+    }
+
+    [Fact]
+    public void CalendarCreation_ModuleAndProfileScopesRemainIndependentAndPrivate()
+    {
+        var resolver = new DiaryCalendarResolver(new CalendarClock(DateTimeOffset.UnixEpoch));
+        var entries = new[] { Owner, OtherOwner }.SelectMany(owner =>
+            new[] { StarterModules.Learning, StarterModules.Hobbies, StarterModules.Social }
+                .Select(module => ModuleDiaryEntry.CreateOffline(owner, module, resolver, "Asia/Colombo")!)).ToArray();
+        Assert.Equal(6, entries.Select(e => (e.OwnerModuleProfileId, e.Module, e.Date)).Distinct().Count());
+        entries[0].SetReflection(null, ReflectionBody); entries[0].AddPlan(Plan(1));
+        Assert.All(entries.Skip(1), e => { Assert.Null(e.Reflection); Assert.Empty(e.Plans); });
+        Assert.All(entries, e => { Assert.True(e.IsPrivate); Assert.Equal("{\"IsPrivate\":true}", JsonSerializer.Serialize(e)); });
+        Assert.DoesNotContain(entries, e => e.Module == "dating"); // Existing canonical identifier remains social.
+    }
+
+    [Theory]
+    [InlineData(null)] [InlineData("")] [InlineData("dating")] [InlineData("Learning")] [InlineData("unknown")]
+    public void CalendarCreation_PreservesModuleValidationEvenWhenResolutionIsUnavailable(string? module)
+    {
+        var resolver = new DiaryCalendarResolver(new CalendarClock(DateTimeOffset.UnixEpoch));
+        Assert.Throws<ArgumentException>("module", () => ModuleDiaryEntry.CreateOffline(Owner, module!, resolver, null));
+    }
+
+    [Fact]
+    public void CalendarCreation_PreservesOwnerValidationAndRejectsMissingResolver()
+    {
+        var resolver = new DiaryCalendarResolver(new CalendarClock(DateTimeOffset.UnixEpoch));
+        Assert.Throws<ArgumentException>("ownerModuleProfileId", () => ModuleDiaryEntry.CreateOffline(Guid.Empty, "learning", resolver, null));
+        Assert.Throws<ArgumentNullException>("calendar", () => ModuleDiaryEntry.CreateOffline(Owner, "learning", null!, null));
+    }
+
+    [Fact]
+    public void CalendarCreation_UnexpectedClockFailurePropagatesWithoutChangingExistingEntry()
+    {
+        var existing = Populated(); var before = Capture(existing);
+        var clock = new CalendarClock(DateTimeOffset.UnixEpoch) { Fail = true };
+        Assert.Throws<InvalidOperationException>(() => ModuleDiaryEntry.CreateOffline(Owner, "learning", new(clock), "Asia/Colombo"));
+        AssertUnchanged(existing, before);
+    }
+
     private static ModuleDiaryEntry Populated(string module = "learning")
     {
         var entry = new ModuleDiaryEntry(Owner, module, Day);
