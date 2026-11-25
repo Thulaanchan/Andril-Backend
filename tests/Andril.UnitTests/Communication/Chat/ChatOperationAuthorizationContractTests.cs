@@ -158,13 +158,17 @@ public sealed class ChatOperationAuthorizationContractTests
             if (Failure is not null) throw Failure;
             if (Scenario == "missing-m5") return Task.FromResult<ChatOperationAccessEvidence?>(null);
             var now = new Clock().GetUtcNow();
+            // Finite validity for these fixed-clock prohibition fixtures only; no production TTL.
+            var validUntilUtc = Scenario is "denied" or "revoked"
+                ? now.AddTicks(1)
+                : DateTimeOffset.MaxValue;
             var binding = new ChatConversationAccessEvidence
             {
                 RequestId = evaluation, AccountSubjectId = subject, AccountId = Account,
                 ProfileAccountId = Account, ModuleProfileId = Profile, ProfileModule = request.Module,
                 Conversation = ChatConversation.Create(request.Module, Conversation,
                     [ChatParticipantReference.Create(request.Module, Account, Profile)]),
-                ObservedAtUtc = now, ValidUntilUtc = DateTimeOffset.MaxValue, IsCurrent = true
+                ObservedAtUtc = now, ValidUntilUtc = validUntilUtc, IsCurrent = true
             };
             binding = Scenario switch
             {
