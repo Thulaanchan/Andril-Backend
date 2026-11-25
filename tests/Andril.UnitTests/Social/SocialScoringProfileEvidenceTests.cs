@@ -203,4 +203,108 @@ public sealed class SocialScoringProfileEvidenceTests
         Assert.DoesNotContain("DemographicGender", json);
         Assert.DoesNotContain("ConfirmedLanguages", json);
     }
+
+    [Fact]
+    public void Collections_ThrowInvalidCastException_WhenCastToMutableTypes()
+    {
+        var evidence = new SocialScoringProfileEvidence(
+            Guid.NewGuid(),
+            25,
+            "other",
+            DefaultPreferences,
+            confirmedLanguages: new[] { "en" },
+            confirmedConnectionGoals: new[] { "friendship" },
+            confirmedSocialInterestIds: new[] { Guid.NewGuid() },
+            questionnaireAnswers: new[] { new QuestionnaireAnswer("q01", "3") },
+            blockedProfileIds: new[] { Guid.NewGuid() });
+
+        Assert.Throws<InvalidCastException>(() => (HashSet<Guid>)evidence.BlockedProfileIds);
+        Assert.Throws<InvalidCastException>(() => (HashSet<string>)evidence.ConfirmedLanguages!);
+        Assert.Throws<InvalidCastException>(() => (HashSet<string>)evidence.ConfirmedConnectionGoals!);
+        Assert.Throws<InvalidCastException>(() => (HashSet<Guid>)evidence.ConfirmedSocialInterestIds!);
+        Assert.Throws<InvalidCastException>(() => (QuestionnaireAnswer[])evidence.QuestionnaireAnswers!);
+        Assert.Throws<InvalidCastException>(() => (List<QuestionnaireAnswer>)evidence.QuestionnaireAnswers!);
+    }
+
+    [Fact]
+    public void Collections_ThrowNotSupportedException_WhenMutatedViaICollection()
+    {
+        var evidence = new SocialScoringProfileEvidence(
+            Guid.NewGuid(),
+            25,
+            "other",
+            DefaultPreferences,
+            confirmedLanguages: new[] { "en" },
+            confirmedConnectionGoals: new[] { "friendship" },
+            confirmedSocialInterestIds: new[] { Guid.NewGuid() },
+            questionnaireAnswers: new[] { new QuestionnaireAnswer("q01", "3") },
+            blockedProfileIds: new[] { Guid.NewGuid() });
+
+        Assert.Throws<NotSupportedException>(() =>
+            ((ICollection<Guid>)evidence.BlockedProfileIds).Add(Guid.NewGuid()));
+
+        Assert.Throws<NotSupportedException>(() =>
+            ((ICollection<string>)evidence.ConfirmedLanguages!).Add("de"));
+
+        Assert.Throws<NotSupportedException>(() =>
+            ((ICollection<string>)evidence.ConfirmedConnectionGoals!).Add("networking"));
+
+        Assert.Throws<NotSupportedException>(() =>
+            ((ICollection<Guid>)evidence.ConfirmedSocialInterestIds!).Add(Guid.NewGuid()));
+
+        Assert.Throws<NotSupportedException>(() =>
+            ((ICollection<QuestionnaireAnswer>)evidence.QuestionnaireAnswers!).Add(new("q09", "1")));
+    }
+
+    [Fact]
+    public void BlockedProfileIds_WhenNullOrEmpty_IsNonNullImmutableEmptySet()
+    {
+        var evidence = new SocialScoringProfileEvidence(
+            Guid.NewGuid(),
+            25,
+            "other",
+            DefaultPreferences,
+            blockedProfileIds: null);
+
+        Assert.NotNull(evidence.BlockedProfileIds);
+        Assert.Empty(evidence.BlockedProfileIds);
+        Assert.Throws<NotSupportedException>(() =>
+            ((ICollection<Guid>)evidence.BlockedProfileIds).Add(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public void BlockedProfileIds_DeduplicatesEntriesAndFiltersEmpty()
+    {
+        var duplicateId = Guid.NewGuid();
+        var evidence = new SocialScoringProfileEvidence(
+            Guid.NewGuid(),
+            25,
+            "other",
+            DefaultPreferences,
+            blockedProfileIds: new[] { duplicateId, Guid.Empty, duplicateId });
+
+        Assert.Single(evidence.BlockedProfileIds);
+        Assert.Contains(duplicateId, evidence.BlockedProfileIds);
+        Assert.DoesNotContain(Guid.Empty, evidence.BlockedProfileIds);
+    }
+
+    [Fact]
+    public void StringCollections_PreserveCaseInsensitiveMatching()
+    {
+        var evidence = new SocialScoringProfileEvidence(
+            Guid.NewGuid(),
+            25,
+            "other",
+            DefaultPreferences,
+            confirmedLanguages: new[] { "en", "FR" },
+            confirmedConnectionGoals: new[] { "friendship", "DATING" });
+
+        Assert.NotNull(evidence.ConfirmedLanguages);
+        Assert.True(evidence.ConfirmedLanguages!.Contains("EN"));
+        Assert.True(evidence.ConfirmedLanguages!.Contains("fr"));
+
+        Assert.NotNull(evidence.ConfirmedConnectionGoals);
+        Assert.True(evidence.ConfirmedConnectionGoals!.Contains("FRIENDSHIP"));
+        Assert.True(evidence.ConfirmedConnectionGoals!.Contains("dating"));
+    }
 }
