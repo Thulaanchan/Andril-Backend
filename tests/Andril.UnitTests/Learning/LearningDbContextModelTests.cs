@@ -145,18 +145,19 @@ public sealed class LearningDbContextModelTests
         using var fixture = new OfflineContext();
         var selections = Entity(fixture, true).GetCheckConstraints()
             .ToDictionary(check => Assert.IsType<string>(check.Name), check => check.Sql);
-        Assert.Equal(2, selections.Count);
+        Assert.Equal(5, selections.Count);
         Assert.Equal("module = 'learning'", selections["ck_learning_skill_selection_module"]);
         Assert.Equal("kind IN (1, 2)", selections["ck_learning_skill_selection_kind"]);
-        var goalConstraint = Assert.Single(Entity(fixture, false).GetCheckConstraints());
-        Assert.Equal("ck_learning_personal_goal_module", goalConstraint.Name);
-        Assert.Equal("module = 'learning'", goalConstraint.Sql);
+        var goals = Entity(fixture, false).GetCheckConstraints()
+            .ToDictionary(check => Assert.IsType<string>(check.Name), check => check.Sql);
+        Assert.Equal(3, goals.Count);
+        Assert.Equal("module = 'learning'", goals["ck_learning_personal_goal_module"]);
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public void NoAccountsRelationshipsCascadesOrSpeculativeIndexesAreIntroduced(bool selection)
+    public void NoAccountsRelationshipsCascadesOrUnapprovedIndexesAreIntroduced(bool selection)
     {
         using var fixture = new OfflineContext();
         var entity = Entity(fixture, selection);
@@ -164,7 +165,7 @@ public sealed class LearningDbContextModelTests
         Assert.Empty(entity.GetReferencingForeignKeys());
         Assert.Empty(entity.GetNavigations());
         Assert.Empty(entity.GetSkipNavigations());
-        Assert.Empty(entity.GetIndexes());
+        Assert.Single(entity.GetIndexes());
         // Scalar profile IDs and Learning-only metadata are not authenticated ownership evidence.
     }
 
@@ -236,6 +237,74 @@ public sealed class LearningDbContextModelTests
         Assert.Equal("{}", JsonSerializer.Serialize(row));
         Assert.Equal(goal.Text, row.Text);
         Assert.Equal(skill, selection.SkillId);
+    }
+
+    [Theory]
+    [InlineData(true, "ck_learning_skill_selection_id", "id")]
+    [InlineData(true, "ck_learning_skill_selection_profile", "learning_profile_id")]
+    [InlineData(true, "ck_learning_skill_selection_skill", "skill_id")]
+    [InlineData(false, "ck_learning_personal_goal_id", "id")]
+    [InlineData(false, "ck_learning_personal_goal_profile", "learning_profile_id")]
+    public void NonemptyIdentityConstraintsMatchExistingDomainRequirements(bool selection, string name, string column)
+    {
+        using var fixture = new OfflineContext();
+        var check = Assert.Single(Entity(fixture, selection).GetCheckConstraints(), constraint => constraint.Name == name);
+        Assert.Equal(column + " <> '00000000-0000-0000-0000-000000000000'::uuid", check.Sql);
+    }
+
+    [Fact]
+    public void SelectionUniquenessUsesProfileModulePurposeAndSkillWithoutRejectingCrossPurposeOverlap()
+    {
+        using var fixture = new OfflineContext();
+        var index = Assert.Single(Entity(fixture, true).GetIndexes());
+        Assert.True(index.IsUnique);
+        Assert.Equal("uq_learning_skill_selections_profile_purpose_skill", index.GetDatabaseName());
+        Assert.Equal(new[] { "LearningProfileId", "Module", "Kind", "SkillId" }, index.Properties.Select(property => property.Name));
+        Assert.Null(index.GetFilter());
+
+        var preferences = new LearningPreferences(Guid.NewGuid(), Guid.NewGuid()); var skill = Guid.NewGuid();
+        preferences.UpdateSelections([], [skill], [skill]);
+        var teaching = LearningSkillSelection.CreateFromPreferences(Guid.NewGuid(), preferences, skill, LearningSkillSelectionKind.Teaching);
+        var learning = LearningSkillSelection.CreateFromPreferences(Guid.NewGuid(), preferences, skill, LearningSkillSelectionKind.Learning);
+        static object Key(LearningSkillSelection row) => (row.LearningProfileId, row.Module, row.Kind, row.SkillId);
+        Assert.NotEqual(Key(teaching), Key(learning));
+        var duplicate = LearningSkillSelection.CreateFromPreferences(Guid.NewGuid(), preferences, skill, LearningSkillSelectionKind.Teaching);
+        Assert.Equal(Key(teaching), Key(duplicate));
+        var other = new LearningPreferences(Guid.NewGuid(), Guid.NewGuid()); other.UpdateSelections([], [skill], []);
+        var foreign = LearningSkillSelection.CreateFromPreferences(Guid.NewGuid(), other, skill, LearningSkillSelectionKind.Teaching);
+        Assert.NotEqual(Key(teaching), Key(foreign));
+        // Metadata/key comparisons prove model intent, not live PostgreSQL uniqueness or ownership.
+    }
+
+    [Fact]
+    public void GoalLookupIndexDoesNotInventTextUniquenessOrDeletionRules()
+    {
+        using var fixture = new OfflineContext();
+        var index = Assert.Single(Entity(fixture, false).GetIndexes());
+        Assert.False(index.IsUnique);
+        Assert.Equal("ix_learning_personal_goals_profile_module", index.GetDatabaseName());
+        Assert.Equal(new[] { "LearningProfileId", "Module" }, index.Properties.Select(property => property.Name));
+        Assert.DoesNotContain(index.Properties, property => property.Name == "Text");
+        Assert.Null(index.GetFilter());
+    }
+
+    [Fact]
+    public void PostgreSqlCreateScriptIncludesAllLearningConstraintsWithoutSharedSchemaOrForeignKeys()
+    {
+        using var fixture = new OfflineContext();
+        var script = fixture.Context.Database.GenerateCreateScript();
+        Assert.Contains("CREATE TABLE andril_learning.learning_skill_selections", script);
+        Assert.Contains("CREATE TABLE andril_learning.learning_personal_goals", script);
+        Assert.Contains("CREATE UNIQUE INDEX uq_learning_skill_selections_profile_purpose_skill ON andril_learning.learning_skill_selections (learning_profile_id, module, kind, skill_id)", script);
+        Assert.Contains("CREATE INDEX ix_learning_personal_goals_profile_module ON andril_learning.learning_personal_goals (learning_profile_id, module)", script);
+        foreach (var selection in new[] { true, false })
+        foreach (var check in Entity(fixture, selection).GetCheckConstraints())
+            Assert.Contains("CONSTRAINT " + check.Name + " CHECK (" + check.Sql + ")", script);
+        Assert.DoesNotContain("FOREIGN KEY", script, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("andril_identity", script);
+        Assert.DoesNotContain("CASCADE", script, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("DROP ", script, StringComparison.OrdinalIgnoreCase);
+        // Script generation opens no connection and does not apply or verify a migration.
     }
 
     private sealed class OfflineContext : IDisposable
