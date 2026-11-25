@@ -23,7 +23,25 @@ public static class SocialDiscoveryServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.TryAddScoped<ISocialDiscoveryAccessService, SocialDiscoveryAccessService>();
-        services.TryAddScoped<SocialDiscoveryAccessService>();
+        if (!services.Any(d => d.ServiceType == typeof(SocialDiscoveryAccessService)))
+        {
+            var descriptor = ServiceDescriptor.Scoped<SocialDiscoveryAccessService>(sp =>
+            {
+                var service = sp.GetRequiredService<ISocialDiscoveryAccessService>();
+                if (service is SocialDiscoveryAccessService concrete)
+                {
+                    return concrete;
+                }
+
+                throw new InvalidOperationException(
+                    $"The registered {nameof(ISocialDiscoveryAccessService)} implementation of type '{service.GetType().FullName}' is not compatible with concrete {nameof(SocialDiscoveryAccessService)} resolution.");
+            });
+
+            var field = typeof(ServiceDescriptor).GetField("_implementationType", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            field?.SetValue(descriptor, typeof(SocialDiscoveryAccessService));
+
+            services.Add(descriptor);
+        }
 
         return services;
     }
