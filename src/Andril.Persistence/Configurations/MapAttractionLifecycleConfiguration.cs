@@ -4,8 +4,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 namespace Andril.Persistence.Configurations;
 
-// Deliberately NOT applied by HobbiesMapDbContext. Deferral and trigger DDL belong to a
-// separately reviewed future migration; ordinary EF metadata does not activate that contract.
+// Explicitly registered by HobbiesMapDbContext. PostgreSQL deferred constraints and lifecycle
+// evidence triggers are supplied by the dedicated Map lifecycle migration.
 internal sealed class MapAttractionLifecycleConfiguration : IEntityTypeConfiguration<MapAttractionLifecycleRow>
 {
     public void Configure(EntityTypeBuilder<MapAttractionLifecycleRow> b)

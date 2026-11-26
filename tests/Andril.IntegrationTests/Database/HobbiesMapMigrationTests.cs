@@ -19,6 +19,8 @@ public sealed class HobbiesMapMigrationTests
         ["flight_point_ledger", "map_attractions", "map_contribution_capture_sessions", "map_contributions"];
     private const string OfflineConnection = "Host=127.0.0.1;Database=andril_model_only;Username=unused";
     private const string InitialMap = "20261121032052_InitialHobbiesMap";
+    private const string UniqueSessionMigration = "20261121185145_AddMapSubmissionSessionUniqueness";
+    private const string LifecycleMigration = "20261125022647_AddMapAttractionLifecycle";
     private const string UniqueSession = "ux_map_contributions_capture_session_id";
     private const string ScopedSession = "fk_map_contributions_capture_session_scope";
 
@@ -27,9 +29,10 @@ public sealed class HobbiesMapMigrationTests
     {
         using var map = new HobbiesMapDbContextFactory().CreateDbContext([]);
         var ids = map.Database.GetMigrations().ToArray();
-        Assert.Equal(2, ids.Length);
+        Assert.Equal(3, ids.Length);
         Assert.Equal(InitialMap, ids[0]);
-        Assert.EndsWith("_AddMapSubmissionSessionUniqueness", ids[1]);
+        Assert.Equal(UniqueSessionMigration, ids[1]);
+        Assert.Equal(LifecycleMigration, ids[2]);
         Assert.NotNull(map.GetService<IMigrationsAssembly>().ModelSnapshot);
         Assert.False(map.Database.HasPendingModelChanges());
 
@@ -109,7 +112,7 @@ public sealed class HobbiesMapMigrationTests
     public void SubmissionMigration_ScriptsContainOnlyMapConstraintChanges()
     {
         using var map = new HobbiesMapDbContextFactory().CreateDbContext([]);
-        var target = map.Database.GetMigrations().Last();
+        var target = UniqueSessionMigration;
         var migrator = map.GetService<IMigrator>();
         var up = migrator.GenerateScript(InitialMap, target);
         var down = migrator.GenerateScript(target, InitialMap);
@@ -168,7 +171,7 @@ public sealed class HobbiesMapMigrationTests
                 var duplicate = constraint == UniqueSession;
                 if (duplicate)
                     await InsertAsync(session, owner, attraction);
-                var error = await Assert.ThrowsAsync<PostgresException>(() => map.Database.MigrateAsync());
+                var error = await Assert.ThrowsAsync<PostgresException>(() => map.Database.MigrateAsync(UniqueSessionMigration));
                 Assert.Equal(state, error.SqlState);
                 Assert.Equal(constraint, error.ConstraintName);
                 Assert.Equal(new[] { InitialMap }, await map.Database.GetAppliedMigrationsAsync());
@@ -177,7 +180,7 @@ public sealed class HobbiesMapMigrationTests
             }
 
             await InsertAsync(session, owner, attraction);
-            await map.Database.MigrateAsync();
+            await map.Database.MigrateAsync(UniqueSessionMigration);
             Assert.Equal(1, await map.MapContributions.CountAsync());
             var requiredError = await Assert.ThrowsAsync<PostgresException>(() => InsertAsync(null, owner, attraction));
             Assert.Equal(PostgresErrorCodes.NotNullViolation, requiredError.SqlState);
@@ -273,10 +276,12 @@ public sealed class HobbiesMapMigrationTests
 
         DbContext first = galleryFirst ? gallery : map;
         DbContext second = galleryFirst ? map : gallery;
-        var firstIds = first.Database.GetMigrations().ToArray();
-        var secondIds = second.Database.GetMigrations().ToArray();
-        await first.Database.MigrateAsync();
-        await second.Database.MigrateAsync();
+        // The independent rollback test covers the reversible portion of each chain.
+        // Lifecycle forward-only behavior is covered by its own acceptance test.
+        var firstIds = GetReversibleMigrationIds(first);
+        var secondIds = GetReversibleMigrationIds(second);
+        await first.Database.MigrateAsync(firstIds[^1]);
+        await second.Database.MigrateAsync(secondIds[^1]);
         Assert.Equal(firstIds, await first.Database.GetAppliedMigrationsAsync());
         Assert.Equal(secondIds, await second.Database.GetAppliedMigrationsAsync());
 
@@ -285,17 +290,20 @@ public sealed class HobbiesMapMigrationTests
         Assert.Equal(secondIds, await second.Database.GetAppliedMigrationsAsync());
         await AssertTableInventoryAsync(probe, galleryPresent: !galleryFirst, mapPresent: galleryFirst);
 
-        await first.Database.MigrateAsync();
+        await first.Database.MigrateAsync(firstIds[^1]);
         Assert.Equal(firstIds, await first.Database.GetAppliedMigrationsAsync());
         await second.Database.MigrateAsync(Migration.InitialDatabase);
         Assert.Empty(await second.Database.GetAppliedMigrationsAsync());
         Assert.Equal(firstIds, await first.Database.GetAppliedMigrationsAsync());
         await AssertTableInventoryAsync(probe, galleryPresent: galleryFirst, mapPresent: !galleryFirst);
 
-        await second.Database.MigrateAsync();
+        await second.Database.MigrateAsync(secondIds[^1]);
         Assert.Equal(secondIds, await second.Database.GetAppliedMigrationsAsync());
         await AssertTableInventoryAsync(probe, galleryPresent: true, mapPresent: true);
     }
+
+    private static string[] GetReversibleMigrationIds(DbContext context) =>
+        context.Database.GetMigrations().TakeWhile(id => id != LifecycleMigration).ToArray();
 
     private static async Task AssertTableInventoryAsync(NpgsqlConnection connection, bool galleryPresent, bool mapPresent)
     {

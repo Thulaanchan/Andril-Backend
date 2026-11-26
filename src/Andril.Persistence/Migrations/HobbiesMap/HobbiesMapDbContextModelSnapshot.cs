@@ -241,6 +241,188 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         });
                 });
 
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleAuditRow", b =>
+                {
+                    b.Property<Guid>("ReceiptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("receipt_id");
+
+                    b.Property<DateTimeOffset>("AcceptedAtUtc")
+                        .HasColumnType("timestamp(6) with time zone")
+                        .HasColumnName("accepted_at_utc");
+
+                    b.Property<Guid>("AttractionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attraction_id");
+
+                    b.Property<long>("ExpectedVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("expected_version");
+
+                    b.Property<short>("Outcome")
+                        .HasColumnType("smallint")
+                        .HasColumnName("outcome");
+
+                    b.Property<bool>("PreviousIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("previous_is_active");
+
+                    b.Property<long>("PreviousOperationSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("previous_operation_sequence");
+
+                    b.Property<long>("PreviousVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("previous_version");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<bool>("RequestedIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("requested_is_active");
+
+                    b.Property<bool>("ResultIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("result_is_active");
+
+                    b.Property<long>("ResultOperationSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("result_operation_sequence");
+
+                    b.Property<long>("ResultVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("result_version");
+
+                    b.Property<Guid>("ReviewerSubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewer_subject_id");
+
+                    b.HasKey("ReceiptId")
+                        .HasName("pk_map_lifecycle_audit");
+
+                    b.HasAlternateKey("ReceiptId", "ReviewerSubjectId", "RequestId", "AttractionId", "RequestedIsActive", "ExpectedVersion", "PreviousIsActive", "PreviousVersion", "ResultIsActive", "ResultVersion", "PreviousOperationSequence", "ResultOperationSequence", "Outcome", "AcceptedAtUtc")
+                        .HasName("ak_map_lifecycle_audit_evidence");
+
+                    b.ToTable("map_attraction_lifecycle_audit", "andril_hobbies");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleReceiptRow", b =>
+                {
+                    b.Property<Guid>("ReceiptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("receipt_id");
+
+                    b.Property<DateTimeOffset>("AcceptedAtUtc")
+                        .HasColumnType("timestamp(6) with time zone")
+                        .HasColumnName("accepted_at_utc");
+
+                    b.Property<Guid>("AttractionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attraction_id");
+
+                    b.Property<long>("ExpectedVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("expected_version");
+
+                    b.Property<short>("Outcome")
+                        .HasColumnType("smallint")
+                        .HasColumnName("outcome");
+
+                    b.Property<bool>("PreviousIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("previous_is_active");
+
+                    b.Property<long>("PreviousOperationSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("previous_operation_sequence");
+
+                    b.Property<long>("PreviousVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("previous_version");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<bool>("RequestedIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("requested_is_active");
+
+                    b.Property<bool>("ResultIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("result_is_active");
+
+                    b.Property<long>("ResultOperationSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("result_operation_sequence");
+
+                    b.Property<long>("ResultVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("result_version");
+
+                    b.Property<Guid>("ReviewerSubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewer_subject_id");
+
+                    b.HasKey("ReceiptId")
+                        .HasName("pk_map_lifecycle_receipts");
+
+                    b.HasAlternateKey("ReceiptId", "AttractionId", "ResultIsActive", "ResultVersion", "ResultOperationSequence")
+                        .HasName("ak_map_lifecycle_receipt_result");
+
+                    b.HasIndex("AttractionId", "ResultOperationSequence")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_lifecycle_operation");
+
+                    b.HasIndex("ReviewerSubjectId", "RequestId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_lifecycle_reviewer_request");
+
+                    b.ToTable("map_attraction_lifecycle_receipts", "andril_hobbies", t =>
+                        {
+                            t.HasCheckConstraint("ck_map_lifecycle_receipt_ids", "receipt_id<>'00000000-0000-0000-0000-000000000000'::uuid AND reviewer_subject_id<>'00000000-0000-0000-0000-000000000000'::uuid AND request_id<>'00000000-0000-0000-0000-000000000000'::uuid");
+
+                            t.HasCheckConstraint("ck_map_lifecycle_receipt_time", "isfinite(accepted_at_utc)");
+
+                            t.HasCheckConstraint("ck_map_lifecycle_receipt_transition", "expected_version=previous_version AND requested_is_active=result_is_active AND previous_version>=0 AND result_version>=0 AND previous_operation_sequence>=0 AND result_operation_sequence::numeric=previous_operation_sequence::numeric+1 AND ((outcome=1 AND previous_is_active<>result_is_active AND result_version::numeric=previous_version::numeric+1) OR (outcome=2 AND previous_is_active=result_is_active AND result_version=previous_version))");
+                        });
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleRow", b =>
+                {
+                    b.Property<Guid>("AttractionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attraction_id");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<Guid?>("LastReceiptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("last_receipt_id");
+
+                    b.Property<long>("OperationSequence")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("operation_sequence");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("AttractionId")
+                        .HasName("pk_map_attraction_lifecycle");
+
+                    b.ToTable("map_attraction_lifecycle", "andril_hobbies", t =>
+                        {
+                            t.HasCheckConstraint("ck_map_lifecycle_state", "version >= 0 AND operation_sequence >= 0 AND ((operation_sequence=0 AND version=0 AND last_receipt_id IS NULL) OR (operation_sequence>0 AND last_receipt_id IS NOT NULL))");
+                        });
+                });
+
             modelBuilder.Entity("Andril.Economy.FlightPoints.FlightPointsLedgerEntry", b =>
                 {
                     b.HasOne("Andril.Economy.FlightPoints.FlightPointsLedgerEntry", null)
@@ -259,6 +441,51 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired()
                         .HasConstraintName("fk_map_contributions_capture_session_scope");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleAuditRow", b =>
+                {
+                    b.HasOne("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleReceiptRow", null)
+                        .WithMany()
+                        .HasForeignKey("ReceiptId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_lifecycle_audit_receipt");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleReceiptRow", b =>
+                {
+                    b.HasOne("Andril.Hobbies.Map.Places.MapAttraction", null)
+                        .WithMany()
+                        .HasForeignKey("AttractionId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_lifecycle_receipt_attraction");
+
+                    b.HasOne("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleAuditRow", null)
+                        .WithMany()
+                        .HasForeignKey("ReceiptId", "ReviewerSubjectId", "RequestId", "AttractionId", "RequestedIsActive", "ExpectedVersion", "PreviousIsActive", "PreviousVersion", "ResultIsActive", "ResultVersion", "PreviousOperationSequence", "ResultOperationSequence", "Outcome", "AcceptedAtUtc")
+                        .HasPrincipalKey("ReceiptId", "ReviewerSubjectId", "RequestId", "AttractionId", "RequestedIsActive", "ExpectedVersion", "PreviousIsActive", "PreviousVersion", "ResultIsActive", "ResultVersion", "PreviousOperationSequence", "ResultOperationSequence", "Outcome", "AcceptedAtUtc")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_lifecycle_receipt_audit");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleRow", b =>
+                {
+                    b.HasOne("Andril.Hobbies.Map.Places.MapAttraction", null)
+                        .WithMany()
+                        .HasForeignKey("AttractionId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_lifecycle_attraction");
+
+                    b.HasOne("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleReceiptRow", null)
+                        .WithMany()
+                        .HasForeignKey("LastReceiptId", "AttractionId", "IsActive", "Version", "OperationSequence")
+                        .HasPrincipalKey("ReceiptId", "AttractionId", "ResultIsActive", "ResultVersion", "ResultOperationSequence")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .HasConstraintName("fk_map_lifecycle_current_receipt");
                 });
 #pragma warning restore 612, 618
         }
