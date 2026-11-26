@@ -125,6 +125,7 @@ function Save-IdentityList([string] $Name, [string[]] $Items) {
 function Verify-Trx([string] $Label, [string] $TrxPath, [string[]] $Expected, [int] $ExpectedLiveDatabaseCount) {
     . (Join-Path $PSScriptRoot 'Verify-Member02TestResults.ps1')
     $report = Read-QaTrx $TrxPath
+    Export-QaTrx $report (Join-Path $safe "$Label.trx")
     $expectedCases = Get-QaExpectedCases (Get-ExpectedEntries $Expected)
     $issues = @(Test-QaExecutions $report $expectedCases Relational)
     $failed = @($report.Tests | Where-Object { $_.Outcome -cin @('Failed','Error','Timeout','Aborted','Inconclusive','NotRunnable','Disconnected','Warning','Completed','InProgress','Pending') }).Count
@@ -139,7 +140,6 @@ function Verify-Trx([string] $Label, [string] $TrxPath, [string[]] $Expected, [i
     $actual = [string[]] @($report.Tests | ForEach-Object { $_.Display })
     Save-IdentityList "$Label-expected-identities.txt" $Expected
     Save-IdentityList "$Label-executed-identities.txt" $actual
-    Export-QaTrx $report (Join-Path $safe "$Label.trx")
     Add-Summary "$Label EXPECTED=$($Expected.Count) PASSED=$($report.Passed) FAILED=$failed SKIPPED=$($report.Skipped) CANCELLED=$cancelled UNEXPECTED=0"
     Add-Summary "$Label LIVE_DATABASE_IDENTITIES=$ExpectedLiveDatabaseCount"
 }
@@ -151,7 +151,14 @@ function Invoke-TestPartition([string] $Label, [string] $Filter, [string[]] $Exp
     $args = @('test', $project, '--configuration', 'Release', '--no-build', '--no-restore',
         '--filter', $Filter, '--logger', "trx;LogFileName=$trxName", '--results-directory', $results,
         '--blame-hang-timeout', '8m', '--blame-hang-dump-type', 'none')
-    $stdout = Invoke-Native "$Label-tests" 'dotnet' $args -AllowFailure
+    # Enter only the verified service's network namespace. Drop elevation before
+    # running tests, which must connect to PostgreSQL's actual loopback listener.
+    $namespaceArgs = @('-n', '--preserve-env=ANDRIL_M3_TEST_POSTGRES,HOME,DOTNET_ROOT',
+        'nsenter', '--target', $servicePid, '--net', '--',
+        'setpriv', "--reuid=$runnerUid", "--regid=$runnerGid", '--clear-groups',
+        '--inh-caps=-all', '--ambient-caps=-all', '--bounding-set=-all',
+        '--no-new-privs', '--', $dotnetPath)
+    $null = Invoke-Native "$Label-tests" 'sudo' ($namespaceArgs + $args) -AllowFailure
     $exitCode = [int] (Get-Content -LiteralPath (Join-Path $safe "$Label-tests.exitcode") -Raw)
     $trx = Join-Path $results $trxName
     if (!(Test-Path -LiteralPath $trx -PathType Leaf)) { throw "$Label did not produce TRX evidence." }
@@ -288,7 +295,18 @@ try {
     if ($flags -cne "$fixtureRole|true|true|false|false") { throw 'Fixture login privilege verification failed.' }
     Add-Summary 'FIXTURE_ROLE=CREATEDB,CREATEROLE,NOSUPERUSER,NOBYPASSRLS'
 
-    $env:ANDRIL_M3_TEST_POSTGRES = "Host=127.0.0.1;Port=55432;Database=postgres;Username=$fixtureRole;Password=$fixturePassword;SSL Mode=Disable;Pooling=false;Include Error Detail=false;Timeout=10;Command Timeout=15"
+    $pidFile = Invoke-Native 'postgres-network-namespace' 'docker' @(
+        'inspect', '--type', 'container', '--format', '{{.State.Pid}}', $ServiceId)
+    $servicePid = (Get-Content -LiteralPath $pidFile -Raw).Trim()
+    $runnerUid = ((& id -u) -join '').Trim()
+    $runnerGid = ((& id -g) -join '').Trim()
+    if ($servicePid -cnotmatch '^[1-9][0-9]*$' -or $runnerUid -cnotmatch '^[1-9][0-9]*$' -or
+        $runnerGid -cnotmatch '^[1-9][0-9]*$') {
+        throw 'The PostgreSQL namespace or unprivileged runner identity is invalid.'
+    }
+    $dotnetPath = (Get-Command dotnet -CommandType Application | Select-Object -First 1).Source
+    Add-Summary 'POSTGRES_TEST_ENDPOINT=127.0.0.1:5432; TEST_PROCESS=unprivileged runner in service network namespace'
+    $env:ANDRIL_M3_TEST_POSTGRES = "Host=127.0.0.1;Port=5432;Database=postgres;Username=$fixtureRole;Password=$fixturePassword;SSL Mode=Disable;Pooling=false;Include Error Detail=false;Timeout=10;Command Timeout=15"
     Remove-Item Env:ANDRIL_M2_TEST_POSTGRES, Env:ANDRIL_M2_TEST_POSTGRES_ALLOW_ROLES -ErrorAction SilentlyContinue
     Invoke-TestPartition 'lifecycle' $lifecycleFilter ([string[]] $inventory.lifecycleCases) 36
     Invoke-TestPartition 'remaining-map' $mapFilter ([string[]] $inventory.remainingMap) 148
