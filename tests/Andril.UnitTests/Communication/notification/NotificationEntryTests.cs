@@ -65,6 +65,23 @@ public sealed class NotificationEntryTests
     }
 
     [Fact]
+    public void Constructor_ShouldRejectDefaultCreationTimestamp()
+    {
+        var scope = new NotificationModuleScope(
+            NotificationModule.Learning,
+            Guid.NewGuid());
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new NotificationEntry(
+                Guid.NewGuid(),
+                scope,
+                "message",
+                "New Message",
+                null,
+                default));
+    }
+
+    [Fact]
     public void Constructor_ShouldRejectNullScope()
     {
         Assert.Throws<ArgumentNullException>(() =>

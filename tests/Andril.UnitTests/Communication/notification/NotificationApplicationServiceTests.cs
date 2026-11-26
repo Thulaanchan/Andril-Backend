@@ -195,6 +195,151 @@ public sealed class NotificationApplicationServiceTests
             results[1].ReadAtUtc);
     }
 
+    [Theory]
+    [InlineData(NotificationModule.Learning)]
+    [InlineData(NotificationModule.Hobbies)]
+    [InlineData(NotificationModule.Social)]
+    public async Task TryCreateAsync_ShouldAddForAuthorizedScope(
+        NotificationModule module)
+    {
+        var scope = CreateScope(module);
+        var access = new FakeAccessReader
+        {
+            Scope = scope
+        };
+        var repository = new FakeRepository();
+        var service = CreateService(access, repository);
+        var notification = CreateEntry(scope);
+
+        var created = await service.TryCreateAsync(
+            Guid.NewGuid(),
+            module,
+            notification);
+
+        Assert.True(created);
+        Assert.Equal(1, access.Calls);
+        Assert.Equal(1, repository.AddCalls);
+        Assert.Same(notification, repository.LastAddedNotification);
+    }
+
+    [Fact]
+    public async Task TryCreateAsync_ShouldDenyMismatchedProfile()
+    {
+        var access = new FakeAccessReader
+        {
+            Scope = CreateScope(NotificationModule.Social)
+        };
+        var repository = new FakeRepository();
+        var service = CreateService(access, repository);
+        var notification = CreateEntry(
+            CreateScope(NotificationModule.Social));
+
+        var created = await service.TryCreateAsync(
+            Guid.NewGuid(),
+            NotificationModule.Social,
+            notification);
+
+        Assert.False(created);
+        Assert.Equal(1, access.Calls);
+        Assert.Equal(0, repository.AddCalls);
+    }
+
+    [Fact]
+    public async Task TryCreateAsync_ShouldDenyInvalidOrReadNotification()
+    {
+        var access = new FakeAccessReader
+        {
+            Scope = CreateScope()
+        };
+        var repository = new FakeRepository();
+        var service = CreateService(access, repository);
+        var readNotification = CreateEntry(
+            access.Scope!,
+            readAt: CreatedAt.AddMinutes(1));
+
+        Assert.False(await service.TryCreateAsync(
+            Guid.NewGuid(),
+            NotificationModule.Social,
+            null!));
+
+        Assert.False(await service.TryCreateAsync(
+            Guid.NewGuid(),
+            NotificationModule.Social,
+            readNotification));
+
+        Assert.Equal(0, access.Calls);
+        Assert.Equal(0, repository.AddCalls);
+    }
+
+    [Fact]
+    public async Task TryCreateAsync_ShouldDenyWhenAuthorizationIsUnavailable()
+    {
+        var access = new FakeAccessReader();
+        var repository = new FakeRepository();
+        var service = CreateService(access, repository);
+        var notification = CreateEntry(
+            CreateScope(NotificationModule.Learning));
+
+        var created = await service.TryCreateAsync(
+            Guid.NewGuid(),
+            NotificationModule.Learning,
+            notification);
+
+        Assert.False(created);
+        Assert.Equal(1, access.Calls);
+        Assert.Equal(0, repository.AddCalls);
+    }
+
+    [Fact]
+    public async Task TryCreateAsync_ShouldPropagateRepositoryFailure()
+    {
+        var scope = CreateScope();
+        var access = new FakeAccessReader
+        {
+            Scope = scope
+        };
+        var failure = new InvalidOperationException(
+            "Notification persistence is unavailable.");
+        var repository = new FakeRepository
+        {
+            AddException = failure
+        };
+        var service = CreateService(access, repository);
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.TryCreateAsync(
+                Guid.NewGuid(),
+                NotificationModule.Social,
+                CreateEntry(scope)));
+
+        Assert.Same(failure, thrown);
+        Assert.Equal(1, repository.AddCalls);
+    }
+
+    [Fact]
+    public async Task TryCreateAsync_CancellationShouldPreventAccessAndWrite()
+    {
+        var scope = CreateScope();
+        var access = new FakeAccessReader
+        {
+            Scope = scope
+        };
+        var repository = new FakeRepository();
+        var service = CreateService(access, repository);
+        using var source = new CancellationTokenSource();
+        source.Cancel();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => service.TryCreateAsync(
+                Guid.NewGuid(),
+                NotificationModule.Social,
+                CreateEntry(scope),
+                source.Token));
+
+        Assert.Equal(0, access.Calls);
+        Assert.Equal(0, repository.AddCalls);
+    }
+
     [Fact]
     public async Task ForeignNotificationInList_ShouldDenyEntirePage()
     {
@@ -603,9 +748,16 @@ public sealed class NotificationApplicationServiceTests
 
         public bool MarkResult { get; set; } = true;
 
+        public int AddCalls { get; private set; }
+
         public int ListCalls { get; private set; }
 
         public int FindCalls { get; private set; }
+
+        public Exception? AddException { get; set; }
+
+        public NotificationEntry? LastAddedNotification
+        { get; private set; }
 
         public int MarkReadCalls { get; private set; }
 
@@ -624,7 +776,12 @@ public sealed class NotificationApplicationServiceTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return Task.CompletedTask;
+            AddCalls++;
+            LastAddedNotification = notification;
+
+            return AddException is null
+                ? Task.CompletedTask
+                : Task.FromException(AddException);
         }
 
         public Task<NotificationEntry?> FindAsync(
