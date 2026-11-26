@@ -49,7 +49,7 @@ internal sealed class LearningAiConversationPostgresFixture : IAsyncDisposable
             await using var owner = f.Shared.Shared.OpenOwner(); await owner.Database.OpenConnectionAsync();
             await using var model = new IsolatedLearningAiDbContext(new DbContextOptionsBuilder<IsolatedLearningAiDbContext>().UseNpgsql(owner.Database.GetConnectionString()).Options);
             await owner.Database.ExecuteSqlRawAsync(model.Database.GenerateCreateScript());
-            foreach (var table in new[] { "conversations", "messages", "purge_work", "privacy_acknowledgements" })
+            foreach (var table in new[] { "conversations", "messages", "purge_work", "privacy_acknowledgements", "dispatch_operations" })
             {
                 // Identifiers come only from the fixed table allowlist above, never from SQL values or callers.
                 using var identifiers = new NpgsqlCommandBuilder();
@@ -68,6 +68,8 @@ internal sealed class LearningAiConversationPostgresFixture : IAsyncDisposable
             // Acknowledgement runtime may change only its evidence fields, never ownership/generation or delete rows.
             using var roleIdentifiers = new NpgsqlCommandBuilder();
             command.CommandText = "GRANT UPDATE(version,policy_version,acknowledged,last_operation_id,updated_at_utc) ON andril_ai_isolated.privacy_acknowledgements TO " + roleIdentifiers.QuoteIdentifier(name);
+            await command.ExecuteNonQueryAsync();
+            command.CommandText = "GRANT UPDATE(state,updated_at_utc) ON andril_ai_isolated.dispatch_operations TO " + roleIdentifiers.QuoteIdentifier(name);
             await command.ExecuteNonQueryAsync();
             f.connection = new NpgsqlConnectionStringBuilder(owner.Database.GetConnectionString()) { Username = name, Password = password, Pooling = false, IncludeErrorDetail = false }.ConnectionString;
             return f;
@@ -89,6 +91,14 @@ internal sealed class LearningAiConversationPostgresFixture : IAsyncDisposable
         return new(new DbContextOptionsBuilder<Andril.Persistence.DbContexts.LearningDbContext>().UseNpgsql(connection).Options,
             a, a, a, policies, Time) { TestCheckpoint = checkpoint };
     }
+    internal IsolatedLearningAiDispatchOperationRepository DispatchOperations(IAiPrivacyPolicyVersionSource policies,
+        DiaryPostgresFixture.Authority? authority = null, Func<string, CancellationToken, Task>? checkpoint = null,
+        IAiPrivacyNoticeGate? privacy = null)
+    {
+        var a = authority ?? Owner;
+        return new(new DbContextOptionsBuilder<Andril.Persistence.DbContexts.LearningDbContext>().UseNpgsql(connection).Options,
+            a, a, a, policies, new AiPrivacyNoticeGuard(new ActorReader(a), privacy ?? new PrivacyGate(this)), Time) { TestCheckpoint = checkpoint };
+    }
     internal async Task<IsolatedLearningAiDbContext> BoundOwner()
     {
         await using var owner = Shared.Shared.OpenOwner();
@@ -108,6 +118,10 @@ internal sealed class LearningAiConversationPostgresFixture : IAsyncDisposable
                     "REVOKE UPDATE(version,policy_version,acknowledged,last_operation_id,updated_at_utc) ON andril_ai_isolated.privacy_acknowledgements FROM " + identifiers.QuoteIdentifier(role),
                     (NpgsqlConnection)owner.Database.GetDbConnection());
                 await revokeAcknowledgementColumns.ExecuteNonQueryAsync();
+                await using var revokeOperationColumns = new NpgsqlCommand(
+                    "REVOKE UPDATE(state,updated_at_utc) ON andril_ai_isolated.dispatch_operations FROM " + identifiers.QuoteIdentifier(role),
+                    (NpgsqlConnection)owner.Database.GetDbConnection());
+                await revokeOperationColumns.ExecuteNonQueryAsync();
                 await using var command = new NpgsqlCommand($"REVOKE UPDATE(last_saved_user_message_at_utc,expires_at_utc,deleted_at_utc) ON andril_ai_isolated.conversations FROM {role}; REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA andril_ai_isolated FROM {role}; REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA andril_ai_isolated FROM {role}; REVOKE ALL PRIVILEGES ON SCHEMA andril_ai_isolated FROM {role}; REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA andril_learning FROM {role}; REVOKE ALL PRIVILEGES ON SCHEMA andril_learning FROM {role}; DROP ROLE {role}", (NpgsqlConnection)owner.Database.GetDbConnection());
                 await command.ExecuteNonQueryAsync();
             }

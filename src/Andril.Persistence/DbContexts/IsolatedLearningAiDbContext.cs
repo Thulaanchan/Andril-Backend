@@ -25,6 +25,18 @@ internal sealed class IsolatedLearningAiDbContext(DbContextOptions<IsolatedLearn
         acknowledgement.Property(x => x.Module).HasConversion<string>();
         acknowledgement.Property(x => x.Version).IsConcurrencyToken();
         acknowledgement.Property(x => x.Generation).IsConcurrencyToken();
+        var operation = m.Entity<IsolatedAiDispatchOperationRow>();
+        operation.ToTable("dispatch_operations", t =>
+        {
+            t.HasCheckConstraint("ck_ai_dispatch_scope", "module = 'Learning' AND operation_id <> '00000000-0000-0000-0000-000000000000'::uuid");
+            t.HasCheckConstraint("ck_ai_dispatch_state", "state IN ('Prepared','Claimed','Cancelled','Indeterminate')");
+            t.HasCheckConstraint("ck_ai_dispatch_ack", "acknowledgement_generation <> '00000000-0000-0000-0000-000000000000'::uuid AND acknowledgement_version > 0 AND length(trim(policy_version)) > 0");
+        });
+        operation.HasKey(x => new { x.AccountId, x.ModuleProfileId, x.Module, x.OperationId });
+        operation.Property(x => x.Module).HasConversion<string>();
+        operation.Property(x => x.State).HasConversion<string>().IsConcurrencyToken();
+        operation.HasOne<IsolatedAiAcknowledgementRow>().WithMany()
+            .HasForeignKey(x => new { x.AccountId, x.ModuleProfileId, x.Module }).OnDelete(DeleteBehavior.Restrict);
         var c = m.Entity<AiConversationEntity>();
         c.ToTable("conversations", t =>
         {
