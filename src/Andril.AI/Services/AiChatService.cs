@@ -92,7 +92,15 @@ public sealed class AiChatService(
                 "AI response unavailable.");
         }
 
-        // Step 9: Return the result.
+        // Step 9: Approval before generation is not approval to release a reply. This remains
+        // the built-in-mock-only primitive, not production dispatch/transaction authority.
+        var releaseActor = await authorization.GetAuthorizedActorAsync(module, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (releaseActor is null || releaseActor.UserId != actor.UserId ||
+            releaseActor.ModuleProfileId != actor.ModuleProfileId || releaseActor.Module != module)
+            throw new UnauthorizedAccessException("AI module access denied.");
+
+        // Step 10: Return only to the same currently authorized actor scope.
         return new AiChatReply(
             module,
             response.Text,
