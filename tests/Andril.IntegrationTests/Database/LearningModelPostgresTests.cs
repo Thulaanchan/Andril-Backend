@@ -49,17 +49,17 @@ public sealed class LearningModelPostgresTests
         const string identityInventory = "SELECT string_agg(tablename, ',' ORDER BY tablename) FROM pg_tables WHERE schemaname='andril_identity'";
         var before = await Scalar(connection, identityInventory);
         Assert.NotEmpty(before);
-        Assert.Equal("20261125100000_LearningDurableRevisions", Assert.Single(db.Database.GetMigrations()));
+        Assert.Equal(new[] { "20261125100000_LearningDurableRevisions", "20261126090000_LearningCvPersistence" }, db.Database.GetMigrations());
         var ddl = db.Database.GenerateCreateScript();
         await using (var transaction = await connection.BeginTransactionAsync())
         {
             await Execute(connection, ddl);
-            Assert.Equal("5", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_learning'"));
+            Assert.Equal("6", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_learning'"));
             await transaction.RollbackAsync();
         }
         Assert.Equal("0", await Scalar(connection, "SELECT count(*) FROM pg_namespace WHERE nspname='andril_learning'"));
         await Execute(connection, ddl);
-        Assert.Equal("5", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_learning'"));
+        Assert.Equal("6", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_learning'"));
         Assert.Equal(before, await Scalar(connection, identityInventory));
         Assert.Equal("0", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_learning' AND tablename LIKE '%EFMigrationsHistory%'"));
         Assert.Equal("1", await Scalar(connection, "SELECT count(*) FROM pg_tables WHERE schemaname='andril_identity' AND tablename='__EFMigrationsHistory'"));

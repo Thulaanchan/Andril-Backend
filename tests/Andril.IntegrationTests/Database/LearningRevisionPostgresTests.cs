@@ -245,6 +245,7 @@ public sealed class LearningRevisionPostgresTests
             LearningDbContext.ConfigureLearningModel(model);
             model.Ignore<LearningMutationReceiptRow>(); model.Ignore<LearningProfileRevisionRow>();
             model.Ignore<LearningGenerationRow>(); model.Ignore<LearningProfileKeyRow>();
+            model.Ignore<LearningCvRow>(); // The historical fixture intentionally contains only the original two data tables.
         }
     }
 
@@ -263,7 +264,7 @@ public sealed class LearningRevisionPostgresTests
         await LearningPostgresFixture.Migrate(fixture);
         await using var check = LearningPostgresFixture.Open(fixture); Assert.Single(await check.SkillSelections.ToListAsync()); Assert.Equal("SYNTHETIC-EXISTING-GOAL", Assert.Single(await check.PersonalGoals.ToListAsync()).Text);
         var revision = Assert.Single(await check.Set<LearningProfileRevisionRow>().ToListAsync()); Assert.Equal(scope.LearningProfileId, revision.LearningProfileId); Assert.Equal(0, revision.Version);
-        Assert.Equal("20261125100000_LearningDurableRevisions", Assert.Single(await check.Database.GetAppliedMigrationsAsync()));
+        Assert.Equal(new[] { "20261125100000_LearningDurableRevisions", "20261126090000_LearningCvPersistence" }, await check.Database.GetAppliedMigrationsAsync());
     }
 
     [LocalPostgresFact]
