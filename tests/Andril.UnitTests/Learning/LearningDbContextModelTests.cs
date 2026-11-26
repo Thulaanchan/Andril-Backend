@@ -28,9 +28,9 @@ public sealed class LearningDbContextModelTests
         var model = fixture.Context.Model;
         Assert.Equal("Npgsql.EntityFrameworkCore.PostgreSQL", fixture.Context.Database.ProviderName);
         Assert.Equal("andril_learning", model.GetDefaultSchema());
-        Assert.Equal(new[] { "LearningCvRow", "LearningGenerationRow", "LearningMutationReceiptRow", "LearningPersonalGoal", "LearningPortfolioRow", "LearningProfileKeyRow", "LearningProfileRevisionRow", "LearningSkillSelection" },
+        Assert.Equal(new[] { "LearningCvRow", "LearningGenerationRow", "LearningMutationReceiptRow", "LearningPersonalGoal", "LearningPortfolioRow", "LearningProfileKeyRow", "LearningProfileRevisionRow", "LearningProjectImportOriginRow", "LearningProjectImportReviewRow", "LearningSkillSelection" },
             model.GetEntityTypes().Select(entity => entity.ClrType.Name).OrderBy(name => name, StringComparer.Ordinal).ToArray());
-        Assert.Equal(8, model.GetRelationalModel().Tables.Count());
+        Assert.Equal(10, model.GetRelationalModel().Tables.Count());
     }
 
     [Theory]

@@ -67,7 +67,8 @@ public sealed class PortfolioPersistenceContractTests
         using var db = new LearningDbContext(new DbContextOptionsBuilder<LearningDbContext>().UseNpgsql("Host=localhost;Database=unused;Username=unused").Options);
         var entity = db.Model.GetEntityTypes().Single(e => e.ClrType.Name == "LearningPortfolioRow"); Assert.Equal("learning_portfolios", entity.GetTableName()); Assert.Empty(entity.GetForeignKeys());
         Assert.Equal(new[] { "OwnerLearningProfileId", "Module", "PortfolioId" }, entity.FindPrimaryKey()!.Properties.Select(x => x.Name));
-        Assert.Equal("20261126110000_LearningPortfolioPersistence", db.Database.GetMigrations().Last());
+        Assert.Contains("20261126110000_LearningPortfolioPersistence", db.Database.GetMigrations());
+        Assert.Equal("20261126140000_LearningProjectImport", db.Database.GetMigrations().Last());
         Assert.False(db.Database.HasPendingModelChanges());
     }
 }

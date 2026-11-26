@@ -58,7 +58,7 @@ public sealed class CvPersistenceContractTests
     {
         using var db = new LearningDbContext(new DbContextOptionsBuilder<LearningDbContext>().UseNpgsql("Host=127.0.0.1;Database=unused;Username=unused;Pooling=false").Options);
         Assert.False(db.Database.HasPendingModelChanges());
-        Assert.Equal(new[] { "20261125100000_LearningDurableRevisions", "20261126090000_LearningCvPersistence", "20261126110000_LearningPortfolioPersistence" }, db.Database.GetMigrations());
+        Assert.Equal(new[] { "20261125100000_LearningDurableRevisions", "20261126090000_LearningCvPersistence", "20261126110000_LearningPortfolioPersistence", "20261126140000_LearningProjectImport" }, db.Database.GetMigrations());
         var entity = db.Model.GetEntityTypes().Single(e => e.ClrType.Name == "LearningCvRow");
         Assert.Equal(new[] { "OwnerLearningProfileId", "Module", "CvId" }, entity.FindPrimaryKey()!.Properties.Select(p => p.Name));
         Assert.Empty(entity.GetForeignKeys());

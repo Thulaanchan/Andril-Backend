@@ -31,7 +31,7 @@ internal sealed class PortfolioPostgresFixture : IAsyncDisposable
             await using var db = f.Shared.OpenOwner(); await db.Database.OpenConnectionAsync();
             await using var sql = new NpgsqlCommand($"CREATE ROLE {name} LOGIN PASSWORD '{password}' NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOBYPASSRLS", (NpgsqlConnection)db.Database.GetDbConnection());
             await sql.ExecuteNonQueryAsync(); f.role = name;
-            sql.CommandText = $"GRANT USAGE ON SCHEMA andril_learning TO {name}; GRANT SELECT,INSERT,DELETE ON andril_learning.learning_portfolios TO {name}; GRANT UPDATE(template,projects) ON andril_learning.learning_portfolios TO {name}; GRANT EXECUTE ON FUNCTION andril_learning.scope_visible(uuid,text),andril_learning.lock_cv_owner(uuid,uuid) TO {name}";
+            sql.CommandText = $"GRANT USAGE ON SCHEMA andril_learning TO {name}; GRANT SELECT,INSERT,DELETE ON andril_learning.learning_portfolios TO {name}; GRANT UPDATE(template,projects,content_version) ON andril_learning.learning_portfolios TO {name}; GRANT EXECUTE ON FUNCTION andril_learning.scope_visible(uuid,text),andril_learning.lock_cv_owner(uuid,uuid) TO {name}";
             await sql.ExecuteNonQueryAsync();
             f.connection = new NpgsqlConnectionStringBuilder(db.Database.GetConnectionString()) { Username = name, Password = password, Pooling = false, IncludeErrorDetail = false }.ConnectionString;
             return f;
@@ -55,7 +55,7 @@ internal sealed class PortfolioPostgresFixture : IAsyncDisposable
             if (role is not null)
             {
                 await using var db = Shared.OpenOwner(); await db.Database.OpenConnectionAsync();
-                await using var sql = new NpgsqlCommand($"REVOKE UPDATE(template,projects) ON andril_learning.learning_portfolios FROM {role}; REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA andril_learning FROM {role}; REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA andril_learning FROM {role}; REVOKE ALL PRIVILEGES ON SCHEMA andril_learning FROM {role}; DROP ROLE {role}", (NpgsqlConnection)db.Database.GetDbConnection());
+                await using var sql = new NpgsqlCommand($"REVOKE UPDATE(template,projects,content_version) ON andril_learning.learning_portfolios FROM {role}; REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA andril_learning FROM {role}; REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA andril_learning FROM {role}; REVOKE ALL PRIVILEGES ON SCHEMA andril_learning FROM {role}; DROP ROLE {role}", (NpgsqlConnection)db.Database.GetDbConnection());
                 await sql.ExecuteNonQueryAsync();
             }
         }
