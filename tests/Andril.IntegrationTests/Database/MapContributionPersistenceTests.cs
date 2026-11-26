@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using Andril.Hobbies.Map.Contributions;
 using Andril.Hobbies.Map.LocationValidation;
 using Andril.Hobbies.Map.Places;
+using Andril.Persistence.Configurations;
 using Andril.Persistence.DbContexts;
 using Andril.Persistence.Repositories.Hobbies;
 using Microsoft.EntityFrameworkCore;
@@ -562,9 +563,13 @@ public sealed class MapContributionPersistenceTests
         {
             settings.Database = databaseName;
             var connection = settings.ConnectionString;
-            await using (var context = CreateContext(connection))
+            await using (var context = new HobbiesMapDbContext(
+                new DbContextOptionsBuilder<HobbiesMapDbContext>()
+                    .UseNpgsql(connection, HobbiesDatabaseOptions.ConfigureMapHistory).Options))
             {
-                await context.Database.EnsureCreatedAsync();
+                // Some callers install their own lifecycle test schema. Keep this
+                // shared fixture at the last migration before lifecycle promotion.
+                await context.Database.MigrateAsync("20261121185145_AddMapSubmissionSessionUniqueness");
                 context.CaptureSessions.Add(MapContributionCaptureSession.Create(
                     Session, Owner, Attraction, SubmittedAt));
                 await context.SaveChangesAsync();

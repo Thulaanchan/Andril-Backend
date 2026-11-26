@@ -258,7 +258,7 @@ public sealed class MapAttractionLifecycleMigrationAcceptanceTests
                 (receipt_id,reviewer_subject_id,request_id,attraction_id,requested_is_active,expected_version,
                  previous_is_active,previous_version,result_is_active,result_version,
                  previous_operation_sequence,result_operation_sequence,outcome,accepted_at_utc)
-            VALUES ($1,$2,$3,$4,false,1,false,1,true,2,1,2,1,clock_timestamp())
+            VALUES ($1,$2,$3,$4,true,1,false,1,true,2,1,2,1,clock_timestamp())
             """, connection, transaction))
         {
             insert.Parameters.AddWithValue(receiptId);
