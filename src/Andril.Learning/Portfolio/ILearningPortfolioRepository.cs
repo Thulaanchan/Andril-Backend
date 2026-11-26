@@ -12,9 +12,20 @@ public interface ILearningPortfolioRepository
     Task<PortfolioListResult> ListAsync(CancellationToken ct = default);
     Task<PortfolioReadResult> SaveAsync(Guid id, PortfolioSaveChange change, CancellationToken ct = default);
     Task<PortfolioDeleteResult> DeleteAsync(Guid id, CancellationToken ct = default);
+    Task<PortfolioPreviewResult> PreviewAsync(Guid id, CancellationToken ct = default);
 }
 
 public enum PortfolioOperationState { Available = 1, NotFound, Denied, Unavailable, Conflict, CommitUnknown }
+
+public sealed class PortfolioPreviewResult
+{
+    [JsonIgnore] public PortfolioOperationState State { get; }
+    [JsonIgnore] public PortfolioPreview? Preview { get; }
+    private PortfolioPreviewResult(PortfolioOperationState state, PortfolioPreview? preview) { State = state; Preview = preview; }
+    public static PortfolioPreviewResult Available(PortfolioPreview preview) => new(PortfolioOperationState.Available, preview ?? throw new ArgumentNullException(nameof(preview)));
+    public static PortfolioPreviewResult Failure(PortfolioOperationState state) => state != PortfolioOperationState.Available ? new(state, null) : throw new ArgumentException("Available requires private content.");
+    public override string ToString() => "Private Portfolio preview result [content omitted]";
+}
 
 public sealed class PortfolioReadResult
 {
