@@ -13,4 +13,5 @@ public sealed class LearningCvApplicationService(ILearningCvRepository repositor
     public Task<CvReadResult> SelectTemplateAsync(Guid id, CvTemplate template, CancellationToken ct = default) => repository.SaveAsync(id, CvSaveChange.Template(template), ct);
     public Task<CvReadResult> SetContactConsentAsync(Guid id, bool include, CancellationToken ct = default) => repository.SaveAsync(id, CvSaveChange.ContactConsent(include), ct);
     public Task<CvPreviewResult> PreviewAsync(Guid id, CancellationToken ct = default) => repository.PreviewAsync(id, ct);
+    public Task<CvPdfResult> ExportPdfAsync(Guid id, CancellationToken ct = default) => repository.ExportPdfAsync(id, ct);
 }
