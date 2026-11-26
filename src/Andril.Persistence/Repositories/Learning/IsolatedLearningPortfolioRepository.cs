@@ -68,6 +68,19 @@ internal sealed class IsolatedLearningPortfolioRepository : ILearningPortfolioRe
             return new PortfolioDeleteResult(PortfolioOperationState.Available);
         }, s => new PortfolioDeleteResult(s), ct, true);
     }
+    public Task<PortfolioPreviewResult> PreviewAsync(Guid id, CancellationToken ct = default)
+    {
+        RequireId(id);
+        return Within(async (db, owner, token) =>
+        {
+            // Same trusted owner fence and physical row lock as other document operations.
+            // Render current persisted content and release only after fresh owner revalidation.
+            var row = await db.Set<LearningPortfolioRow>().FromSqlInterpolated($"SELECT * FROM andril_learning.learning_portfolios WHERE owner_learning_profile_id={owner.Profile} AND module='learning' AND portfolio_id={id} FOR SHARE").AsNoTracking().SingleOrDefaultAsync(token);
+            if (row is null) return PortfolioPreviewResult.Failure(PortfolioOperationState.NotFound);
+            var decoded = Decode(row);
+            return decoded.Portfolio is null ? PortfolioPreviewResult.Failure(decoded.State) : PortfolioPreviewResult.Available(PortfolioPreview.CreateOffline(decoded.Portfolio, token));
+        }, PortfolioPreviewResult.Failure, ct);
+    }
     private Task Prepared(CancellationToken ct) => TestCheckpoint?.Invoke("prepared", ct) ?? Task.CompletedTask;
     private static IQueryable<LearningPortfolioRow> Rows(LearningDbContext db, Owner owner) => db.Set<LearningPortfolioRow>().Where(p => p.OwnerLearningProfileId == owner.Profile && p.Module == "learning");
     private static IQueryable<LearningPortfolioRow> Locked(LearningDbContext db, Owner owner, Guid id) => db.Set<LearningPortfolioRow>().FromSqlInterpolated($"SELECT * FROM andril_learning.learning_portfolios WHERE owner_learning_profile_id={owner.Profile} AND module='learning' AND portfolio_id={id} FOR UPDATE");

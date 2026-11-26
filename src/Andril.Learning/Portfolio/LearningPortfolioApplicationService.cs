@@ -13,4 +13,5 @@ public sealed class LearningPortfolioApplicationService(ILearningPortfolioReposi
     public Task<PortfolioReadResult> ReorderProjectsAsync(Guid id, IEnumerable<Guid> projectIds, CancellationToken ct = default) => repository.SaveAsync(id, PortfolioSaveChange.Reorder(projectIds), ct);
     public Task<PortfolioReadResult> SelectTemplateAsync(Guid id, PortfolioTemplate template, CancellationToken ct = default) => repository.SaveAsync(id, PortfolioSaveChange.Template(template), ct);
     public Task<PortfolioDeleteResult> DeleteAsync(Guid id, CancellationToken ct = default) => repository.DeleteAsync(id, ct);
+    public Task<PortfolioPreviewResult> PreviewAsync(Guid id, CancellationToken ct = default) => repository.PreviewAsync(id, ct);
 }
