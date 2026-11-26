@@ -95,8 +95,11 @@ public sealed class AiDependencyBoundaryTests
 
     private sealed class Actor : IAiActorAuthorization
     {
+        // One trusted synthetic identity per fixture instance, stable across admission/release.
+        private readonly Guid subject = Guid.NewGuid();
+        private readonly Guid profile = Guid.NewGuid();
         public Task<AiAuthorizedActor?> GetAuthorizedActorAsync(AiModule module, CancellationToken t = default) =>
-            Task.FromResult<AiAuthorizedActor?>(new(Guid.NewGuid(), Guid.NewGuid(), module));
+            Task.FromResult<AiAuthorizedActor?>(new(subject, profile, module));
     }
     private sealed class Provider : IAiResponseProvider
     {
