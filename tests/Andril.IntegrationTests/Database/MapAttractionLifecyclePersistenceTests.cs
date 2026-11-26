@@ -1,11 +1,16 @@
 using System.Data.Common;
 using System.Transactions;
+using Andril.Economy.FlightPoints;
+using Andril.Hobbies.Map.Contributions;
 using Andril.Hobbies.Map.Places;
 using Andril.Persistence.Configurations;
 using Andril.Persistence.DbContexts;
 using Andril.Persistence.Repositories.Hobbies;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.Extensions.DependencyInjection;
 using Npgsql;
 using Xunit;
 namespace Andril.IntegrationTests.Database;
@@ -13,12 +18,30 @@ namespace Andril.IntegrationTests.Database;
 public sealed partial class MapAttractionLifecyclePersistenceTests
 {
     [Fact]
-    public void MappingsAreUnregisteredAndProductionSnapshotRemainsUnchanged()
+    public void LifecycleMappingsAreRegisteredForMapSchema()
     {
         using var production=new HobbiesMapDbContext(new DbContextOptionsBuilder<HobbiesMapDbContext>().UseNpgsql("Host=127.0.0.1;Database=model_only;Enlist=false").Options);
-        Assert.Null(production.Model.FindEntityType(typeof(MapAttractionLifecycleRow)));
-        Assert.Null(production.Model.FindEntityType(typeof(MapAttractionLifecycleReceiptRow)));
-        Assert.Null(production.Model.FindEntityType(typeof(MapAttractionLifecycleAuditRow)));
+        var productionState=production.Model.FindEntityType(typeof(MapAttractionLifecycleRow));
+        var productionReceipts=production.Model.FindEntityType(typeof(MapAttractionLifecycleReceiptRow));
+        var productionAudit=production.Model.FindEntityType(typeof(MapAttractionLifecycleAuditRow));
+        Assert.NotNull(productionState);
+        Assert.NotNull(productionReceipts);
+        Assert.NotNull(productionAudit);
+        Assert.Equal(("map_attraction_lifecycle","andril_hobbies"),(productionState!.GetTableName(),productionState.GetSchema()));
+        Assert.Equal(("map_attraction_lifecycle_receipts","andril_hobbies"),(productionReceipts!.GetTableName(),productionReceipts.GetSchema()));
+        Assert.Equal(("map_attraction_lifecycle_audit","andril_hobbies"),(productionAudit!.GetTableName(),productionAudit.GetSchema()));
+        Assert.Equal(14,productionAudit.GetProperties().Count());
+        Assert.All(production.Model.GetEntityTypes().Where(entity =>
+                entity.ClrType == typeof(MapAttractionLifecycleRow)
+                || entity.ClrType == typeof(MapAttractionLifecycleReceiptRow)
+                || entity.ClrType == typeof(MapAttractionLifecycleAuditRow))
+            .SelectMany(entity => entity.GetForeignKeys()),fk=>Assert.Equal(DeleteBehavior.NoAction,fk.DeleteBehavior));
+        Assert.Equal(new[]
+        {
+            "20261121032052_InitialHobbiesMap",
+            "20261121185145_AddMapSubmissionSessionUniqueness",
+            "20261125022647_AddMapAttractionLifecycle"
+        },production.Database.GetMigrations());
         Assert.False(production.Database.HasPendingModelChanges());
         using var test=new MappingContext(new DbContextOptionsBuilder<MappingContext>().UseNpgsql("Host=127.0.0.1;Database=model_only;Enlist=false").Options);
         var state=test.Model.FindEntityType(typeof(MapAttractionLifecycleRow))!;
@@ -28,6 +51,31 @@ public sealed partial class MapAttractionLifecyclePersistenceTests
         Assert.True(state.FindProperty("LastReceiptId")!.IsNullable);
         Assert.Equal(14,test.Model.FindEntityType(typeof(MapAttractionLifecycleAuditRow))!.GetProperties().Count());
         Assert.All(test.Model.GetEntityTypes().SelectMany(x=>x.GetForeignKeys()),fk=>Assert.Equal(DeleteBehavior.NoAction,fk.DeleteBehavior));
+    }
+
+    [Fact]
+    public async Task ProductionMapRuntimeRemainsInactiveAndFailClosed()
+    {
+        using var production = new WebApplicationFactory<Program>();
+        var services = production.Services;
+        Assert.Null(services.GetService<IDbContextFactory<HobbiesMapDbContext>>());
+        Assert.Null(services.GetService<IMapAttractionLifecycleWriter>());
+        Assert.Null(services.GetService<IMapAttractionManagementAuthorization>());
+        Assert.Null(services.GetService<MapAttractionLifecycleService>());
+        Assert.Null(services.GetService<IFlightPointsLedgerRepository>());
+
+        var routes = services.GetRequiredService<EndpointDataSource>().Endpoints.OfType<RouteEndpoint>();
+        Assert.DoesNotContain(routes, endpoint =>
+            endpoint.RoutePattern.RawText?.Contains("map", StringComparison.OrdinalIgnoreCase) == true);
+
+        Assert.Equal(MapContributionPhotoVerificationResult.Denied,
+            await new DenyAllMapContributionPhotoEvidenceReader().VerifyAsync(
+                Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), null));
+        var requested = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        var visibility = await new DenyAllMapAttractionDiscoveryVisibilityReader()
+            .ReadAsync(Guid.NewGuid(), requested);
+        Assert.Equal(requested, visibility.Decisions.Select(decision => decision.AttractionId));
+        Assert.All(visibility.Decisions, decision => Assert.Equal(MapAttractionVisibility.Hidden, decision.Visibility));
     }
 
     [Fact]
