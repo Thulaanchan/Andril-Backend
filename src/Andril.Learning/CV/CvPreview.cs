@@ -25,11 +25,11 @@ public sealed class CvPreview
     /// </summary>
     public static CvPreview CreateOffline(LearningCv cv)
     {
-        ArgumentNullException.ThrowIfNull(cv);
+        var projection = CvOutputProjection.From(cv);
         var html = new StringBuilder("<article><h1>Private CV preview</h1><p>");
-        html.Append(WebUtility.HtmlEncode(cv.Template.ToString()));
-        html.Append("</p><p>Unclassified content withheld pending approved field classification.</p>");
-        foreach (var category in Enum.GetValues<CvSectionCategory>())
+        html.Append(WebUtility.HtmlEncode(projection.Template.ToString()));
+        html.Append("</p><p>").Append(WebUtility.HtmlEncode(CvOutputProjection.Notice)).Append("</p>");
+        foreach (var category in projection.Sections)
         {
             html.Append("<section><h2>");
             html.Append(WebUtility.HtmlEncode(category.ToString()));

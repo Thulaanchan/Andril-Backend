@@ -117,6 +117,19 @@ internal sealed class IsolatedLearningCvRepository : ILearningCvRepository
             return decoded.Cv is null ? CvPreviewResult.Failure(decoded.State) : CvPreviewResult.Available(CvPreview.CreateOffline(decoded.Cv));
         }, CvPreviewResult.Failure, cancellationToken);
     }
+    public Task<CvPdfResult> ExportPdfAsync(Guid cvId, CancellationToken cancellationToken = default)
+    {
+        RequireId(cvId);
+        return Within(async (db, owner, ct) =>
+        {
+            // Keep persisted document/consent stable until the coordinated release. All normal
+            // saves also use the existing subject fence; no new production lock namespace.
+            var row = await db.Set<LearningCvRow>().FromSqlInterpolated($"SELECT * FROM andril_learning.learning_cvs WHERE owner_learning_profile_id={owner.Profile} AND module='learning' AND cv_id={cvId} FOR SHARE").AsNoTracking().SingleOrDefaultAsync(ct);
+            if (row is null) return CvPdfResult.Failure(CvOperationState.NotFound);
+            var decoded = Decode(row);
+            return decoded.Cv is null ? CvPdfResult.Failure(decoded.State) : CvPdfResult.Available(CvPdfDocument.CreateOffline(decoded.Cv, ct));
+        }, CvPdfResult.Failure, cancellationToken);
+    }
     private Task Prepared(CancellationToken ct) => TestCheckpoint?.Invoke("prepared", ct) ?? Task.CompletedTask;
     private static IQueryable<LearningCvRow> Rows(LearningDbContext db, Owner owner) => db.Set<LearningCvRow>().Where(c => c.OwnerLearningProfileId == owner.Profile && c.Module == "learning");
     private static CvReadResult Decode(LearningCvRow row)

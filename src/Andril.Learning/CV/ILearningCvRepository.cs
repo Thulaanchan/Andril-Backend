@@ -12,9 +12,20 @@ public interface ILearningCvRepository
     Task<CvListResult> ListAsync(CancellationToken cancellationToken = default);
     Task<CvReadResult> SaveAsync(Guid cvId, CvSaveChange change, CancellationToken cancellationToken = default);
     Task<CvPreviewResult> PreviewAsync(Guid cvId, CancellationToken cancellationToken = default);
+    Task<CvPdfResult> ExportPdfAsync(Guid cvId, CancellationToken cancellationToken = default);
 }
 
 public enum CvOperationState { Available = 1, NotFound = 2, Denied = 3, Unavailable = 4, Conflict = 5, CommitUnknown = 6 }
+
+public sealed class CvPdfResult
+{
+    [JsonIgnore] public CvOperationState State { get; }
+    [JsonIgnore] public CvPdfDocument? Document { get; }
+    private CvPdfResult(CvOperationState state, CvPdfDocument? document) { State = state; Document = document; }
+    public static CvPdfResult Available(CvPdfDocument document) => new(CvOperationState.Available, document ?? throw new ArgumentNullException(nameof(document)));
+    public static CvPdfResult Failure(CvOperationState state) => state != CvOperationState.Available ? new(state, null) : throw new ArgumentException("An available export needs content.");
+    public override string ToString() => "Private CV PDF result [content omitted]";
+}
 
 public sealed class CvReadResult
 {
