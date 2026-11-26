@@ -58,6 +58,7 @@ internal sealed class LearningAiConversationPostgresFixture : IAsyncDisposable
                 await owner.Database.ExecuteSqlRawAsync(policySql);
             }
             // Own-data FK and role/operation constraints enforce isolation and idempotency.
+            await owner.Database.ExecuteSqlRawAsync("ALTER TABLE andril_ai_isolated.learning_partner_discovery ENABLE ROW LEVEL SECURITY; ALTER TABLE andril_ai_isolated.learning_partner_discovery FORCE ROW LEVEL SECURITY; CREATE POLICY owner_scope ON andril_ai_isolated.learning_partner_discovery USING(account_id::text=current_setting('andril.account',true) AND andril_learning.scope_visible(module_profile_id,'learning')) WITH CHECK(account_id::text=current_setting('andril.account',true) AND andril_learning.scope_visible(module_profile_id,'learning')); REVOKE ALL ON andril_ai_isolated.learning_partner_discovery FROM PUBLIC");
             await owner.Database.ExecuteSqlRawAsync("ALTER TABLE andril_ai_isolated.classroom_discovery ENABLE ROW LEVEL SECURITY; ALTER TABLE andril_ai_isolated.classroom_discovery FORCE ROW LEVEL SECURITY; CREATE POLICY owner_scope ON andril_ai_isolated.classroom_discovery USING(account_id::text=current_setting('andril.account',true) AND andril_learning.scope_visible(module_profile_id,'learning')) WITH CHECK(account_id::text=current_setting('andril.account',true) AND andril_learning.scope_visible(module_profile_id,'learning')); REVOKE ALL ON andril_ai_isolated.classroom_discovery FROM PUBLIC");
             // No AI history or shared M2 schema/foreign-key/deletion change is introduced.
             var name = "andril_ai_runtime_" + Guid.NewGuid().ToString("N");
@@ -73,6 +74,8 @@ internal sealed class LearningAiConversationPostgresFixture : IAsyncDisposable
             command.CommandText = "GRANT UPDATE(state,updated_at_utc) ON andril_ai_isolated.dispatch_operations TO " + roleIdentifiers.QuoteIdentifier(name);
             await command.ExecuteNonQueryAsync();
             command.CommandText = "REVOKE INSERT ON andril_ai_isolated.classroom_discovery FROM " + roleIdentifiers.QuoteIdentifier(name);
+            await command.ExecuteNonQueryAsync();
+            command.CommandText = "REVOKE INSERT ON andril_ai_isolated.learning_partner_discovery FROM " + roleIdentifiers.QuoteIdentifier(name);
             await command.ExecuteNonQueryAsync();
             f.connection = new NpgsqlConnectionStringBuilder(owner.Database.GetConnectionString()) { Username = name, Password = password, Pooling = false, IncludeErrorDetail = false }.ConnectionString;
             return f;
@@ -91,6 +94,9 @@ internal sealed class LearningAiConversationPostgresFixture : IAsyncDisposable
         => new(new DbContextOptionsBuilder<Andril.Persistence.DbContexts.LearningDbContext>().UseNpgsql(connection).Options,
             Owner, Owner, Owner) { TestCheckpoint = checkpoint };
     internal AiPrivacyNoticeGuard ClassroomPrivacy() => new(new ActorReader(Owner), new PrivacyGate(this));
+    internal IsolatedLearningPartnerDiscoveryReader Partners(Func<string, CancellationToken, Task>? checkpoint = null)
+        => new(new DbContextOptionsBuilder<Andril.Persistence.DbContexts.LearningDbContext>().UseNpgsql(connection).Options,
+            Owner, Owner, Owner) { TestCheckpoint = checkpoint };
     internal IsolatedLearningAiAcknowledgementRepository Acknowledgements(IAiPrivacyPolicyVersionSource policies,
         DiaryPostgresFixture.Authority? authority = null, Func<string, CancellationToken, Task>? checkpoint = null)
     {
