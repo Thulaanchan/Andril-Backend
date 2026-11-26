@@ -14,6 +14,13 @@ internal sealed class IsolatedLearningAiDbContext(DbContextOptions<IsolatedLearn
     protected override void OnModelCreating(ModelBuilder m)
     {
         m.HasDefaultSchema(Schema);
+        var partner = m.Entity<IsolatedLearningPartnerDiscoveryRow>();
+        partner.ToTable("learning_partner_discovery", t =>
+        {
+            t.HasCheckConstraint("ck_learning_partner_identity", "account_id <> '00000000-0000-0000-0000-000000000000'::uuid AND module_profile_id <> '00000000-0000-0000-0000-000000000000'::uuid AND candidate_profile_id <> '00000000-0000-0000-0000-000000000000'::uuid");
+            t.HasCheckConstraint("ck_learning_partner_module", "module = 'learning'");
+        });
+        partner.HasKey(x => new { x.AccountId, x.ModuleProfileId, x.CandidateProfileId });
         var classroom = m.Entity<IsolatedClassroomDiscoveryRow>();
         classroom.ToTable("classroom_discovery", t =>
         {
