@@ -32,6 +32,16 @@ public sealed class LearningPortfolio
         Projects = Array.AsReadOnly(Array.Empty<PortfolioProject>());
     }
 
+    /// <summary>Validate and restore a private stored snapshot without granting authorization.</summary>
+    public static LearningPortfolio FromStoredSnapshot(Guid id, Guid ownerLearningProfileId,
+        PortfolioTemplate template, IEnumerable<PortfolioProject> projects)
+    {
+        ArgumentNullException.ThrowIfNull(projects);
+        var portfolio = new LearningPortfolio(id, ownerLearningProfileId, template);
+        foreach (var project in projects) portfolio.AddProject(project);
+        return portfolio;
+    }
+
     /// <summary>Add an explicitly supplied immutable project; no external content is imported.</summary>
     public void AddProject(PortfolioProject project)
     {

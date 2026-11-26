@@ -76,6 +76,7 @@ public sealed class LearningDbContext(DbContextOptions<LearningDbContext> option
 
         LearningRevisionConfiguration.Configure(modelBuilder);
         LearningCvConfiguration.Configure(modelBuilder);
+        LearningPortfolioConfiguration.Configure(modelBuilder);
 
         // The M2 projection is excluded from Learning migrations. Lifecycle cascade and revision
         // ownership are approved explicitly; no catalogue FK, text uniqueness or retention TTL.
