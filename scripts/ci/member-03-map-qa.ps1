@@ -135,6 +135,8 @@ function Verify-Trx([string] $Label, [string] $TrxPath, [string[]] $Expected, [i
         $cancelled -ne 0 -or $issues.Count -ne 0) {
         $failurePath = Join-Path $safe "$Label-failures.json"
         Export-QaFailureDiagnostics $report $failurePath
+        Save-IdentityList "$Label-inventory-issues.txt" $issues
+        Add-Summary "$Label TOTAL=$($report.Total) PASSED=$($report.Passed) FAILED=$failed SKIPPED=$($report.Skipped) INVENTORY_ISSUES=$($issues.Count)"
         throw "$Label TRX identity or outcome reconciliation failed."
     }
     $actual = [string[]] @($report.Tests | ForEach-Object { $_.Display })
@@ -157,7 +159,7 @@ function Invoke-TestPartition([string] $Label, [string] $Filter, [string[]] $Exp
         'nsenter', '--target', $servicePid, '--net', '--',
         'setpriv', "--reuid=$runnerUid", "--regid=$runnerGid", '--clear-groups',
         '--inh-caps=-all', '--ambient-caps=-all', '--bounding-set=-all',
-        '--no-new-privs', '--', $dotnetPath)
+        '--no-new-privs', '--', 'env', 'LANG=en_US.UTF-8', 'LC_ALL=en_US.UTF-8', $dotnetPath)
     $null = Invoke-Native "$Label-tests" 'sudo' ($namespaceArgs + $args) -AllowFailure
     $exitCode = [int] (Get-Content -LiteralPath (Join-Path $safe "$Label-tests.exitcode") -Raw)
     $trx = Join-Path $results $trxName
