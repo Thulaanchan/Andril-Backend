@@ -425,6 +425,7 @@
     "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.RevokedAndForeignOwnersCannotWriteOrDiscloseCommittedRetry",
     "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.RolledBackDeactivationReleasesLifecycleLockForSubmission",
     "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.RolledBackSubmissionReleasesLifecycleLockForDeactivation",
-    "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.SubmissionLifecycleLockSerializesDeactivationAndPreservesCommittedRetry"
+    "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.SubmissionLifecycleLockSerializesDeactivationAndPreservesCommittedRetry",
+    "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.PrivateMediaMigration_EnforcesScopedUniquenessFinalizationAndCleanup"
   ]
 }

@@ -40,7 +40,8 @@ public sealed partial class MapAttractionLifecyclePersistenceTests
         {
             "20261121032052_InitialHobbiesMap",
             "20261121185145_AddMapSubmissionSessionUniqueness",
-            "20261125022647_AddMapAttractionLifecycle"
+            "20261125022647_AddMapAttractionLifecycle",
+            "20261126092843_AddMapPrivateMedia"
         },production.Database.GetMigrations());
         Assert.False(production.Database.HasPendingModelChanges());
         using var test=new MappingContext(new DbContextOptionsBuilder<MappingContext>().UseNpgsql("Host=127.0.0.1;Database=model_only;Enlist=false").Options);
