@@ -1,5 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\Andril.Shared\Andril.Shared.csproj" />
+    <PackageReference Include="JpegLibrary" Version="[0.4.32]" />
+    <None Update="JpegLibrary.LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

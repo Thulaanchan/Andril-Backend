@@ -1,6 +1,7 @@
 using Andril.Hobbies.Map.Contributions;
 using Andril.Hobbies.Map.LocationValidation;
 using Andril.Hobbies.Map.Places;
+using Andril.Shared.Authentication;
 using Xunit;
 
 namespace Andril.UnitTests.Hobbies;
@@ -34,6 +35,136 @@ public sealed class MapContributionSubmissionPreflightTests
     private static readonly Guid ForeignId = Guid.NewGuid();
     private static readonly DateTimeOffset Start = new(2026, 11, 21, 0, 0, 0, TimeSpan.Zero);
     private const string PhotoKey = "private-camera-object";
+    private static readonly Guid AccountSubject = Guid.NewGuid();
+
+    [Fact]
+    public async Task ServerCameraBindingAndCanonicalLocationReachPendingSubmission()
+    {
+        var ports = new TestPorts();
+        var actor = new CameraActor();
+        var source = new CameraSource(() => CameraEvidence());
+        var reader = new TrustedMapContributionPhotoEvidenceReader(actor, ports, ports, source, ports.Clock);
+        var preflight = new MapContributionSubmissionPreflight(ports, ports, ports, reader, ports.Clock);
+        var writer = new WriterProbe();
+        var service = new MapContributionSubmissionService(preflight, writer);
+
+        var substituted = await service.SubmitAsync(AttractionId, SessionId,
+            ports.Observation, "substituted-photo", "Description");
+        Assert.Equal(MapSubmissionOutcome.Denied, substituted.Outcome);
+        Assert.Equal(0, writer.Calls);
+
+        var attempt = await service.SubmitAttemptAsync(AttractionId, SessionId,
+            ports.Observation, PhotoKey, "Description");
+
+        Assert.NotNull(attempt.OriginalEvidence);
+        Assert.Equal(MapSubmissionOutcome.Created, attempt.Result.Outcome);
+        Assert.Equal((AccountSubject, OwnerId, AttractionId, SessionId), source.Request);
+        Assert.Equal(2, source.Calls);
+        Assert.Equal(1, writer.Calls);
+        Assert.Equal(MapContributionModerationStatus.PendingReview, writer.Contribution!.ModerationStatus);
+    }
+
+    [Theory]
+    [InlineData("account")]
+    [InlineData("profile")]
+    [InlineData("attraction")]
+    [InlineData("session")]
+    [InlineData("object")]
+    [InlineData("gallery")]
+    [InlineData("unknown origin")]
+    [InlineData("before capture")]
+    [InlineData("after capture")]
+    [InlineData("missing")]
+    [InlineData("unavailable")]
+    public async Task AuthoritativeRecordMustMatchTheWholeCameraScope(string scenario)
+    {
+        var ports = new TestPorts();
+        var evidence = CameraEvidence();
+        var source = new CameraSource(() => scenario switch
+        {
+            "account" => evidence with { AccountSubjectId = ForeignId },
+            "profile" => evidence with { OwnerHobbiesModuleProfileId = ForeignId },
+            "attraction" => evidence with { AttractionId = ForeignId },
+            "session" => evidence with { CaptureSessionId = ForeignId },
+            "object" => evidence with { PrivateObjectReference = "other-private-object" },
+            "gallery" => evidence with { Origin = MapPhotoOrigin.GalleryUpload },
+            "unknown origin" => evidence with { Origin = default },
+            "before capture" => evidence with { CapturedAtUtc = Start.AddTicks(-1) },
+            "after capture" => evidence with { CapturedAtUtc = Start.AddSeconds(10).AddTicks(1) },
+            "missing" => null,
+            "unavailable" => throw new InvalidOperationException("Test provider unavailable."),
+            _ => throw new ArgumentOutOfRangeException(nameof(scenario))
+        });
+        var reader = new TrustedMapContributionPhotoEvidenceReader(new CameraActor(), ports, ports, source, ports.Clock);
+        var writer = new WriterProbe();
+        var service = new MapContributionSubmissionService(
+            new MapContributionSubmissionPreflight(ports, ports, ports, reader, ports.Clock), writer);
+
+        var result = await service.SubmitAsync(AttractionId, SessionId, ports.Observation, PhotoKey, "Description");
+
+        Assert.Equal(MapSubmissionOutcome.Denied, result.Outcome);
+        Assert.Equal(1, source.Calls);
+        Assert.Equal(0, writer.Calls);
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task UnauthenticatedOrInactiveActorCannotReadPrivateCameraEvidence(bool authenticated, bool active)
+    {
+        var ports = new TestPorts { AuthorizedOwner = active ? OwnerId : null };
+        var source = new CameraSource(() => CameraEvidence());
+        var reader = new TrustedMapContributionPhotoEvidenceReader(
+            new CameraActor { IsAuthenticated = authenticated }, ports, ports, source, ports.Clock);
+
+        Assert.Equal(MapContributionPhotoVerificationResult.Denied,
+            await reader.VerifyAsync(OwnerId, AttractionId, SessionId, PhotoKey));
+        Assert.Equal(0, source.Calls);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task EvidenceIsDiscardedWhenTheActorChangesOrTheSessionExpiresDuringLookup(bool changeActor)
+    {
+        var ports = new TestPorts();
+        var actor = new CameraActor();
+        var source = new CameraSource(() =>
+        {
+            if (changeActor)
+                actor.UserId = ForeignId;
+            else
+                ports.Clock.Now = Start.AddSeconds(10).AddMinutes(10).AddTicks(1);
+            return CameraEvidence();
+        });
+        var reader = new TrustedMapContributionPhotoEvidenceReader(actor, ports, ports, source, ports.Clock);
+
+        Assert.Equal(MapContributionPhotoVerificationResult.Denied,
+            await reader.VerifyAsync(OwnerId, AttractionId, SessionId, PhotoKey));
+    }
+
+    private static MapCameraEvidence CameraEvidence() =>
+        new(AccountSubject, OwnerId, AttractionId, SessionId, PhotoKey, Start.AddSeconds(5), MapPhotoOrigin.InAppCamera);
+
+    private sealed class CameraActor : ICurrentUser
+    {
+        public Guid? UserId { get; set; } = AccountSubject;
+        public bool IsAuthenticated { get; init; } = true;
+    }
+
+    private sealed class CameraSource(Func<MapCameraEvidence?> read) : IMapCameraEvidenceSource
+    {
+        public int Calls { get; private set; }
+        public (Guid Subject, Guid Owner, Guid Attraction, Guid Session) Request { get; private set; }
+
+        public Task<MapCameraEvidence?> FindAsync(Guid accountSubjectId, Guid ownerHobbiesModuleProfileId,
+            Guid attractionId, Guid captureSessionId, CancellationToken cancellationToken)
+        {
+            Calls++;
+            Request = (accountSubjectId, ownerHobbiesModuleProfileId, attractionId, captureSessionId);
+            return Task.FromResult(read());
+        }
+    }
 
     [Theory]
     [InlineData(-1L, false)]
@@ -378,6 +509,7 @@ public sealed class MapContributionSubmissionPreflightTests
     private sealed class WriterProbe : IMapContributionSubmissionWriter
     {
         public int Calls { get; private set; }
+        public MapContribution? Contribution { get; private set; }
 
         public Task<MapSubmissionResult> SubmitAsync(
             MapContributionSubmissionPreflight.PreparedSubmission prepared,
@@ -385,6 +517,7 @@ public sealed class MapContributionSubmissionPreflightTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Calls++;
+            Contribution = prepared.Contribution;
             return Task.FromResult(new MapSubmissionResult(MapSubmissionOutcome.Created, prepared.Contribution.ContributionId));
         }
     }

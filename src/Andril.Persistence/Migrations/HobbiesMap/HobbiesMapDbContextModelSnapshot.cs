@@ -423,6 +423,95 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         });
                 });
 
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapPrivateMediaRow", b =>
+                {
+                    b.Property<Guid>("MediaId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("media_id");
+
+                    b.Property<Guid>("AttractionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attraction_id");
+
+                    b.Property<DateTimeOffset?>("CapturedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("captured_at");
+
+                    b.Property<Guid>("Challenge")
+                        .HasColumnType("uuid")
+                        .HasColumnName("capture_challenge");
+
+                    b.Property<DateTimeOffset?>("CleanedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cleaned_at");
+
+                    b.Property<Guid?>("CleanupClaim")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cleanup_claim");
+
+                    b.Property<DateTimeOffset?>("FinalizedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("finalized_at");
+
+                    b.Property<string>("PrivateReference")
+                        .HasColumnType("text")
+                        .HasColumnName("private_reference");
+
+                    b.Property<Guid>("ProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("profile_id");
+
+                    b.Property<DateTimeOffset>("ReservedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reserved_at");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<string>("Sha256")
+                        .HasColumnType("text")
+                        .HasColumnName("sha256");
+
+                    b.Property<Guid>("SubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subject_id");
+
+                    b.Property<DateTimeOffset>("UploadExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("upload_expires_at");
+
+                    b.Property<string>("Version")
+                        .HasColumnType("text")
+                        .HasColumnName("version");
+
+                    b.HasKey("MediaId")
+                        .HasName("pk_map_private_media");
+
+                    b.HasIndex("Challenge")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_private_media_challenge");
+
+                    b.HasIndex("PrivateReference")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_private_media_reference");
+
+                    b.HasIndex("SessionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_private_media_session");
+
+                    b.HasIndex("SessionId", "ProfileId", "AttractionId");
+
+                    b.ToTable("map_private_media", "andril_hobbies", t =>
+                        {
+                            t.HasCheckConstraint("ck_map_media_cleanup_state", "cleaned_at IS NULL OR (cleanup_claim IS NOT NULL AND finalized_at IS NULL)");
+
+                            t.HasCheckConstraint("ck_map_media_evidence_state", "(finalized_at IS NULL AND private_reference IS NULL AND version IS NULL AND sha256 IS NULL AND captured_at IS NULL)\nOR (finalized_at IS NOT NULL AND private_reference IS NOT NULL AND length(private_reference) > 0\n    AND version IS NOT NULL AND length(version) > 0 AND sha256 IS NOT NULL\n    AND sha256 ~ '^[0-9A-Fa-f]{64}$' AND captured_at IS NOT NULL\n    AND captured_at <= finalized_at AND cleanup_claim IS NULL)");
+
+                            t.HasCheckConstraint("ck_map_media_upload_window", "upload_expires_at > reserved_at AND upload_expires_at <= reserved_at + interval '120 seconds'");
+                        });
+                });
+
             modelBuilder.Entity("Andril.Economy.FlightPoints.FlightPointsLedgerEntry", b =>
                 {
                     b.HasOne("Andril.Economy.FlightPoints.FlightPointsLedgerEntry", null)
@@ -486,6 +575,17 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         .HasPrincipalKey("ReceiptId", "AttractionId", "ResultIsActive", "ResultVersion", "ResultOperationSequence")
                         .OnDelete(DeleteBehavior.NoAction)
                         .HasConstraintName("fk_map_lifecycle_current_receipt");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapPrivateMediaRow", b =>
+                {
+                    b.HasOne("Andril.Hobbies.Map.Contributions.MapContributionCaptureSession", null)
+                        .WithMany()
+                        .HasForeignKey("SessionId", "ProfileId", "AttractionId")
+                        .HasPrincipalKey("SessionId", "OwnerHobbiesModuleProfileId", "AttractionId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_private_media_session_scope");
                 });
 #pragma warning restore 612, 618
         }

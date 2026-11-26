@@ -1,4 +1,6 @@
 using System.Data;
+using System.Data.Common;
+using Andril.Hobbies.Map.Contributions;
 using Andril.Hobbies.Map.Places;
 using Andril.Persistence.Configurations;
 using Andril.Persistence.DbContexts;
@@ -17,13 +19,14 @@ public sealed class MapAttractionLifecycleMigrationAcceptanceTests
     private const string InitialMap = "20261121032052_InitialHobbiesMap";
     private const string UniqueSession = "20261121185145_AddMapSubmissionSessionUniqueness";
     private const string Lifecycle = "20261125022647_AddMapAttractionLifecycle";
+    private const string PrivateMedia = "20261126092843_AddMapPrivateMedia";
 
     [Fact]
     public void Migration_IsMapOnlyForwardOnlyAndMatchesLifecycleModelOffline()
     {
         using var map = new HobbiesMapDbContextFactory().CreateDbContext([]);
         var migrations = map.Database.GetMigrations().ToArray();
-        Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle }, migrations);
+        Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle, PrivateMedia }, migrations);
         Assert.False(map.Database.HasPendingModelChanges());
 
         var migrator = map.GetService<IMigrator>();
@@ -42,6 +45,12 @@ public sealed class MapAttractionLifecycleMigrationAcceptanceTests
         Assert.DoesNotContain("__EFMigrationsHistory_Gallery", script);
         Assert.DoesNotContain("andril_identity", script);
         Assert.Throws<NotSupportedException>(() => migrator.GenerateScript(Lifecycle, UniqueSession));
+        var mediaScript = migrator.GenerateScript(Lifecycle, PrivateMedia);
+        Assert.Contains("CREATE TABLE andril_hobbies.map_private_media", mediaScript);
+        Assert.Contains("fk_map_private_media_session_scope", mediaScript);
+        Assert.Contains("ux_map_private_media_session", mediaScript);
+        Assert.Contains("tr_map_private_media_guard", mediaScript);
+        Assert.Throws<NotSupportedException>(() => migrator.GenerateScript(PrivateMedia, Lifecycle));
         Assert.Equal(ConnectionState.Closed, map.Database.GetDbConnection().State);
 
         using var gallery = new HobbiesGalleryDbContextFactory().CreateDbContext([]);
@@ -59,7 +68,7 @@ public sealed class MapAttractionLifecycleMigrationAcceptanceTests
         {
             await using var map = CreateContext(connectionString);
             await map.Database.MigrateAsync();
-            Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle },
+            Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle, PrivateMedia },
                 await map.Database.GetAppliedMigrationsAsync());
             await AssertCatalogIntegrityAsync(map);
             Assert.Equal(0L, await ScalarAsync(map,
@@ -71,7 +80,7 @@ public sealed class MapAttractionLifecycleMigrationAcceptanceTests
             var galleryMigration = Assert.Single(gallery.Database.GetMigrations());
             await gallery.Database.MigrateAsync();
             Assert.Equal(galleryMigration, Assert.Single(await gallery.Database.GetAppliedMigrationsAsync()));
-            Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle },
+            Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle, PrivateMedia },
                 await map.Database.GetAppliedMigrationsAsync());
         });
 
@@ -90,7 +99,7 @@ public sealed class MapAttractionLifecycleMigrationAcceptanceTests
                     MapAttraction.Create(missingAttraction, "Lifecycle missing test", 3, 3));
                 await baseline.SaveChangesAsync();
                 Assert.Equal(3, await baseline.MapAttractions.CountAsync());
-                await baseline.Database.MigrateAsync();
+                await baseline.Database.MigrateAsync(Lifecycle);
 
                 Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle },
                     await baseline.Database.GetAppliedMigrationsAsync());
@@ -161,6 +170,88 @@ public sealed class MapAttractionLifecycleMigrationAcceptanceTests
                     "SELECT count(*) FROM andril_hobbies.map_attraction_lifecycle_audit"));
             }
         });
+    }
+
+    [MapCapturePostgresFact]
+    public Task PrivateMediaMigration_EnforcesScopedUniquenessFinalizationAndCleanup() =>
+        WithDisposableDatabaseAsync(async connectionString =>
+        {
+            await using var map = CreateContext(connectionString);
+            await map.Database.MigrateAsync();
+            var clock = new MediaClock();
+            var subject = new TestUser(Guid.NewGuid());
+            var profile = Guid.NewGuid();
+            var attraction = MapAttraction.Create(Guid.NewGuid(), "Map media test", 0, 0);
+            MapContributionCaptureSession Session()
+            {
+                var session = MapContributionCaptureSession.Create(Guid.NewGuid(), profile,
+                    attraction.AttractionId, clock.Now.AddSeconds(-20));
+                session.Complete(clock.Now.AddSeconds(-10));
+                return session;
+            }
+
+            var first = Session();
+            var second = Session();
+            map.MapAttractions.Add(attraction);
+            map.CaptureSessions.AddRange(first, second);
+            await map.SaveChangesAsync();
+            await map.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO andril_hobbies.map_attraction_lifecycle
+                    (attraction_id, is_active, version, operation_sequence, last_receipt_id)
+                VALUES ({attraction.AttractionId}, true, 0, 0, NULL)
+                """);
+
+            var store = new MapPrivateMediaStore(new ContextFactory(connectionString), subject,
+                new MediaAuthorization(profile), clock);
+            MapMediaReservation Reserve(Guid sessionId) => new(
+                new(subject.UserId!.Value, profile, attraction.AttractionId, sessionId),
+                Guid.NewGuid(), Guid.NewGuid(), clock.Now.AddSeconds(-18), clock.Now.AddSeconds(100));
+            var reservation = Reserve(first.SessionId);
+            var orphan = Reserve(second.SessionId);
+            Assert.True(await store.TryReserveAsync(reservation, default));
+            Assert.False(await store.TryReserveAsync(Reserve(first.SessionId), default));
+            Assert.True(await store.TryReserveAsync(orphan, default));
+            var foreign = reservation.Scope with { ProfileId = Guid.NewGuid() };
+            Assert.Null(await store.FindReservationAsync(foreign, default));
+            Assert.False(await store.TryReserveAsync(orphan with { Scope = foreign }, default));
+            var foreignKey = await Assert.ThrowsAsync<DbUpdateException>(() =>
+                store.TryReserveAsync(Reserve(Guid.NewGuid()), default));
+            Assert.Equal("fk_map_private_media_session_scope",
+                Assert.IsType<PostgresException>(foreignKey.InnerException).ConstraintName);
+
+            var finalized = new FinalizedMapMedia(reservation,
+                new(reservation.MediaId, "private-test", "\"version\"", new string('A', 64)), clock.Now.AddSeconds(-15));
+            var outcomes = await Task.WhenAll(store.TryFinalizeAsync(finalized, default),
+                store.TryFinalizeAsync(finalized, default));
+            Assert.Single(outcomes, result => result);
+            Assert.Equal(finalized, await store.FindFinalizedAsync(reservation.Scope, default));
+            Assert.False(await store.TryFinalizeAsync(finalized with { Media = finalized.Media with { Version = "replacement" } }, default));
+            var immutable = await Assert.ThrowsAsync<PostgresException>(() => map.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE andril_hobbies.map_private_media SET version = 'replacement' WHERE media_id = {reservation.MediaId}
+                """));
+            Assert.Equal("ck_map_private_media_immutable", immutable.ConstraintName);
+
+            var claim = Guid.NewGuid();
+            clock.Now = orphan.ReservedAt.AddHours(24).AddMilliseconds(-1);
+            Assert.False(await store.TryClaimCleanupAsync(orphan.Scope, orphan.MediaId, claim, default));
+            clock.Now = clock.Now.AddMilliseconds(1);
+            Assert.False(await store.TryClaimCleanupAsync(reservation.Scope, reservation.MediaId, claim, default));
+            var competing = await Task.WhenAll(store.TryClaimCleanupAsync(orphan.Scope, orphan.MediaId, claim, default),
+                store.TryClaimCleanupAsync(orphan.Scope, orphan.MediaId, Guid.NewGuid(), default));
+            Assert.Single(competing, result => result);
+            Assert.Null(await store.FindReservationAsync(orphan.Scope, default));
+        });
+
+    private sealed class MediaClock : TimeProvider
+    {
+        internal DateTimeOffset Now { get; set; } = new(2026, 11, 26, 0, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class MediaAuthorization(Guid profile) : IMapSubmissionTransactionAuthorization
+    {
+        public Task<Guid?> ResolveActiveHobbiesOwnerAsync(DbConnection connection, DbTransaction transaction,
+            CancellationToken cancellationToken = default) => Task.FromResult<Guid?>(profile);
     }
 
     private static HobbiesMapDbContext CreateContext(string connectionString) => new(
