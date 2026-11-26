@@ -24,10 +24,22 @@ internal sealed class ChatConversationManagementService(
 
     internal Task<ChatConversationResult<ChatConversation>> GetDetailsAsync(
         ChatModule module, Guid conversationId, CancellationToken cancellationToken = default) =>
-        ExecuteAsync<ChatConversation>(module, "details", async scope =>
+        WithConversationAsync(module, conversationId, ChatOperation.ReadConversationDetails,
+            (_, conversation, _) => Task.FromResult(new ChatConversationResult<ChatConversation>(
+                ChatConversationStatus.Success, conversation)), cancellationToken);
+
+    // Shared protected boundary for D8 reads and D9 messages. The requested
+    // permission is checked independently before access and before local delivery.
+    internal Task<ChatConversationResult<T>> WithConversationAsync<T>(
+        ChatModule module, Guid conversationId, ChatOperation operation,
+        Func<ChatConversationScope, ChatConversation, CancellationToken, Task<ChatConversationResult<T>>> access,
+        CancellationToken cancellationToken = default) =>
+        ExecuteAsync<T>(module, operation.ToString(), async scope =>
         {
-            if (conversationId == Guid.Empty) return new(ChatConversationStatus.InvalidRequest);
-            var request = new ChatAuthorizationRequest(ChatOperation.ReadConversationDetails, module, conversationId);
+            if (conversationId == Guid.Empty || operation is not (ChatOperation.ReadConversationDetails
+                or ChatOperation.ReadMessageHistory or ChatOperation.SubmitMessage))
+                return new(ChatConversationStatus.InvalidRequest);
+            var request = new ChatAuthorizationRequest(operation, module, conversationId);
             var permission = await CheckAsync(scope, request, cancellationToken);
             if (permission != ChatConversationStatus.Success) return new(permission);
 
@@ -36,10 +48,13 @@ internal sealed class ChatConversationManagementService(
                 !DevelopmentChatConversationRepository.Contains(conversation, scope.Participant))
                 return new(ChatConversationStatus.Unavailable);
 
+            // Lookup may await external work. Observe revocation again before a
+            // message callback can mutate local storage, then recheck delivery.
             permission = await CheckAsync(scope, request, cancellationToken);
-            return permission == ChatConversationStatus.Success
-                ? new(ChatConversationStatus.Success, conversation)
-                : new(permission);
+            if (permission != ChatConversationStatus.Success) return new(permission);
+            var result = await access(scope, conversation, cancellationToken);
+            permission = await CheckAsync(scope, request, cancellationToken);
+            return permission == ChatConversationStatus.Success ? result : new(permission);
         }, cancellationToken);
 
     internal Task<ChatConversationResult<IReadOnlyList<ChatConversation>>> ListAsync(
