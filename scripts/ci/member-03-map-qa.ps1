@@ -12,6 +12,7 @@ $repo = (Resolve-Path (Join-Path $PSScriptRoot '../..')).Path
 $project = Join-Path $repo 'tests/Andril.IntegrationTests/Andril.IntegrationTests.csproj'
 $inventoryPath = Join-Path $repo 'scripts/ci/member-03-map-required-db-tests.json'
 $sharedInventoryPath = 'scripts/ci/member-02-required-db-tests.json'
+$inventoryTrigger = 'ec2216e543beba548f1e10aa7a135622c7750c73'
 $approvedDigest = 'sha256:837bed18782820fe967067cb5328b02b0d9992c1be9a37ee0c9c492cfc03af3b'
 $approvedPlatformDigest = 'sha256:8d174ddfb292f26b6ec8d97f55d944ccab547fa8bfe9e4fd3c24afdc819ee423'
 $runRoot = Join-Path $env:RUNNER_TEMP 'member03-map-qa'
@@ -178,8 +179,17 @@ function Verify-InventoryAndM2([object] $Inventory) {
     $m2File = Join-Path $repo $sharedInventoryPath
     $currentM2 = Get-Content -LiteralPath $m2File -Raw | ConvertFrom-Json
     if ($currentM2.requiredM2.Count -ne 88) { throw 'M2 required identity count changed.' }
-    $parentRaw = @(& git show "HEAD^:$sharedInventoryPath")
-    if ($LASTEXITCODE -ne 0) { throw 'Could not read the parent M2 inventory.' }
+    & git merge-base --is-ancestor $inventoryTrigger HEAD
+    if ($LASTEXITCODE -ne 0) { throw 'The approved inventory trigger is not in the checkout history.' }
+    $triggerRaw = @(& git show "${inventoryTrigger}:$sharedInventoryPath")
+    if ($LASTEXITCODE -ne 0) { throw 'Could not read the trigger M2 inventory.' }
+    $triggerM2 = ($triggerRaw -join "`n") | ConvertFrom-Json
+    if (($currentM2.requiredM2 -join "`n") -cne ($triggerM2.requiredM2 -join "`n") -or
+        ($currentM2.offlineOnlySkips -join "`n") -cne ($triggerM2.offlineOnlySkips -join "`n")) {
+        throw 'The checkout changed the approved trigger inventory.'
+    }
+    $parentRaw = @(& git show "${inventoryTrigger}^:$sharedInventoryPath")
+    if ($LASTEXITCODE -ne 0) { throw 'Could not read the inventory trigger parent.' }
     $parentM2 = ($parentRaw -join "`n") | ConvertFrom-Json
     $oldIds = [string[]] $parentM2.requiredM2
     $newIds = [string[]] $currentM2.requiredM2
@@ -275,7 +285,7 @@ try {
     $roleCreated = $true
     $flagsFile = Invoke-ServiceSql 'verify-fixture-role-flags' "SELECT rolname||'|'||rolcreatedb||'|'||rolcreaterole||'|'||rolsuper||'|'||rolbypassrls FROM pg_roles WHERE rolname='$fixtureRole'"
     $flags = (Get-Content -LiteralPath $flagsFile -Raw).Trim()
-    if ($flags -cne "$fixtureRole|t|t|f|f") { throw 'Fixture login privilege verification failed.' }
+    if ($flags -cne "$fixtureRole|true|true|false|false") { throw 'Fixture login privilege verification failed.' }
     Add-Summary 'FIXTURE_ROLE=CREATEDB,CREATEROLE,NOSUPERUSER,NOBYPASSRLS'
 
     $env:ANDRIL_M3_TEST_POSTGRES = "Host=127.0.0.1;Port=55432;Database=postgres;Username=$fixtureRole;Password=$fixturePassword;SSL Mode=Disable;Pooling=false;Include Error Detail=false;Timeout=10;Command Timeout=15"
@@ -287,6 +297,7 @@ try {
     $runCode = 1
     $firstFailure = $_.Exception.Message
     Add-Summary 'FIRST_FAILURE=Recorded; subsequent test partition will not run.'
+    Add-Summary ("FAILURE_DETAIL=" + (Protect-Text $firstFailure))
     Write-Error 'MAP-37B CI verification failed; see sanitized summary and artifacts.' -ErrorAction Continue
 } finally {
     Remove-Item Env:ANDRIL_M3_TEST_POSTGRES, Env:ANDRIL_M2_TEST_POSTGRES,
