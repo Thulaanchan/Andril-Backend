@@ -1,5 +1,6 @@
 using Andril.AI.ChatBox;
 using Andril.AI.Persistence;
+using Andril.Persistence.Repositories.AI;
 using Microsoft.EntityFrameworkCore;
 
 namespace Andril.Persistence.DbContexts;
@@ -13,6 +14,17 @@ internal sealed class IsolatedLearningAiDbContext(DbContextOptions<IsolatedLearn
     protected override void OnModelCreating(ModelBuilder m)
     {
         m.HasDefaultSchema(Schema);
+        var acknowledgement = m.Entity<IsolatedAiAcknowledgementRow>();
+        acknowledgement.ToTable("privacy_acknowledgements", t =>
+        {
+            t.HasCheckConstraint("ck_ai_ack_scope", "account_id <> '00000000-0000-0000-0000-000000000000'::uuid AND module_profile_id <> '00000000-0000-0000-0000-000000000000'::uuid AND module = 'Learning'");
+            t.HasCheckConstraint("ck_ai_ack_revision", "generation <> '00000000-0000-0000-0000-000000000000'::uuid AND version > 0 AND last_operation_id <> '00000000-0000-0000-0000-000000000000'::uuid");
+            t.HasCheckConstraint("ck_ai_ack_policy", "NOT acknowledged OR length(trim(policy_version)) > 0");
+        });
+        acknowledgement.HasKey(x => new { x.AccountId, x.ModuleProfileId, x.Module });
+        acknowledgement.Property(x => x.Module).HasConversion<string>();
+        acknowledgement.Property(x => x.Version).IsConcurrencyToken();
+        acknowledgement.Property(x => x.Generation).IsConcurrencyToken();
         var c = m.Entity<AiConversationEntity>();
         c.ToTable("conversations", t =>
         {
