@@ -1,4 +1,5 @@
-﻿using Andril.Communication.Interfaces;
+﻿using Andril.Communication.Calls.Development;
+using Andril.Communication.Interfaces;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using Andril.API.Authentication;
@@ -14,7 +15,7 @@ namespace Andril.API.Development.Chat;
 
 /// <summary>Unmapped SignalR candidate. Only the isolated integration host registers/maps this hub.</summary>
 [Authorize]
-internal sealed class DevelopmentChatHub(DevelopmentChatRealtimeService realtime, IHubContext<DevelopmentChatHub> hub, IHostEnvironment environment) : Hub
+internal sealed partial class DevelopmentChatHub(DevelopmentChatRealtimeService realtime, IHubContext<DevelopmentChatHub> hub, IHostEnvironment environment, DevelopmentCallManagementService? calls = null, DevelopmentCallSignalRouter? callSignals = null) : Hub
 {
     public override async Task OnConnectedAsync()
     {
@@ -30,6 +31,8 @@ internal sealed class DevelopmentChatHub(DevelopmentChatRealtimeService realtime
         if (await realtime.ConnectAsync(Context.ConnectionId, subject.Value, expires,
             new Client(hub, Context.ConnectionId), Context.ConnectionAborted) != ChatConversationStatus.Success)
         { Context.Abort(); return; }
+        if (callSignals is not null) await callSignals.ConnectAsync(Context.ConnectionId, subject.Value, expires,
+            new CallClient(hub, Context.ConnectionId), Context.ConnectionAborted);
         await base.OnConnectedAsync();
     }
 
@@ -45,6 +48,7 @@ internal sealed class DevelopmentChatHub(DevelopmentChatRealtimeService realtime
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         await realtime.DisconnectAsync(Context.ConnectionId);
+        if (callSignals is not null) await callSignals.DisconnectAsync(Context.ConnectionId);
         await base.OnDisconnectedAsync(exception);
     }
 

@@ -115,13 +115,13 @@ public sealed class ChatRealtimeTransportTests
     private static void AssertSuccess(JsonElement value) => Assert.Equal((int)ChatConversationStatus.Success, value.GetProperty("status").GetInt32());
     private static void AssertUnavailable(JsonElement value) => Assert.Equal((int)ChatConversationStatus.Unavailable, value.GetProperty("status").GetInt32());
 
-    private sealed class DemoHost(IHost host, Uri url, Credentials credentials) : IAsyncDisposable
+    internal sealed class DemoHost(IHost host, Uri url, Credentials credentials) : IAsyncDisposable
     {
         internal Uri Url { get; } = url;
         internal string TokenA => credentials.ForSubject[0].Token;
         internal string TokenB => credentials.ForSubject[1].Token;
         internal string TokenC => credentials.ForSubject[2].Token;
-        internal static async Task<DemoHost> StartAsync(ChatRealtimeFixture fixture, bool candidateEnvironment = true)
+        internal static async Task<DemoHost> StartAsync(ChatRealtimeFixture fixture, bool candidateEnvironment = true, Action<IServiceCollection>? configure = null)
         {
             var credentials = new Credentials([fixture.A, fixture.B, fixture.C]);
             // Never invoke production Program, load production config, or bind beyond loopback.
@@ -135,6 +135,7 @@ public sealed class ChatRealtimeTransportTests
                         services.AddRouting();
                         services.AddSignalR(options => options.EnableDetailedErrors = false);
                         services.AddSingleton(fixture.Realtime);
+                        configure?.Invoke(services);
                     }).Configure(app =>
                     {
                         app.UseRouting(); app.UseAuthentication(); app.UseAuthorization();
@@ -152,7 +153,7 @@ public sealed class ChatRealtimeTransportTests
         }
         public async ValueTask DisposeAsync() { await host.StopAsync(); host.Dispose(); }
     }
-    private sealed class Credentials(Actor[] actors)
+    internal sealed class Credentials(Actor[] actors)
     {
         internal (string Token, Actor Actor)[] ForSubject { get; } = actors.Select(actor => (Guid.NewGuid().ToString("N"), actor)).ToArray();
     }
@@ -175,7 +176,7 @@ public sealed class ChatRealtimeTransportTests
     }
 
     // Minimal test-only SignalR JSON/WebSocket client. This exercises real frames, not an IHubContext mock.
-    private sealed class WireClient : IAsyncDisposable
+    internal sealed class WireClient : IAsyncDisposable
     {
         private readonly ClientWebSocket socket = new();
         private readonly CancellationTokenSource stop = new();
