@@ -75,6 +75,7 @@ public sealed class LearningDbContext(DbContextOptions<LearningDbContext> option
             .HasDatabaseName("ix_learning_personal_goals_profile_module");
 
         LearningRevisionConfiguration.Configure(modelBuilder);
+        LearningCvConfiguration.Configure(modelBuilder);
 
         // The M2 projection is excluded from Learning migrations. Lifecycle cascade and revision
         // ownership are approved explicitly; no catalogue FK, text uniqueness or retention TTL.
