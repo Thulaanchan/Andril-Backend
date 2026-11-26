@@ -360,7 +360,8 @@ public sealed partial class MapAttractionPersistenceTests
         WithDatabaseAsync(async connection =>
         {
             await using var context = CreateContext(connection);
-            await context.Database.ExecuteSqlRawAsync("DROP TABLE andril_hobbies.map_attractions");
+            await context.Database.ExecuteSqlRawAsync(
+                "ALTER TABLE andril_hobbies.map_attractions RENAME TO temporarily_unavailable_attractions");
             var repository = new MapAttractionRepository<HobbiesMapDbContext>(context);
             var attraction = CreateAttraction();
 
