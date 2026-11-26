@@ -4,6 +4,7 @@
   "lifecycleCases": [
     "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.Migration_IsMapOnlyForwardOnlyAndMatchesLifecycleModelOffline",
     "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.MigratedSchema_PreservesAttractionsAndRequiresExplicitStateWithIntegrity",
+    "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.PrivateMediaMigration_EnforcesScopedUniquenessFinalizationAndCleanup",
     "Andril.IntegrationTests.Database.MapAttractionLifecyclePersistenceTests.LifecycleMappingsAreRegisteredForMapSchema",
     "Andril.IntegrationTests.Database.MapAttractionLifecyclePersistenceTests.ProductionMapRuntimeRemainsInactiveAndFailClosed",
     "Andril.IntegrationTests.Database.MapAttractionLifecyclePersistenceTests.AmbientTransactionsAndPreCancellationNeverCreateAContext",
@@ -46,6 +47,7 @@
   ],
   "lifecycleDatabase": [
     "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.MigratedSchema_PreservesAttractionsAndRequiresExplicitStateWithIntegrity",
+    "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.PrivateMediaMigration_EnforcesScopedUniquenessFinalizationAndCleanup",
     "Andril.IntegrationTests.Database.MapAttractionLifecyclePersistenceTests.ChangesNoOpsAndExactRetriesPreserveVersionsSequencesAndOriginalEvidence",
     "Andril.IntegrationTests.Database.MapAttractionLifecyclePersistenceTests.ChangedRetryPayloadAndStaleVersionsCannotMutateState",
     "Andril.IntegrationTests.Database.MapAttractionLifecyclePersistenceTests.MissingStateAndMissingSchemaAreNeverProvisionedByTheWriter",
@@ -240,9 +242,9 @@
     "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.Service_LostCommitAcknowledgementRemainsUnknownUntilExplicitAuthorizedRetry"
   ],
   "expected": {
-    "livePostgreSql": 184,
+    "livePostgreSql": 185,
     "offline": 5,
-    "total": 189
+    "total": 190
   },
   "socialTestsIncluded": false
 }
