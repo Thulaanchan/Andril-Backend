@@ -55,11 +55,12 @@ public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivatePro
             if (membership?.Module != module) throw new ProfileAccessDeniedException();
             var policies = await db.PolicyRecords.AsNoTracking().Where(x => x.AccountId == accountId).ToArrayAsync(ct);
             validate(new(demographics, policies, membership));
+            // Keep profile edits serialized while allowing foreign-key checks from a second profile's transaction.
             var profile = authorizedAction is null
                 ? await db.PrivateProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId && x.Module == module, ct)
                 : await db.PrivateProfiles.FromSqlInterpolated($"""
                     SELECT * FROM andril_identity.private_module_profiles
-                    WHERE account_id = {accountId} AND module = {module} FOR UPDATE
+                    WHERE account_id = {accountId} AND module = {module} FOR NO KEY UPDATE
                     """).AsNoTracking().SingleOrDefaultAsync(ct);
             if (authorizedAction is not null)
                 await authorizedAction(profile ?? throw new ProfileMissingException());
