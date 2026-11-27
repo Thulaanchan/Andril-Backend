@@ -5,6 +5,8 @@ using Andril.Shared.Authentication;
 
 namespace Andril.API.Authorization.Hobbies;
 
+internal sealed record GalleryReadScope(Guid SubjectId, Guid AccountId, GalleryActor Actor);
+
 public sealed class AccountBackedGalleryActorResolver
 {
     private readonly ICurrentUser _currentUser;
@@ -27,6 +29,10 @@ public sealed class AccountBackedGalleryActorResolver
     }
 
     public async Task<GalleryActor?> ResolveAsync(
+        CancellationToken cancellationToken = default) =>
+        (await ResolveScopeAsync(cancellationToken))?.Actor;
+
+    internal async Task<GalleryReadScope?> ResolveScopeAsync(
         CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
@@ -64,9 +70,6 @@ public sealed class AccountBackedGalleryActorResolver
             return null;
         }
 
-        return new GalleryActor(
-            validProfileId,
-            "Hobbies",
-            true);
+        return new GalleryReadScope(subjectId, account.Id, new GalleryActor(validProfileId, "Hobbies", true));
     }
 }
