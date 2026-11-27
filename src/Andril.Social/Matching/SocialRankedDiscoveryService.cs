@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text.Json.Serialization;
+using Andril.Social.Entities;
 using Andril.Social.Personality;
 
 namespace Andril.Social.Matching;
@@ -434,26 +435,8 @@ public static class SocialRankedDiscoveryService
         if (a.ApproximateDistanceKm != b.ApproximateDistanceKm) return true;
         if (!a.CachedRevision.Equals(b.CachedRevision)) return true;
         if (!a.CommittedRevision.Equals(b.CommittedRevision)) return true;
-        if (!AreDisplayNamesSemanticallyEquivalent(a.DisplayName, b.DisplayName)) return true;
+        if (!string.Equals(a.DisplayName, b.DisplayName, StringComparison.Ordinal)) return true;
         return HasContradictoryEvidence(a.Evidence, b.Evidence);
-    }
-
-    private static bool AreDisplayNamesSemanticallyEquivalent(string a, string b)
-    {
-        if (string.Equals(a, b, StringComparison.Ordinal))
-        {
-            return true;
-        }
-
-        var baseA = a.TrimEnd('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ' ', '_', '-');
-        var baseB = b.TrimEnd('0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ' ', '_', '-');
-
-        if (!string.IsNullOrWhiteSpace(baseA) && string.Equals(baseA, baseB, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return false;
     }
 
     private static bool HasContradictoryEvidence(SocialScoringProfileEvidence a, SocialScoringProfileEvidence b)
@@ -467,6 +450,9 @@ public static class SocialRankedDiscoveryService
         if (!AreNullableGuidSetsEqual(a.ConfirmedSocialInterestIds, b.ConfirmedSocialInterestIds)) return true;
 
         if (!AreAnswersEqual(a.QuestionnaireAnswers, b.QuestionnaireAnswers)) return true;
+        if (!AreResponsesEqual(a.QuestionnaireResponse, b.QuestionnaireResponse)) return true;
+        if (!Equals(a.PartnerPreferences, b.PartnerPreferences)) return true;
+        if (!Equals(a.ArchetypeConfirmation, b.ArchetypeConfirmation)) return true;
 
         if (!string.Equals(a.QuestionnaireVersion, b.QuestionnaireVersion, StringComparison.Ordinal) ||
             !string.Equals(a.QuestionnaireRevision, b.QuestionnaireRevision, StringComparison.Ordinal))
@@ -496,10 +482,14 @@ public static class SocialRankedDiscoveryService
         if (listA is null && listB is null) return true;
         if (listA is null || listB is null) return false;
         if (listA.Count != listB.Count) return false;
-        for (var i = 0; i < listA.Count; i++)
+        var orderedA = listA.OrderBy(answer => answer?.QuestionId, StringComparer.Ordinal)
+            .ThenBy(answer => answer?.OptionId, StringComparer.Ordinal).ToArray();
+        var orderedB = listB.OrderBy(answer => answer?.QuestionId, StringComparer.Ordinal)
+            .ThenBy(answer => answer?.OptionId, StringComparer.Ordinal).ToArray();
+        for (var i = 0; i < orderedA.Length; i++)
         {
-            var a = listA[i];
-            var b = listB[i];
+            var a = orderedA[i];
+            var b = orderedB[i];
             if (a is null && b is null) continue;
             if (a is null || b is null) return false;
             if (!string.Equals(a.QuestionId, b.QuestionId, StringComparison.Ordinal) ||
@@ -509,5 +499,16 @@ public static class SocialRankedDiscoveryService
             }
         }
         return true;
+    }
+
+    private static bool AreResponsesEqual(QuestionnaireResponseEntity? a, QuestionnaireResponseEntity? b)
+    {
+        if (a is null || b is null) return a is null && b is null;
+        // Compare snapshot content, never object identity: separately materialized evidence
+        // for the same response must agree on ownership, state and every answer.
+        return a.Id == b.Id && a.ProfileId == b.ProfileId &&
+               string.Equals(a.Version, b.Version, StringComparison.Ordinal) &&
+               a.Status == b.Status && a.CreatedAtUtc == b.CreatedAtUtc &&
+               a.Answers.OrderBy(answer => answer.Id).SequenceEqual(b.Answers.OrderBy(answer => answer.Id));
     }
 }
