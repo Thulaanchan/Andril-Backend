@@ -429,6 +429,7 @@
     "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.PrivateMediaMigration_EnforcesScopedUniquenessFinalizationAndCleanup",
     "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.DurableModeration_RequiresAuditAndSerializesScopedDecisions",
     "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.RewardEligibility_RequiresDurableApprovalAndActiveHobbiesScope",
-    "Andril.IntegrationTests.Database.GalleryPersistenceTests.TrustedRead_UsesScopedPostgresRowsAndReauthorizesContinuation"
+    "Andril.IntegrationTests.Database.GalleryPersistenceTests.TrustedRead_UsesScopedPostgresRowsAndReauthorizesContinuation",
+    "Andril.IntegrationTests.Database.GalleryPersistenceTests.MetadataHttp_PostgresScopesDetailAndTraversesProtectedContinuation"
   ]
 }
