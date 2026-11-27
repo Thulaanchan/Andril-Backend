@@ -122,6 +122,12 @@ public sealed class PostgresNotificationRepository
             return false;
         }
 
+        if (readAtUtc == default)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(readAtUtc));
+        }
+
         var utc = readAtUtc.ToUniversalTime();
 
         // This read is restricted to the exact recipient
