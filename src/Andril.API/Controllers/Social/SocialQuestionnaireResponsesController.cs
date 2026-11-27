@@ -195,7 +195,7 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
         }
     }
 
-    private static readonly HashSet<string> SafeValidationCodes = new(StringComparer.OrdinalIgnoreCase)
+    private static readonly HashSet<string> SafeValidationCodes = new(StringComparer.Ordinal)
     {
         "INVALID_SUBMISSION",
         "VERSION_MISMATCH",
@@ -292,24 +292,29 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
         return "Failed to parse questionnaire submission.";
     }
 
-    private static bool IsSafeUserActionableError(string error)
+    private static readonly IReadOnlyDictionary<string, string> RequiredAnswerMessages =
+        QuestionnaireV1Definition.Create().Questions
+            .Where(question => question.IsRequired)
+            .ToDictionary(
+                question => $"Incomplete answers: question '{question.Id}' is required.",
+                question => $"Incomplete answers: question '{question.Id}' is required.",
+                StringComparer.Ordinal);
+
+    private static string? SanitizeValidationError(string error)
     {
         if (string.IsNullOrWhiteSpace(error) || ContainsSensitiveDiagnostics(error))
         {
-            return false;
+            return null;
         }
 
-        if (SafeValidationCodes.Contains(error))
+        if (SafeValidationCodes.TryGetValue(error, out var code))
         {
-            return true;
+            return code;
         }
 
-        if (error.StartsWith("Incomplete answers", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return false;
+        // Exact canonical membership rejects unknown IDs, suffixes and multiline diagnostics.
+        // Return server-constructed feedback rather than forwarding the diagnostic input.
+        return RequiredAnswerMessages.TryGetValue(error, out var message) ? message : null;
     }
 
     private static bool ContainsSensitiveDiagnostics(string text)
@@ -346,7 +351,8 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
             if (!result.IsSuccess)
             {
                 var safeErrors = result.Errors
-                    .Where(IsSafeUserActionableError)
+                    .Select(SanitizeValidationError)
+                    .Where(error => error is not null)
                     .ToArray();
 
                 var detail = safeErrors.Length > 0
