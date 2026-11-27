@@ -6,7 +6,7 @@ using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.OpenApi;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddControllers();
+builder.Services.AddControllers().AddControlledSocialQuestionnaireResponses(builder.Configuration);
 builder.Services.AddProblemDetails();
 builder.Services.AddSupabaseAuthentication(builder.Configuration);
 builder.Services.AddAccounts(builder.Configuration);
