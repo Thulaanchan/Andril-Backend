@@ -23,7 +23,7 @@ internal sealed class LearningActivitiesPostgresFixture : IAsyncDisposable
             if (Unavailable) return new(LearningActivityPermissionOutcome.Unavailable, []);
             if (Denied) return new(LearningActivityPermissionOutcome.Denied, []);
             // Isolated synthetic authority only; not production target/offer/M5 evidence.
-            var participants = kind is LearningActivityKind.SkillExchange or LearningActivityKind.Pact or LearningActivityKind.MentorshipRequest
+            var participants = kind is LearningActivityKind.SkillExchange or LearningActivityKind.Pact or LearningActivityKind.MentorshipRequest or LearningActivityKind.Connection
                 ? new[] { actor, peer } : new[] { actor };
             return new(LearningActivityPermissionOutcome.Allowed, participants);
         }
@@ -75,6 +75,13 @@ REVOKE ALL ON ALL TABLES IN SCHEMA andril_learning_activities_isolated FROM PUBL
         => new(new DbContextOptionsBuilder<LearningDbContext>().UseNpgsql(connection).Options,
             Shared.Owner, Shared.Owner, Shared.Owner, Authority) { TestCheckpoint = checkpoint };
 
+    internal DbContextOptions<LearningDbContext> LearningOptions()
+        => new DbContextOptionsBuilder<LearningDbContext>().UseNpgsql(connection).Options;
+
+    internal IsolatedLearningActivitiesRepository RepositoryFor(DiaryPostgresFixture.Authority actor, ILearningActivityAuthority authority,
+        Func<string, CancellationToken, Task>? checkpoint = null)
+        => new(LearningOptions(), actor, actor, actor, authority) { TestCheckpoint = checkpoint };
+
     internal CreateLearningActivityRequest Request(LearningActivityKind kind) => kind switch
     {
         LearningActivityKind.SkillExchange => new([Peer.ProfileId], Guid.NewGuid(), Guid.NewGuid()),
@@ -82,6 +89,7 @@ REVOKE ALL ON ALL TABLES IN SCHEMA andril_learning_activities_isolated FROM PUBL
         LearningActivityKind.GrowthSelfReport => new(SkillIds: [Guid.NewGuid()]),
         LearningActivityKind.MentorshipRequest => new([Peer.ProfileId], RelatedOfferId: Guid.NewGuid()),
         LearningActivityKind.Circle => new(CircleId: Guid.NewGuid()),
+        LearningActivityKind.Connection => new([Peer.ProfileId]),
         _ => new()
     };
 

@@ -2,6 +2,7 @@ using Andril.Learning.Circles;
 using Andril.Learning.Growth;
 using Andril.Learning.Pacts;
 using Andril.Learning.SkillExchange;
+using Andril.Learning.Connections;
 using System.Text.Json.Serialization;
 using Exchange = Andril.Learning.SkillExchange.SkillExchange;
 
@@ -37,6 +38,7 @@ public sealed class LearningActivityState
             LearningActivityKind.MentorshipRequest => request.OfferedSkillId != Guid.Empty || request.WantedSkillId != Guid.Empty || request.Commitments is not null || request.SkillIds is not null || request.CircleId is not null,
             LearningActivityKind.MentorshipOffer => request.OfferedSkillId != Guid.Empty || request.WantedSkillId != Guid.Empty || request.Commitments is not null || request.SkillIds is not null || request.RelatedOfferId is not null || request.CircleId is not null,
             LearningActivityKind.Circle => request.OfferedSkillId != Guid.Empty || request.WantedSkillId != Guid.Empty || request.Commitments is not null || request.SkillIds is not null || request.RelatedOfferId is not null || request.TargetProfiles is { Length: > 0 },
+            LearningActivityKind.Connection => request.OfferedSkillId != Guid.Empty || request.WantedSkillId != Guid.Empty || request.Commitments is not null || request.SkillIds is not null || request.RelatedOfferId is not null || request.CircleId is not null,
             _ => true
         };
         if (unsupported) throw new ArgumentException("Fields are not supported for this activity kind.", nameof(request));
@@ -48,7 +50,7 @@ public sealed class LearningActivityState
         var targets = request.TargetProfiles ?? [];
         if (targets.Any(x => x == Guid.Empty) || targets.Distinct().Count() != targets.Length || targets.Contains(actor.ProfileId))
             throw new ArgumentException("Selected Learning profiles must be distinct.");
-        if (kind is LearningActivityKind.SkillExchange or LearningActivityKind.MentorshipRequest)
+        if (kind is LearningActivityKind.SkillExchange or LearningActivityKind.MentorshipRequest or LearningActivityKind.Connection)
         {
             if (members.Length != 2 || targets.Length != 1 || !members.Any(x => x.ProfileId == targets[0]))
                 throw new ArgumentException("An authorized counterpart is required.");
@@ -162,6 +164,18 @@ public sealed class LearningActivityState
                 if (Events.Count != 0) throw new NotSupportedException("The offer mutation policy is not established.");
                 break;
             case LearningActivityKind.MentorshipRequest: status = RestoreMentorship().Status.ToString(); break;
+            case LearningActivityKind.Connection:
+                var connection = LearningConnection.Request(Id, Creator, Members.Single(x => x != Creator));
+                foreach (var e in Events)
+                    switch (e.Action)
+                    {
+                        case LearningActivityAction.Accept: connection.Accept(e.Actor); break;
+                        case LearningActivityAction.Decline: connection.Decline(e.Actor); break;
+                        case LearningActivityAction.Cancel: connection.Cancel(e.Actor); break;
+                        case LearningActivityAction.Disconnect: connection.Disconnect(e.Actor); break;
+                        default: throw new ArgumentException("Unsupported Learning connection transition.");
+                    }
+                status = connection.Status.ToString(); break;
             case LearningActivityKind.Circle:
                 var circle = new LearningCircle(Id); var ids = new Dictionary<Guid, Guid>();
                 foreach (var e in Events)
