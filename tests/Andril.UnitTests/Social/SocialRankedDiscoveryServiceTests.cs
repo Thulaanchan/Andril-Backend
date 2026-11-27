@@ -363,14 +363,14 @@ public sealed class SocialRankedDiscoveryServiceTests
     }
 
     [Fact]
-    public void DiscoverAuthoritativeRankedCards_DuplicateCandidateIdentities_RejectsDuplicates()
+    public void DiscoverAuthoritativeRankedCards_DuplicateCandidateIdentities_DeduplicatesIdenticalEvidence()
     {
         var caller = CreateProfile();
         var callerSnap = CreateSnapshot(caller.ProfileId);
 
         var cand = CreateProfile();
-        var candItem1 = CreateCandidateItem(cand, displayName: "CandidateDuplicate1");
-        var candItem2 = CreateCandidateItem(cand, displayName: "CandidateDuplicate2");
+        var candItem1 = CreateCandidateItem(cand, displayName: "CandidateDuplicate");
+        var candItem2 = CreateCandidateItem(cand, displayName: "CandidateDuplicate");
 
         var result = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
             caller, callerSnap, callerSnap, new[] { candItem1, candItem2 });
