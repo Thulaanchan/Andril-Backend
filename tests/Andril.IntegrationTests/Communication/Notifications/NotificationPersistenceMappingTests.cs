@@ -2,7 +2,9 @@
 using System;
 using System.Linq;
 using System.Reflection;
+using Andril.Communication.Notifications;
 using Andril.Persistence.DbContexts;
+using Andril.Persistence.Repositories.Communication;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.EntityFrameworkCore.Metadata.Conventions;
@@ -17,6 +19,144 @@ public sealed class NotificationPersistenceMappingTests
 
     private const string ExpectedTable =
         "notifications";
+
+    private static readonly Guid ReconstructionProfileId =
+        Guid.Parse("38000000-0000-0000-0000-000000000100");
+
+    private static readonly DateTimeOffset ReconstructionCreatedAt =
+        new(2026, 11, 28, 2, 0, 0, TimeSpan.Zero);
+
+    [Theory]
+    [InlineData("learning", NotificationModule.Learning, false, "38000000-0000-0000-0000-000000000001")]
+    [InlineData("learning", NotificationModule.Learning, true, "38000000-0000-0000-0000-000000000002")]
+    [InlineData("hobbies", NotificationModule.Hobbies, false, "38000000-0000-0000-0000-000000000003")]
+    [InlineData("hobbies", NotificationModule.Hobbies, true, "38000000-0000-0000-0000-000000000004")]
+    [InlineData("social", NotificationModule.Social, false, "38000000-0000-0000-0000-000000000005")]
+    [InlineData("social", NotificationModule.Social, true, "38000000-0000-0000-0000-000000000006")]
+    public void ToDomain_ShouldPreservePrivateScopeFieldsAndReadState(
+        string storedModule, NotificationModule expectedModule, bool isRead, string notificationId)
+    {
+        var convert = ResolveToDomain();
+        var id = Guid.Parse(notificationId);
+        var title = $"N38 {storedModule} {isRead} title";
+        string? preview = isRead ? $"N38 {storedModule} read preview" : null;
+        var expectedReadAt = ReconstructionCreatedAt.AddMinutes(15);
+        var record = CreateReconstructionRecord(storedModule, id, title, preview, isRead);
+        Assert.NotNull(record);
+        var before = Snapshot(record);
+
+        var notification = convert(record);
+
+        Assert.NotNull(notification);
+        Assert.Equal(id, notification.Id);
+        Assert.Equal(expectedModule, notification.RecipientScope.Module);
+        Assert.Equal(ReconstructionProfileId, notification.RecipientScope.RecipientModuleProfileId);
+        Assert.Equal(new NotificationModuleScope(expectedModule, ReconstructionProfileId),
+            notification.RecipientScope);
+        Assert.Equal("message", notification.Type);
+        Assert.Equal(title, notification.Title);
+        Assert.Equal(preview, notification.Preview);
+        Assert.Equal(ReconstructionCreatedAt, notification.CreatedAtUtc);
+        Assert.Equal(TimeSpan.Zero, notification.CreatedAtUtc.Offset);
+        if (isRead)
+        {
+            Assert.Equal(expectedReadAt, record.ReadAtUtc);
+            Assert.Equal(expectedReadAt, notification.ReadAtUtc);
+            Assert.Equal(record.ReadAtUtc, notification.ReadAtUtc);
+            Assert.Equal(TimeSpan.Zero, notification.ReadAtUtc!.Value.Offset);
+            Assert.True(notification.IsRead);
+        }
+        else
+        {
+            Assert.Null(record.ReadAtUtc);
+            Assert.Null(notification.ReadAtUtc);
+            Assert.False(notification.IsRead);
+        }
+
+        Assert.Equal(before, Snapshot(record));
+        AssertPairwiseReconstructedScopes(convert);
+    }
+
+    [Fact]
+    public void ToDomain_UnsupportedModule_ShouldRejectWithoutPrivateDiagnosticsOrMutation()
+    {
+        // Resolve/validate reflection infrastructure outside the rejection assertion.
+        var convert = ResolveToDomain();
+        const string title = "PRIVATE_N38_TITLE_7F4D";
+        const string preview = "PRIVATE_N38_PREVIEW_8A1C";
+        const string type = "PRIVATE_N38_KIND_9B2E";
+        var id = Guid.Parse("38000000-0000-0000-0000-000000000099");
+        var record = NotificationPersistenceRecord.Create(id, ReconstructionProfileId,
+            "unknown-module", type, title, preview, ReconstructionCreatedAt);
+        var before = Snapshot(record);
+        NotificationEntry? result = null;
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+        {
+            result = convert(record);
+        });
+
+        // No returned object means no fallback identity in any module.
+        Assert.Null(result);
+        var diagnostic = exception.ToString();
+        foreach (var sentinel in new[] { title, preview, type, id.ToString("D"),
+                     ReconstructionProfileId.ToString("D") })
+        {
+            Assert.DoesNotContain(sentinel, diagnostic, StringComparison.OrdinalIgnoreCase);
+        }
+        Assert.Equal(before, Snapshot(record));
+    }
+
+    private static Func<NotificationPersistenceRecord, NotificationEntry> ResolveToDomain()
+    {
+        var method = Assert.Single(typeof(PostgresNotificationRepository)
+            .GetMethods(BindingFlags.NonPublic | BindingFlags.Static),
+            candidate => candidate.Name == "ToDomain");
+        Assert.True(method.IsPrivate);
+        Assert.True(method.IsStatic);
+        Assert.Equal(typeof(NotificationEntry), method.ReturnType);
+        Assert.Equal(typeof(NotificationPersistenceRecord), Assert.Single(method.GetParameters()).ParameterType);
+        // A direct delegate invokes the real static converter without a
+        // TargetInvocationException wrapper; production exceptions stay intact.
+        return method.CreateDelegate<Func<NotificationPersistenceRecord, NotificationEntry>>();
+    }
+
+    private static NotificationPersistenceRecord CreateReconstructionRecord(
+        string storedModule, Guid id, string title, string? preview, bool isRead)
+    {
+        var record = NotificationPersistenceRecord.Create(id, ReconstructionProfileId,
+            storedModule, "message", title, preview, ReconstructionCreatedAt);
+        if (isRead)
+            record.MarkAsRead(ReconstructionCreatedAt.AddMinutes(15));
+        return record;
+    }
+
+    private static (Guid Id, Guid Profile, string Module, string Type, string Title,
+        string? Preview, DateTimeOffset Created, DateTimeOffset? Read, bool IsRead)
+        Snapshot(NotificationPersistenceRecord record) =>
+        (record.Id, record.RecipientModuleProfileId, record.Module, record.Type, record.Title,
+            record.Preview, record.CreatedAtUtc, record.ReadAtUtc, record.IsRead);
+
+    private static void AssertPairwiseReconstructedScopes(
+        Func<NotificationPersistenceRecord, NotificationEntry> convert)
+    {
+        var learning = convert(CreateReconstructionRecord("learning",
+            Guid.Parse("38000000-0000-0000-0000-000000000101"), "N38 Learning", null, false)).RecipientScope;
+        var hobbies = convert(CreateReconstructionRecord("hobbies",
+            Guid.Parse("38000000-0000-0000-0000-000000000102"), "N38 Hobbies", null, false)).RecipientScope;
+        var social = convert(CreateReconstructionRecord("social",
+            Guid.Parse("38000000-0000-0000-0000-000000000103"), "N38 Social", null, false)).RecipientScope;
+
+        Assert.Equal(NotificationModule.Learning, learning.Module);
+        Assert.Equal(NotificationModule.Hobbies, hobbies.Module);
+        Assert.Equal(NotificationModule.Social, social.Module);
+        Assert.Equal(ReconstructionProfileId, learning.RecipientModuleProfileId);
+        Assert.Equal(ReconstructionProfileId, hobbies.RecipientModuleProfileId);
+        Assert.Equal(ReconstructionProfileId, social.RecipientModuleProfileId);
+        Assert.NotEqual(learning, hobbies);
+        Assert.NotEqual(learning, social);
+        Assert.NotEqual(hobbies, social);
+    }
 
     private static IMutableEntityType BuildMappedEntity()
     {
