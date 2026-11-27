@@ -221,12 +221,8 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
     {
         if (RuntimeConnection.Length > 0)
         {
-            foreach (var size in new[] { 1, 4, 16 })
-            {
-                var b = new NpgsqlConnectionStringBuilder(RuntimeConnection) { MaxPoolSize = size };
-                using var pool = new NpgsqlConnection(b.ConnectionString);
-                NpgsqlConnection.ClearPool(pool);
-            }
+            using var pool = new NpgsqlConnection(RuntimeConnection);
+            NpgsqlConnection.ClearPool(pool);
         }
         if (MigrationConnection.Length > 0)
         {
@@ -238,6 +234,7 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
             using var pool = new NpgsqlConnection(connStr);
             NpgsqlConnection.ClearPool(pool);
         }
+        NpgsqlConnection.ClearAllPools();
         if (created)
         {
             try
