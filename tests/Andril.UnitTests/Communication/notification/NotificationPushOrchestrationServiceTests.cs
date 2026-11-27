@@ -467,6 +467,65 @@ public sealed class NotificationPushOrchestrationServiceTests
         Assert.Equal(0, f.Sender.Calls);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PreferenceScopeMismatch_ShouldDenyBeforeDeviceAndSender(
+        bool differentModule)
+    {
+        var f = CreateFixture();
+        var test = PrepareAuthorizedPath(
+            f.Access, f.Repository, f.Preferences, f.Devices);
+        var preferenceScope = differentModule
+            ? new NotificationModuleScope(NotificationModule.Hobbies,
+                test.Scope.RecipientModuleProfileId)
+            : new NotificationModuleScope(NotificationModule.Learning,
+                Guid.NewGuid());
+        f.Preferences.Value = new NotificationChannelPreferences(
+            preferenceScope, inAppEnabled: true, pushEnabled: true,
+            emailEnabled: true);
+        var cancellationToken = CancellationToken.None;
+
+        Assert.NotEqual(Guid.Empty, test.AccountId);
+        Assert.NotEqual(Guid.Empty, test.NotificationId);
+        Assert.NotEqual(Guid.Empty, test.DeviceId);
+        Assert.Equal(NotificationModule.Learning, test.Scope.Module);
+        Assert.Equal(test.Scope, f.Access.Scope);
+        Assert.False(f.Access.ThrowOnResolve);
+        Assert.Equal(test.NotificationId, f.Repository.Entry!.Id);
+        Assert.Equal(test.Scope, f.Repository.Entry.RecipientScope);
+        Assert.True(f.Preferences.Value.PushEnabled);
+        Assert.True(f.Devices.Authorized);
+        Assert.False(cancellationToken.IsCancellationRequested);
+
+        if (differentModule)
+        {
+            Assert.NotEqual(test.Scope.Module, preferenceScope.Module);
+            Assert.Equal(test.Scope.RecipientModuleProfileId,
+                preferenceScope.RecipientModuleProfileId);
+        }
+        else
+        {
+            Assert.Equal(test.Scope.Module, preferenceScope.Module);
+            Assert.NotEqual(test.Scope.RecipientModuleProfileId,
+                preferenceScope.RecipientModuleProfileId);
+        }
+
+        var result = await f.Service.TrySendAsync(test.AccountId,
+            NotificationModule.Learning, test.NotificationId, test.DeviceId,
+            cancellationToken);
+
+        Assert.Equal(NotificationPushOutcome.NotSent, result.Outcome);
+        Assert.False(result.WasAccepted);
+        Assert.Equal(1, f.Access.Calls);
+        Assert.Equal(1, f.Repository.FindCalls);
+        Assert.Equal(test.Scope, f.Repository.LastScope);
+        Assert.Equal(test.NotificationId, f.Repository.LastId);
+        Assert.Equal(1, f.Preferences.Calls);
+        Assert.Equal(0, f.Devices.Calls);
+        Assert.Equal(0, f.Sender.Calls);
+    }
+
     [Fact]
     public async Task PushDisabled_ShouldNeverSend()
     {
