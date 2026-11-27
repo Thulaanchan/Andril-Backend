@@ -819,6 +819,109 @@ public sealed class SocialQuestionnaireResponsesControllerTests
 
     #endregion
 
+    public static IEnumerable<object[]> ApprovedValidationFeedback()
+    {
+        foreach (var code in new[] { "INVALID_SUBMISSION", "VERSION_MISMATCH", "SKIP_WITH_ANSWERS",
+                     "INVALID_ANSWER", "DUPLICATE_ANSWER", "UNKNOWN_QUESTION", "INVALID_OPTION",
+                     "INCOMPLETE_ANSWERS", "NOT_FOUND" })
+            yield return [code];
+
+        foreach (var question in QuestionnaireV1Definition.Create().Questions)
+            yield return [$"Incomplete answers: question '{question.Id}' is required."];
+    }
+
+    [Theory]
+    [MemberData(nameof(ApprovedValidationFeedback))]
+    public async Task ValidationFeedback_OnlyExactApprovedMessagesReachProblemDetails(string message)
+    {
+        var controller = new SocialQuestionnaireResponsesController(
+            new StubSubmissionOrchestrator(SocialQuestionnairePersistentSubmissionResult.ValidationFailed(
+                QuestionnaireParticipationStatus.InProgress, [message])), new StubLifecycleAccessService());
+
+        var result = await controller.SubmitResponse(
+            new QuestionnaireSubmission("v1", []), CancellationToken.None);
+
+        var problem = Assert.IsType<ProblemDetails>(Assert.IsType<BadRequestObjectResult>(result.Result).Value);
+        Assert.Equal(400, problem.Status);
+        Assert.Equal(message, problem.Detail);
+        using var serialized = JsonDocument.Parse(JsonSerializer.Serialize(problem));
+        Assert.Equal(message, serialized.RootElement.GetProperty("detail").GetString());
+    }
+
+    [Theory]
+    [InlineData("Incomplete answers: question 'q99' is required.")]
+    [InlineData("Incomplete answers: question 'Q02' is required.")]
+    [InlineData("Incomplete answers: question 'q2' is required.")]
+    [InlineData("Incomplete answers: question 'q02' is required. amber-orchid-728")]
+    [InlineData("Incomplete answers: question 'q05' is required.\namber-orchid-728")]
+    [InlineData("Incomplete answers: question 'q05' is required.\r\namber-orchid-728")]
+    [InlineData("Incomplete answers amber-orchid-728")]
+    [InlineData("Incomplete answers: question 'q02' is required.\u2028amber-orchid-728")]
+    [InlineData("INVALID_OPTION amber-orchid-728")]
+    [InlineData("INVALID_OPTION\namber-orchid-728")]
+    [InlineData("invalid_option")]
+    [InlineData("amber-orchid-728")]
+    public async Task ValidationFeedback_UnknownOrExtendedMessagesAreNeverSerialized(string diagnostic)
+    {
+        var controller = new SocialQuestionnaireResponsesController(
+            new StubSubmissionOrchestrator(SocialQuestionnairePersistentSubmissionResult.ValidationFailed(
+                QuestionnaireParticipationStatus.InProgress, [diagnostic])), new StubLifecycleAccessService());
+        using var payload = JsonDocument.Parse("""{"version":"v1","answers":[]}""");
+
+        var result = await controller.SubmitResponse(payload.RootElement, CancellationToken.None);
+
+        var problem = Assert.IsType<ProblemDetails>(Assert.IsType<BadRequestObjectResult>(result.Result).Value);
+        Assert.Equal("Questionnaire submission failed validation.", problem.Detail);
+        var serialized = JsonSerializer.Serialize(problem);
+        Assert.DoesNotContain("amber-orchid-728", serialized);
+        Assert.DoesNotContain(diagnostic, problem.Detail);
+    }
+
+    [Fact]
+    public async Task ValidationFeedback_MixedDiagnosticsRetainOnlyApprovedMessagesInOrder()
+    {
+        const string required = "Incomplete answers: question 'q05' is required.";
+        var controller = new SocialQuestionnaireResponsesController(
+            new StubSubmissionOrchestrator(SocialQuestionnairePersistentSubmissionResult.ValidationFailed(
+                QuestionnaireParticipationStatus.InProgress,
+                [required + " amber-orchid-728", "INVALID_OPTION", required, "amber-orchid-728"])),
+            new StubLifecycleAccessService());
+
+        var result = await controller.SubmitResponse(new QuestionnaireSubmission("v1", []), CancellationToken.None);
+
+        var problem = Assert.IsType<ProblemDetails>(Assert.IsType<BadRequestObjectResult>(result.Result).Value);
+        Assert.Equal($"INVALID_OPTION; {required}", problem.Detail);
+        Assert.DoesNotContain("amber-orchid-728", JsonSerializer.Serialize(problem));
+    }
+
+    [Theory]
+    [InlineData(false, QuestionnaireParticipationStatus.Completed)]
+    [InlineData(true, QuestionnaireParticipationStatus.Skipped)]
+    public async Task ValidationAllowlisting_PreservesSuccessfulSubmissionAndCancellation(
+        bool skip, QuestionnaireParticipationStatus status)
+    {
+        var responseId = Guid.NewGuid();
+        var orchestrator = new StubSubmissionOrchestrator(
+            SocialQuestionnairePersistentSubmissionResult.Success(responseId, status));
+        var controller = new SocialQuestionnaireResponsesController(orchestrator, new StubLifecycleAccessService());
+        var answers = skip ? Array.Empty<QuestionnaireAnswer>() : QuestionnaireV1Definition.Create().Questions
+            .Select(question => new QuestionnaireAnswer(question.Id, "3")).ToArray();
+        var submission = new QuestionnaireSubmission("v1", answers, Skip: skip);
+
+        var result = await controller.SubmitResponse(submission, CancellationToken.None);
+
+        var dto = Assert.IsType<SocialQuestionnaireSubmissionResponseDto>(Assert.IsType<OkObjectResult>(result.Result).Value);
+        Assert.Equal(responseId, dto.ResponseId);
+        Assert.Equal(status.ToString(), dto.Status);
+        Assert.Same(submission, orchestrator.LastSubmission);
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => controller.SubmitResponse(submission, cancellation.Token));
+        Assert.NotNull(typeof(SocialQuestionnaireResponsesController).GetCustomAttribute<NonControllerAttribute>());
+        Assert.NotNull(typeof(SocialQuestionnaireResponsesController).GetMethod(nameof(controller.SubmitResponse),
+            [typeof(QuestionnaireSubmission), typeof(CancellationToken)])!.GetCustomAttribute<NonActionAttribute>());
+    }
+
     #region Helpers & Test Doubles
 
     private static QuestionnaireResponseEntity CreateTestResponseEntity(Guid profileId)
