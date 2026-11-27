@@ -11,9 +11,11 @@ namespace Andril.Persistence.DbContexts;
 internal sealed class IsolatedLearningAiDbContext(DbContextOptions<IsolatedLearningAiDbContext> options) : DbContext(options)
 {
     internal const string Schema = "andril_ai_isolated";
-    protected override void OnModelCreating(ModelBuilder m)
+    protected override void OnModelCreating(ModelBuilder m) => ConfigureModel(m, Schema);
+
+    internal static void ConfigureModel(ModelBuilder m, string schema)
     {
-        m.HasDefaultSchema(Schema);
+        m.HasDefaultSchema(schema);
         var partner = m.Entity<IsolatedLearningPartnerDiscoveryRow>();
         partner.ToTable("learning_partner_discovery", t =>
         {
