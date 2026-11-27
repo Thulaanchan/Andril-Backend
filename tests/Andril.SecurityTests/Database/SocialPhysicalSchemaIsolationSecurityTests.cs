@@ -25,14 +25,18 @@ public sealed class SocialPhysicalSchemaIsolationSecurityTests
     [
         typeof(QuestionnaireResponseEntity).FullName,
         typeof(QuestionnaireAnswerEntity).FullName,
-        "Andril.Persistence.DbContexts.SocialQuestionnaireCurrentResponse"
+        "Andril.Persistence.DbContexts.SocialQuestionnaireCurrentResponse",
+        "Andril.Persistence.DbContexts.SocialDirectionalInterestRow",
+        "Andril.Persistence.DbContexts.SocialMatchRow"
     ];
 
     private static readonly string[] AllowedTables =
     [
         "social_questionnaire_responses",
         "social_questionnaire_answers",
-        "social_questionnaire_current_responses"
+        "social_questionnaire_current_responses",
+        "social_directional_interests",
+        "social_matches"
     ];
 
     [Fact]

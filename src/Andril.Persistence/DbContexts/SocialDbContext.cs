@@ -83,6 +83,54 @@ public sealed class SocialDbContext : DbContext
                 .HasConstraintName("fk_social_questionnaire_current_response");
         });
 
+        modelBuilder.Entity<SocialDirectionalInterestRow>(b =>
+        {
+            b.ToTable("social_directional_interests", Schema, table =>
+            {
+                table.HasCheckConstraint("ck_social_interest_module", "module = 'social'");
+                table.HasCheckConstraint("ck_social_interest_distinct", "actor_profile_id <> target_profile_id");
+                table.HasCheckConstraint("ck_social_interest_timestamp", "isfinite(recorded_at_utc)");
+            });
+            b.HasKey(row => new { row.ActorProfileId, row.TargetProfileId }).HasName("pk_social_directional_interests");
+            b.HasIndex(row => row.TargetProfileId).HasDatabaseName("ix_social_interests_target");
+            b.Property(row => row.ActorProfileId).HasColumnName("actor_profile_id");
+            b.Property(row => row.TargetProfileId).HasColumnName("target_profile_id");
+            b.Property(row => row.Module).HasColumnName("module").HasMaxLength(16).IsRequired();
+            b.Property(row => row.IsPositive).HasColumnName("is_positive");
+            b.Property(row => row.RecordedAtUtc).HasColumnName("recorded_at_utc");
+            b.Property<uint>("RowVersion").HasColumnName("xmin").IsRowVersion();
+        });
+
+        modelBuilder.Entity<SocialMatchRow>(b =>
+        {
+            b.ToTable("social_matches", Schema, table =>
+            {
+                table.HasCheckConstraint("ck_social_match_id", "id <> '00000000-0000-0000-0000-000000000000'::uuid");
+                table.HasCheckConstraint("ck_social_match_module", "module = 'social'");
+                table.HasCheckConstraint("ck_social_match_canonical_pair", "first_profile_id < second_profile_id");
+                table.HasCheckConstraint("ck_social_match_state", """
+                    isfinite(created_at_utc) AND (
+                        (state = 'active' AND revoked_at_utc IS NULL) OR
+                        (state = 'revoked' AND revoked_at_utc IS NOT NULL AND isfinite(revoked_at_utc) AND revoked_at_utc >= created_at_utc)
+                    )
+                    """);
+            });
+            b.HasKey(row => row.Id).HasName("pk_social_matches");
+            b.HasIndex(row => new { row.FirstProfileId, row.SecondProfileId })
+                .HasDatabaseName("ix_social_matches_pair");
+            b.HasIndex(row => row.SecondProfileId).HasDatabaseName("ix_social_matches_second");
+            b.HasIndex(row => new { row.FirstProfileId, row.SecondProfileId }, "UX_SocialMatchActivePair")
+                .IsUnique().HasFilter("state = 'active'").HasDatabaseName("ux_social_matches_active_pair");
+            b.Property(row => row.Id).HasColumnName("id").ValueGeneratedNever();
+            b.Property(row => row.FirstProfileId).HasColumnName("first_profile_id");
+            b.Property(row => row.SecondProfileId).HasColumnName("second_profile_id");
+            b.Property(row => row.Module).HasColumnName("module").HasMaxLength(16).IsRequired();
+            b.Property(row => row.State).HasColumnName("state").HasMaxLength(16).IsRequired();
+            b.Property(row => row.CreatedAtUtc).HasColumnName("created_at_utc");
+            b.Property(row => row.RevokedAtUtc).HasColumnName("revoked_at_utc");
+            b.Property<uint>("RowVersion").HasColumnName("xmin").IsRowVersion();
+        });
+
         modelBuilder.Entity<QuestionnaireAnswerEntity>(b =>
         {
             b.ToTable("social_questionnaire_answers", Schema, t =>
@@ -110,4 +158,24 @@ internal sealed class SocialQuestionnaireCurrentResponse(Guid profileId, Guid re
     public Guid ProfileId { get; private set; } = profileId;
     public Guid ResponseId { get; private set; } = responseId;
     public string Module { get; private set; } = "social";
+}
+
+internal sealed class SocialDirectionalInterestRow(Guid actorProfileId, Guid targetProfileId, bool isPositive, DateTime recordedAtUtc)
+{
+    public Guid ActorProfileId { get; private set; } = actorProfileId;
+    public Guid TargetProfileId { get; private set; } = targetProfileId;
+    public string Module { get; private set; } = "social";
+    public bool IsPositive { get; private set; } = isPositive;
+    public DateTime RecordedAtUtc { get; private set; } = recordedAtUtc;
+}
+
+internal sealed class SocialMatchRow(Guid id, Guid firstProfileId, Guid secondProfileId, DateTime createdAtUtc)
+{
+    public Guid Id { get; private set; } = id;
+    public Guid FirstProfileId { get; private set; } = firstProfileId;
+    public Guid SecondProfileId { get; private set; } = secondProfileId;
+    public string Module { get; private set; } = "social";
+    public string State { get; private set; } = "active";
+    public DateTime CreatedAtUtc { get; private set; } = createdAtUtc;
+    public DateTime? RevokedAtUtc { get; private set; }
 }
