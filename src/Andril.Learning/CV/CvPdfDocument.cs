@@ -4,8 +4,8 @@ using System.Text.Json.Serialization;
 
 namespace Andril.Learning.CV;
 
-/// <summary>In-memory, private structural PDF snapshot. Not an authorization grant or a full
-/// field renderer. Uses the same allowlist as preview; unclassified text is never embedded,
+/// <summary>In-memory private PDF snapshot of approved printable-ASCII structured fields.
+/// Not an authorization grant. Uses the same allowlist as preview; unclassified text is never embedded,
 /// including in metadata, annotations or hidden streams. No files, fonts, URLs or resources
 /// are fetched. Future approved Unicode field rendering needs a separate font/layout contract.</summary>
 public sealed class CvPdfDocument
@@ -26,28 +26,47 @@ public sealed class CvPdfDocument
             CvTemplate.Creative => "Courier",
             _ => "Helvetica"
         };
+        var pages = new List<string[]>();
+        for (var part = 0; part < 2; part++)
+        {
+            var lines = new List<string>();
+            foreach (var section in projection.Sections.Skip(part * 4).Take(4))
+            {
+                lines.Add(section);
+                foreach (var field in projection.Content[section])
+                    foreach (var line in field.Replace("\r\n","\n").Replace('\r','\n').Split('\n'))
+                    {
+                        // Built-in PDF fonts have a deliberately explicit supported alphabet.
+                        // Never replace unsupported Unicode with '?' or discard stored content.
+                        if (line.Any(c => c < ' ' || c > '~')) throw new NotSupportedException("A verified embedded font is required for this PDF content.");
+                        if (line.Length == 0) lines.Add("");
+                        else for (var offset = 0; offset < line.Length; offset += 86) lines.Add(line.Substring(offset,Math.Min(86,line.Length-offset)));
+                    }
+                lines.Add("");
+            }
+            foreach (var page in lines.Chunk(42)) pages.Add(page);
+        }
+        var kids = string.Join(" ",Enumerable.Range(0,pages.Count).Select(p => $"{4+p*2} 0 R"));
         var objects = new List<string>
         {
             "<< /Type /Catalog /Pages 2 0 R >>",
-            "<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>",
+            $"<< /Type /Pages /Kids [{kids}] /Count {pages.Count} >>",
             $"<< /Type /Font /Subtype /Type1 /BaseFont /{font} >>"
         };
-        // A fixed two-page structural layout preserves all seven existing labels. It is not
-        // a truncation/count policy for future approved CV fields or a data-dependent layout.
-        for (var page = 0; page < 2; page++)
+        // Preserve seven categories with content-driven pagination and no text truncation.
+        for (var page = 0; page < pages.Count; page++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var stream = new StringBuilder();
             Text(stream, 20, 750, "Private CV preview");
             Text(stream, 14, 720, projection.Template.ToString());
             Text(stream, 9, 695, CvOutputProjection.Notice);
-            var start = page * 4;
-            for (var i = start; i < Math.Min(start + 4, projection.Sections.Count); i++)
+            for (var i = 0; i < pages[page].Length; i++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                Text(stream, 14, 625 - (i - start) * 120, projection.Sections[i]);
+                Text(stream, 10, 665 - i * 14, pages[page][i]);
             }
-            Text(stream, 10, 40, page == 0 ? "Page 1 of 2" : "Page 2 of 2");
+            Text(stream, 10, 40, $"Page {page+1} of {pages.Count}");
             objects.Add($"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents {5 + page * 2} 0 R >>");
             objects.Add($"<< /Length {Encoding.ASCII.GetByteCount(stream.ToString())} >>\nstream\n{stream}endstream");
         }
@@ -70,7 +89,7 @@ public sealed class CvPdfDocument
 
     private static void Text(StringBuilder stream, int size, int y, string label)
     {
-        // Only compile-time ASCII labels and defined enum names enter PDF string syntax.
+        // Approved projected ASCII fields are escaped as inert PDF text, never operators.
         if (label.Any(c => c < ' ' || c > '~')) throw new InvalidOperationException("Unsupported structural PDF label.");
         var escaped = label.Replace("\\", "\\\\").Replace("(", "\\(").Replace(")", "\\)");
         stream.Append("BT /F1 ").Append(size).Append(" Tf 50 ").Append(y).Append(" Td (").Append(escaped).Append(") Tj ET\n");
