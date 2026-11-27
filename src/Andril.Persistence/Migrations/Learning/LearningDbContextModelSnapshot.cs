@@ -8,7 +8,7 @@ namespace Andril.Persistence.Migrations.Learning;
 internal sealed class LearningDbContextModelSnapshot : ModelSnapshot
 {
     protected override void BuildModel(ModelBuilder modelBuilder)
-        => LearningSnapshotV1.Configure(modelBuilder);
+        => LearningSnapshotV4.Configure(modelBuilder);
 }
 
 // Frozen shadow-property snapshot. Never delegate to live runtime mappings: doing so would

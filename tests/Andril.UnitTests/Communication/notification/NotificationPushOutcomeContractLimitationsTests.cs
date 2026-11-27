@@ -40,10 +40,11 @@ public sealed class NotificationPushOutcomeContractLimitationsTests
         var result = new NotificationPushResult(outcome);
 
         Assert.Equal(outcome, result.Outcome);
+        Assert.Equal(
+            NotificationPushOutcomeClassification.Unknown,
+            result.Classification);
 
-        // Only ProviderAccepted sets WasAccepted.
-        // This does not classify the invalid outcome
-        // as safe, retriable or permanently failed.
+        // Unknown does not satisfy the accepted-success predicate.
         Assert.False(result.WasAccepted);
     }
 }

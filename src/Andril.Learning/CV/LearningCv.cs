@@ -38,6 +38,28 @@ public sealed class LearningCv
         return Sections.Single(section => section.Category == category);
     }
 
+    /// <summary>Rehydrate a structurally validated private persistence snapshot without changing
+    /// section/entry identities. This factory grants no ownership or contact-output authority.</summary>
+    public static LearningCv FromStoredSnapshot(Guid id, Guid ownerLearningProfileId, CvTemplate template,
+        IEnumerable<CvSection> sections, bool includeContactInformation)
+    {
+        ArgumentNullException.ThrowIfNull(sections);
+        var copy = sections.ToArray(); var categories = Enum.GetValues<CvSectionCategory>();
+        if (copy.Length != categories.Length || copy.Any(s => s is null)
+            || copy.Select(s => s.Category).Distinct().Count() != categories.Length
+            || copy.Select(s => s.Id).Distinct().Count() != categories.Length)
+            throw new ArgumentException("A stored CV requires seven distinct category-bound sections.", nameof(sections));
+        var entries = copy.SelectMany(s => s.Entries).ToArray();
+        if (entries.Select(e => e.Id).Distinct().Count() != entries.Length)
+            throw new ArgumentException("CV entry identities cannot be reused across sections.", nameof(sections));
+        var cv = new LearningCv(id, ownerLearningProfileId, template)
+        {
+            Sections = Array.AsReadOnly(copy.Select(s => new CvSection(s.Id, s.Category, s.Entries)).ToArray())
+        };
+        cv.SetContactInclusionConsent(id, includeContactInformation);
+        return cv;
+    }
+
     /// <summary>Explicit manual content editing only. Both category and section identity must
     /// match this CV. Entries cannot move implicitly between sections or collide across them.</summary>
     public void EditSection(Guid sectionId, CvSectionCategory category, IEnumerable<CvSection.Entry> entries)

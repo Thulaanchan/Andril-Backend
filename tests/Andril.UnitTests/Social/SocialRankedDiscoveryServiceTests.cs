@@ -27,7 +27,12 @@ public sealed class SocialRankedDiscoveryServiceTests
         IEnumerable<string>? languages = null,
         IEnumerable<string>? goals = null,
         IEnumerable<Guid>? interestIds = null,
-        IEnumerable<QuestionnaireAnswer>? answers = null)
+        IEnumerable<QuestionnaireAnswer>? answers = null,
+        QuestionnaireResponseEntity? response = null,
+        PersonalityPartnerPreferences? partnerPreferences = null,
+        PersonalityArchetypeConfirmation? confirmation = null,
+        string? questionnaireVersion = null,
+        string? questionnaireRevision = null)
     {
         var rangeFilters = new SocialExploreRangeFilters(
             minAge: minAge,
@@ -50,6 +55,11 @@ public sealed class SocialRankedDiscoveryServiceTests
             confirmedConnectionGoals: goals ?? new[] { "Friendship" },
             confirmedSocialInterestIds: interestIds,
             questionnaireAnswers: answers,
+            questionnaireResponse: response,
+            partnerPreferences: partnerPreferences,
+            archetypeConfirmation: confirmation,
+            questionnaireVersion: questionnaireVersion,
+            questionnaireRevision: questionnaireRevision,
             isOptedIn: isOptedIn,
             isActive: isActive,
             isDiscoverable: isDiscoverable,
@@ -363,14 +373,14 @@ public sealed class SocialRankedDiscoveryServiceTests
     }
 
     [Fact]
-    public void DiscoverAuthoritativeRankedCards_DuplicateCandidateIdentities_RejectsDuplicates()
+    public void DiscoverAuthoritativeRankedCards_DuplicateCandidateIdentities_DeduplicatesIdenticalEvidence()
     {
         var caller = CreateProfile();
         var callerSnap = CreateSnapshot(caller.ProfileId);
 
         var cand = CreateProfile();
-        var candItem1 = CreateCandidateItem(cand, displayName: "CandidateDuplicate1");
-        var candItem2 = CreateCandidateItem(cand, displayName: "CandidateDuplicate2");
+        var candItem1 = CreateCandidateItem(cand, displayName: "CandidateDuplicate");
+        var candItem2 = CreateCandidateItem(cand, displayName: "CandidateDuplicate");
 
         var result = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
             caller, callerSnap, callerSnap, new[] { candItem1, candItem2 });
@@ -707,6 +717,109 @@ public sealed class SocialRankedDiscoveryServiceTests
 
         Assert.Empty(resultForward);
         Assert.Empty(resultReverse);
+    }
+
+    [Theory]
+    [InlineData("display-suffix")]
+    [InlineData("display-case")]
+    [InlineData("answers")]
+    [InlineData("response-answers")]
+    [InlineData("response-missing")]
+    [InlineData("response-identity")]
+    [InlineData("partner-social")]
+    [InlineData("partner-communication")]
+    [InlineData("partner-planning")]
+    [InlineData("confirmation")]
+    [InlineData("confirmation-revision")]
+    [InlineData("questionnaire-version")]
+    [InlineData("questionnaire-revision")]
+    [InlineData("blocked")]
+    public void ContradictoryDuplicates_RejectInEitherOrderAndCannotBeRestored(string difference)
+    {
+        var caller = CreateProfile();
+        var snapshot = CreateSnapshot(caller.ProfileId);
+        var candidateId = Guid.NewGuid();
+        var responseId = Guid.NewGuid();
+        var original = CreateProfile(profileId: candidateId,
+            answers: [new("q01", "3")], response: CreateResponse(candidateId, responseId),
+            partnerPreferences: new(), confirmation: new("r1"),
+            questionnaireVersion: "v1", questionnaireRevision: "r1");
+        var changed = CreateProfile(profileId: candidateId,
+            answers: [new("q01", difference == "answers" ? "4" : "3")],
+            response: difference == "response-missing" ? null : CreateResponse(candidateId,
+                difference == "response-identity" ? Guid.NewGuid() : responseId,
+                difference == "response-answers" ? "4" : "3"),
+            partnerPreferences: new(
+                difference == "partner-social" ? SocialEngagementPreference.Outgoing : SocialEngagementPreference.Either,
+                difference == "partner-communication" ? CommunicationPreference.Expressive : CommunicationPreference.Either,
+                difference == "partner-planning" ? PlanningPreference.Structured : PlanningPreference.Either),
+            confirmation: new(difference == "confirmation-revision" ? "r2" : "r1",
+                difference == "confirmation" ? SocialEngagementTendency.Outgoing : null),
+            questionnaireVersion: difference == "questionnaire-version" ? "v2" : "v1",
+            questionnaireRevision: difference == "questionnaire-revision" ? "r2" : "r1",
+            blockedProfileIds: difference == "blocked" ? [caller.ProfileId] : []);
+        var first = CreateCandidateItem(original, displayName: "Candidate1");
+        var conflicting = CreateCandidateItem(changed, displayName: difference switch
+        {
+            "display-suffix" => "Candidate2",
+            "display-case" => "candidate1",
+            _ => "Candidate1"
+        });
+
+        Assert.Single(SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(
+            caller, snapshot, snapshot, [first]));
+        foreach (var items in new[] { new[] { first, conflicting, first }, new[] { conflicting, first, conflicting } })
+            Assert.Empty(SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(caller, snapshot, snapshot, items));
+        if (difference is not "display-suffix" and not "display-case")
+            Assert.Empty(SocialRankedDiscoveryService.DiscoverRankedCandidates(caller,
+                [(original, 10), (changed, 10), (original, 10)]));
+    }
+
+    private static QuestionnaireResponseEntity CreateResponse(Guid profileId, Guid responseId, string option = "3", bool reverse = false)
+    {
+        var timestamp = new DateTimeOffset(2026, 11, 25, 0, 0, 0, TimeSpan.Zero);
+        var definition = QuestionnaireV1Definition.Create();
+        var answers = definition.Questions.Select((question, index) => new QuestionnaireAnswerEntity(
+            new Guid(index + 1, 0, 0, new byte[8]), responseId, question.Id, option, timestamp));
+        return QuestionnaireResponseEntity.Create(responseId, profileId, definition,
+            reverse ? answers.Reverse() : answers, false, timestamp);
+    }
+
+    [Fact]
+    public void IndependentlyConstructedEquivalentEvidence_DeduplicatesWithoutChangingRankingRotationOrPrivacy()
+    {
+        var caller = CreateProfile();
+        var snapshot = CreateSnapshot(caller.ProfileId);
+        var candidateId = Guid.NewGuid();
+        var responseId = Guid.NewGuid();
+        var blockId = Guid.NewGuid();
+        var interestId = Guid.NewGuid();
+        var first = CreateProfile(profileId: candidateId, languages: ["English", "French"],
+            goals: ["Friendship", "Dating"], interestIds: [interestId], blockedProfileIds: [blockId],
+            answers: [new("q01", "3"), new("q02", "3")], response: CreateResponse(candidateId, responseId),
+            partnerPreferences: new(), confirmation: new("r1"), questionnaireVersion: "v1", questionnaireRevision: "r1");
+        var second = CreateProfile(profileId: candidateId, languages: ["English", "French"],
+            goals: ["Friendship", "Dating"], interestIds: [interestId], blockedProfileIds: [blockId],
+            answers: [new("q02", "3"), new("q01", "3")], response: CreateResponse(candidateId, responseId, reverse: true),
+            partnerPreferences: new(), confirmation: new("r1"), questionnaireVersion: "v1", questionnaireRevision: "r1");
+        Assert.NotSame(first.QuestionnaireResponse, second.QuestionnaireResponse);
+        var item1 = CreateCandidateItem(first, displayName: "Candidate1");
+        var item2 = CreateCandidateItem(second, displayName: "Candidate1");
+        var other = CreateCandidateItem(CreateProfile(), displayName: "Other");
+        foreach (var offset in new[] { 0, 1, 4 })
+        {
+            var expected = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(caller, snapshot, snapshot,
+                [item1, other], rotationOffset: offset);
+            var actual = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(caller, snapshot, snapshot,
+                [item2, other, item1], rotationOffset: offset);
+            Assert.Equal(2, actual.Count);
+            Assert.Equal(expected.Select(card => card.CandidateProfileId), actual.Select(card => card.CandidateProfileId));
+            Assert.All(actual, card => Assert.Equal("{}", JsonSerializer.Serialize(card)));
+        }
+        Assert.Equal("{}", JsonSerializer.Serialize(item1));
+        var bounded = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(caller, snapshot, snapshot,
+            [item1, other, CreateCandidateItem(first, displayName: "Contradiction")], maxCandidateBatchSize: 2);
+        Assert.Equal(2, bounded.Count);
     }
 
     [Fact]

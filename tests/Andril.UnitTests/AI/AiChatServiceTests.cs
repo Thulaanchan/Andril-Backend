@@ -316,7 +316,7 @@ public sealed class AiChatServiceTests
         Assert.Contains("[MOCK]", reply.Text);
         Assert.DoesNotContain(message, reply.Text);
         await Assert.ThrowsAsync<AiChatValidationException>(() => service.ReplyAsync(AiModule.Social, message + element));
-        Assert.Equal(1, authorization.Calls); // Over-limit rejection precedes authorization too.
+        Assert.Equal(2, authorization.Calls); // Valid input checks admission and release; over-limit input adds no call.
     }
 
     [Fact]
@@ -407,7 +407,7 @@ public sealed class AiChatServiceTests
         Assert.True(first.IsMock);
         Assert.StartsWith("[MOCK]", first.Text);
         Assert.DoesNotContain("private-", first.Text);
-        Assert.Equal(2, authorization.Calls); // No cached actor approval.
+        Assert.Equal(4, authorization.Calls); // Fresh admission and release for each reply; no cached actor approval.
     }
 
     private sealed class ScriptedAuthorization(Func<AiModule, CancellationToken, Task<AiAuthorizedActor?>> authorize)

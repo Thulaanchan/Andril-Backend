@@ -38,6 +38,43 @@ public sealed class NotificationApplicationService
     }
 
     /// <summary>
+    /// Adds an unread notification only when the authenticated
+    /// account resolves to the same active private module profile.
+    /// </summary>
+    public async Task<bool> TryCreateAsync(
+        Guid authenticatedAccountId,
+        NotificationModule module,
+        NotificationEntry notification,
+        CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (notification is null ||
+            notification.IsRead ||
+            !Enum.IsDefined(module) ||
+            notification.RecipientScope.Module != module)
+        {
+            return false;
+        }
+
+        var scope = await ResolveScopeAsync(
+            authenticatedAccountId,
+            module,
+            cancellationToken);
+
+        if (scope is null || notification.RecipientScope != scope)
+        {
+            return false;
+        }
+
+        await _repository.AddAsync(
+            notification,
+            cancellationToken);
+
+        return true;
+    }
+
+    /// <summary>
     /// Returns notifications only for an authorized private
     /// module profile. Unauthorized requests return an empty list.
     /// </summary>

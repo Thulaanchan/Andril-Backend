@@ -20,6 +20,45 @@ public enum NotificationPushOutcome
 }
 
 /// <summary>
+/// Provider-independent description of a push result.
+/// This classification does not confirm device delivery
+/// or authorize retrying an attempt.
+/// </summary>
+public enum NotificationPushOutcomeClassification
+{
+    NotSent = 1,
+    ProviderAccepted = 2,
+    ProviderRejected = 3,
+    TemporaryFailure = 4,
+    Unknown = 5
+}
+
+/// <summary>
+/// Maps known sender outcomes to safe descriptive categories.
+/// Unknown numeric values remain unknown and must not be
+/// treated as permission to retry.
+/// </summary>
+public static class NotificationPushOutcomeClassifier
+{
+    public static NotificationPushOutcomeClassification Classify(
+        NotificationPushOutcome outcome)
+    {
+        return outcome switch
+        {
+            NotificationPushOutcome.NotSent =>
+                NotificationPushOutcomeClassification.NotSent,
+            NotificationPushOutcome.ProviderAccepted =>
+                NotificationPushOutcomeClassification.ProviderAccepted,
+            NotificationPushOutcome.TemporaryFailure =>
+                NotificationPushOutcomeClassification.TemporaryFailure,
+            NotificationPushOutcome.PermanentFailure =>
+                NotificationPushOutcomeClassification.ProviderRejected,
+            _ => NotificationPushOutcomeClassification.Unknown
+        };
+    }
+}
+
+/// <summary>
 /// Represents the result of a push dispatch attempt.
 ///
 /// Do not include device tokens, private profile names,
@@ -30,6 +69,9 @@ public sealed record NotificationPushResult(
 {
     public bool WasAccepted =>
         Outcome == NotificationPushOutcome.ProviderAccepted;
+
+    public NotificationPushOutcomeClassification Classification =>
+        NotificationPushOutcomeClassifier.Classify(Outcome);
 }
 
 /// <summary>

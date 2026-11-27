@@ -1,0 +1,592 @@
+using System.Data;
+using System.Data.Common;
+using Andril.Hobbies.Map.Contributions;
+using Andril.Hobbies.Map.Places;
+using Andril.Persistence.Configurations;
+using Andril.Persistence.DbContexts;
+using Andril.Persistence.Repositories.Hobbies;
+using Andril.Shared.Authentication;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
+using Npgsql;
+using Xunit;
+
+namespace Andril.IntegrationTests.Database;
+
+public sealed partial class MapAttractionLifecycleMigrationAcceptanceTests
+{
+    private const string InitialMap = "20261121032052_InitialHobbiesMap";
+    private const string UniqueSession = "20261121185145_AddMapSubmissionSessionUniqueness";
+    private const string Lifecycle = "20261125022647_AddMapAttractionLifecycle";
+    private const string PrivateMedia = "20261126092843_AddMapPrivateMedia";
+    private const string Moderation = "20261127014224_AddMapModeration";
+
+    [Fact]
+    public void Migration_IsMapOnlyForwardOnlyAndMatchesLifecycleModelOffline()
+    {
+        using var map = new HobbiesMapDbContextFactory().CreateDbContext([]);
+        var migrations = map.Database.GetMigrations().ToArray();
+        Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle, PrivateMedia, Moderation }, migrations);
+        Assert.False(map.Database.HasPendingModelChanges());
+
+        var migrator = map.GetService<IMigrator>();
+        var script = migrator.GenerateScript(UniqueSession, Lifecycle);
+        Assert.Contains("CREATE TABLE andril_hobbies.map_attraction_lifecycle", script);
+        Assert.Contains("CREATE TABLE andril_hobbies.map_attraction_lifecycle_receipts", script);
+        Assert.Contains("CREATE TABLE andril_hobbies.map_attraction_lifecycle_audit", script);
+        Assert.Contains("DEFERRABLE INITIALLY DEFERRED", script);
+        Assert.Contains("map_lifecycle_check_update", script);
+        Assert.Contains("map_lifecycle_check_applied", script);
+        Assert.Contains("map_lifecycle_immutable", script);
+        Assert.Contains("map_lifecycle_receipt_immutable", script);
+        Assert.Contains("map_lifecycle_audit_immutable", script);
+        Assert.Contains("__EFMigrationsHistory_Map", script);
+        Assert.DoesNotContain("INSERT INTO andril_hobbies.map_attraction_lifecycle", script);
+        Assert.DoesNotContain("__EFMigrationsHistory_Gallery", script);
+        Assert.DoesNotContain("andril_identity", script);
+        Assert.Throws<NotSupportedException>(() => migrator.GenerateScript(Lifecycle, UniqueSession));
+        var mediaScript = migrator.GenerateScript(Lifecycle, PrivateMedia);
+        Assert.Contains("CREATE TABLE andril_hobbies.map_private_media", mediaScript);
+        Assert.Contains("fk_map_private_media_session_scope", mediaScript);
+        Assert.Contains("ux_map_private_media_session", mediaScript);
+        Assert.Contains("tr_map_private_media_guard", mediaScript);
+        Assert.Throws<NotSupportedException>(() => migrator.GenerateScript(PrivateMedia, Lifecycle));
+        var moderationScript = migrator.GenerateScript(PrivateMedia, Moderation);
+        Assert.Contains("fk_map_moderation_receipt_audit", moderationScript);
+        Assert.Contains("DEFERRABLE INITIALLY DEFERRED", moderationScript);
+        Assert.Contains("map_moderation_validate_media", moderationScript);
+        Assert.DoesNotContain("INSERT INTO andril_hobbies.map_moderation_receipts", moderationScript);
+        Assert.Throws<NotSupportedException>(() => migrator.GenerateScript(Moderation, PrivateMedia));
+        Assert.Equal(ConnectionState.Closed, map.Database.GetDbConnection().State);
+
+        using var gallery = new HobbiesGalleryDbContextFactory().CreateDbContext([]);
+        Assert.DoesNotContain(Lifecycle, gallery.Database.GetMigrations());
+        using var accounts = new AccountsDbContext(
+            new DbContextOptionsBuilder<AccountsDbContext>()
+                .UseNpgsql("Host=127.0.0.1;Database=andril_model_only;Username=unused").Options);
+        Assert.DoesNotContain(Lifecycle, accounts.Database.GetMigrations());
+    }
+
+    [MapCapturePostgresFact]
+    public async Task MigratedSchema_PreservesAttractionsAndRequiresExplicitStateWithIntegrity()
+    {
+        await WithDisposableDatabaseAsync(async connectionString =>
+        {
+            await using var map = CreateContext(connectionString);
+            await map.Database.MigrateAsync();
+            Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle, PrivateMedia, Moderation },
+                await map.Database.GetAppliedMigrationsAsync());
+            await AssertCatalogIntegrityAsync(map);
+            Assert.Equal(0L, await ScalarAsync(map,
+                "SELECT count(*) FROM andril_hobbies.map_attraction_lifecycle"));
+
+            await using var gallery = new HobbiesGalleryDbContext(
+                new DbContextOptionsBuilder<HobbiesGalleryDbContext>()
+                    .UseNpgsql(connectionString, HobbiesDatabaseOptions.ConfigureGalleryHistory).Options);
+            var galleryMigration = Assert.Single(gallery.Database.GetMigrations());
+            await gallery.Database.MigrateAsync();
+            Assert.Equal(galleryMigration, Assert.Single(await gallery.Database.GetAppliedMigrationsAsync()));
+            Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle, PrivateMedia, Moderation },
+                await map.Database.GetAppliedMigrationsAsync());
+        });
+
+        await WithDisposableDatabaseAsync(async connectionString =>
+        {
+            var activeAttraction = Guid.NewGuid();
+            var inactiveAttraction = Guid.NewGuid();
+            var missingAttraction = Guid.NewGuid();
+
+            await using (var baseline = CreateContext(connectionString))
+            {
+                await baseline.Database.MigrateAsync(UniqueSession);
+                baseline.MapAttractions.AddRange(
+                    MapAttraction.Create(activeAttraction, "Lifecycle active test", 1, 1),
+                    MapAttraction.Create(inactiveAttraction, "Lifecycle inactive test", 2, 2),
+                    MapAttraction.Create(missingAttraction, "Lifecycle missing test", 3, 3));
+                await baseline.SaveChangesAsync();
+                Assert.Equal(3, await baseline.MapAttractions.CountAsync());
+                await baseline.Database.MigrateAsync(Lifecycle);
+
+                Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle },
+                    await baseline.Database.GetAppliedMigrationsAsync());
+                Assert.Equal(3, await baseline.MapAttractions.CountAsync());
+                Assert.Equal(0L, await ScalarAsync(baseline,
+                    "SELECT count(*) FROM andril_hobbies.map_attraction_lifecycle"));
+
+                await baseline.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO andril_hobbies.map_attraction_lifecycle
+                        (attraction_id,is_active,version,operation_sequence,last_receipt_id)
+                    VALUES ({activeAttraction},true,0,0,NULL),({inactiveAttraction},false,0,0,NULL)
+                    """);
+
+                var initialStates = await ReadStatesAsync(baseline);
+                Assert.Equal((true, 0L, 0L, (Guid?)null), initialStates[activeAttraction]);
+                Assert.Equal((false, 0L, 0L, (Guid?)null), initialStates[inactiveAttraction]);
+                Assert.DoesNotContain(missingAttraction, initialStates.Keys);
+
+                await AssertCatalogIntegrityAsync(baseline);
+
+                var subject = new TestUser(Guid.NewGuid());
+                var writer = new MapAttractionLifecycleWriter(
+                    new ContextFactory(connectionString), new TestAuthorization(subject), subject);
+                var missing = await writer.ChangeAsync(
+                    new MapAttractionLifecycleChange(Guid.NewGuid(), missingAttraction, false, 0));
+                Assert.Equal(MapAttractionLifecycleOutcome.Denied, missing.Outcome);
+
+                using var cancellation = new CancellationTokenSource();
+                cancellation.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => writer.ChangeAsync(
+                    new MapAttractionLifecycleChange(Guid.NewGuid(), inactiveAttraction, true, 0),
+                    cancellation.Token));
+
+                var first = new MapAttractionLifecycleChange(Guid.NewGuid(), activeAttraction, false, 0);
+                var second = new MapAttractionLifecycleChange(Guid.NewGuid(), activeAttraction, false, 0);
+                var results = await Task.WhenAll(writer.ChangeAsync(first), writer.ChangeAsync(second));
+                Assert.Single(results, result => result.Outcome == MapAttractionLifecycleOutcome.Changed);
+                Assert.Single(results, result => result.Outcome == MapAttractionLifecycleOutcome.Conflict);
+                var winner = results[0].Outcome == MapAttractionLifecycleOutcome.Changed ? first : second;
+                var retry = await writer.ChangeAsync(winner);
+                Assert.Equal(MapAttractionLifecycleOutcome.ExistingAuthorized, retry.Outcome);
+
+                var finalStates = await ReadStatesAsync(baseline);
+                Assert.Equal((false, 1L, 1L, true),
+                    (finalStates[activeAttraction].Active, finalStates[activeAttraction].Version,
+                        finalStates[activeAttraction].Sequence, finalStates[activeAttraction].Receipt.HasValue));
+                Assert.Equal(1L, await ScalarAsync(baseline,
+                    "SELECT count(*) FROM andril_hobbies.map_attraction_lifecycle_receipts"));
+                Assert.Equal(1L, await ScalarAsync(baseline,
+                    "SELECT count(*) FROM andril_hobbies.map_attraction_lifecycle_audit"));
+
+                var updateError = await Assert.ThrowsAsync<PostgresException>(() =>
+                    baseline.Database.ExecuteSqlRawAsync("""
+                        UPDATE andril_hobbies.map_attraction_lifecycle_receipts
+                        SET result_version=result_version
+                        """));
+                Assert.Equal("ck_map_lifecycle_evidence_immutable", updateError.ConstraintName);
+                var deleteError = await Assert.ThrowsAsync<PostgresException>(() =>
+                    baseline.Database.ExecuteSqlRawAsync("""
+                        DELETE FROM andril_hobbies.map_attraction_lifecycle_audit
+                        """));
+                Assert.Equal("ck_map_lifecycle_evidence_immutable", deleteError.ConstraintName);
+
+                await AssertDeferredReceiptFailureRollsBackAsync(connectionString, activeAttraction, subject.UserId!.Value);
+                Assert.Equal(1L, await ScalarAsync(baseline,
+                    "SELECT count(*) FROM andril_hobbies.map_attraction_lifecycle_receipts"));
+                Assert.Equal(1L, await ScalarAsync(baseline,
+                    "SELECT count(*) FROM andril_hobbies.map_attraction_lifecycle_audit"));
+            }
+        });
+    }
+
+    [MapCapturePostgresFact]
+    public Task PrivateMediaMigration_EnforcesScopedUniquenessFinalizationAndCleanup() =>
+        WithDisposableDatabaseAsync(async connectionString =>
+        {
+            await using var map = CreateContext(connectionString);
+            await map.Database.MigrateAsync();
+            var clock = new MediaClock();
+            var subject = new TestUser(Guid.NewGuid());
+            var profile = Guid.NewGuid();
+            var attraction = MapAttraction.Create(Guid.NewGuid(), "Map media test", 0, 0);
+            MapContributionCaptureSession Session()
+            {
+                var session = MapContributionCaptureSession.Create(Guid.NewGuid(), profile,
+                    attraction.AttractionId, clock.Now.AddSeconds(-20));
+                session.Complete(clock.Now.AddSeconds(-10));
+                return session;
+            }
+
+            var first = Session();
+            var second = Session();
+            map.MapAttractions.Add(attraction);
+            map.CaptureSessions.AddRange(first, second);
+            await map.SaveChangesAsync();
+            await map.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO andril_hobbies.map_attraction_lifecycle
+                    (attraction_id, is_active, version, operation_sequence, last_receipt_id)
+                VALUES ({attraction.AttractionId}, true, 0, 0, NULL)
+                """);
+
+            var store = new MapPrivateMediaStore(new ContextFactory(connectionString), subject,
+                new MediaAuthorization(profile), clock);
+            MapMediaReservation Reserve(Guid sessionId) => new(
+                new(subject.UserId!.Value, profile, attraction.AttractionId, sessionId),
+                Guid.NewGuid(), Guid.NewGuid(), clock.Now.AddSeconds(-18), clock.Now.AddSeconds(100));
+            var reservation = Reserve(first.SessionId);
+            var orphan = Reserve(second.SessionId);
+            Assert.True(await store.TryReserveAsync(reservation, default));
+            Assert.False(await store.TryReserveAsync(Reserve(first.SessionId), default));
+            Assert.True(await store.TryReserveAsync(orphan, default));
+            var foreign = reservation.Scope with { ProfileId = Guid.NewGuid() };
+            Assert.Null(await store.FindReservationAsync(foreign, default));
+            Assert.False(await store.TryReserveAsync(orphan with { Scope = foreign }, default));
+            var foreignKey = await Assert.ThrowsAsync<DbUpdateException>(() =>
+                store.TryReserveAsync(Reserve(Guid.NewGuid()), default));
+            Assert.Equal("fk_map_private_media_session_scope",
+                Assert.IsType<PostgresException>(foreignKey.InnerException).ConstraintName);
+
+            var finalized = new FinalizedMapMedia(reservation,
+                new(reservation.MediaId, "private-test", "\"version\"", new string('A', 64)), clock.Now.AddSeconds(-15));
+            var outcomes = await Task.WhenAll(store.TryFinalizeAsync(finalized, default),
+                store.TryFinalizeAsync(finalized, default));
+            Assert.Single(outcomes, result => result);
+            Assert.Equal(finalized, await store.FindFinalizedAsync(reservation.Scope, default));
+            Assert.False(await store.TryFinalizeAsync(finalized with { Media = finalized.Media with { Version = "replacement" } }, default));
+            var immutable = await Assert.ThrowsAsync<PostgresException>(() => map.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE andril_hobbies.map_private_media SET version = 'replacement' WHERE media_id = {reservation.MediaId}
+                """));
+            Assert.Equal("ck_map_private_media_immutable", immutable.ConstraintName);
+
+            var claim = Guid.NewGuid();
+            clock.Now = orphan.ReservedAt.AddHours(24).AddMilliseconds(-1);
+            Assert.False(await store.TryClaimCleanupAsync(orphan.Scope, orphan.MediaId, claim, default));
+            clock.Now = clock.Now.AddMilliseconds(1);
+            Assert.False(await store.TryClaimCleanupAsync(reservation.Scope, reservation.MediaId, claim, default));
+            var competing = await Task.WhenAll(store.TryClaimCleanupAsync(orphan.Scope, orphan.MediaId, claim, default),
+                store.TryClaimCleanupAsync(orphan.Scope, orphan.MediaId, Guid.NewGuid(), default));
+            Assert.Single(competing, result => result);
+            Assert.Null(await store.FindReservationAsync(orphan.Scope, default));
+        });
+
+    [MapCapturePostgresFact]
+    public Task DurableModeration_RequiresAuditAndSerializesScopedDecisions() =>
+        WithDisposableDatabaseAsync(async connectionString =>
+        {
+            await using var map = CreateContext(connectionString);
+            await map.Database.MigrateAsync(PrivateMedia);
+            var clock = new MediaClock();
+            var profile = Guid.NewGuid();
+            var attraction = MapAttraction.Create(Guid.NewGuid(), "Moderation", 0, 0);
+            var session = MapContributionCaptureSession.Create(Guid.NewGuid(), profile,
+                attraction.AttractionId, clock.Now.AddSeconds(-20));
+            session.Complete(clock.Now.AddSeconds(-10));
+            var contribution = MapContribution.Create(Guid.NewGuid(), profile, attraction.AttractionId,
+                session.SessionId, "private/test.jpg", "Moderation test",
+                new Andril.Hobbies.Map.LocationValidation.MapContributionLocationEvidence(null, null, null, null, null, null, null), clock.Now);
+            map.AddRange(attraction, session, contribution);
+            await map.SaveChangesAsync();
+            await map.Database.MigrateAsync(Moderation);
+            Assert.Equal(contribution.ContributionId, (await map.MapContributions.SingleAsync()).ContributionId);
+            var reviewer = new TestUser(Guid.NewGuid());
+            var id = reviewer.UserId!.Value;
+            var permissions = new ModerationAuthorization();
+            var repository = new MapModerationRepository(new ContextFactory(connectionString), reviewer, clock, permissions);
+            var scope = new MapModerationScope(attraction.AttractionId, contribution.ContributionId);
+            MapContributionReviewRequest Request(MapContributionReviewAction action) =>
+                new(Guid.NewGuid(), contribution.ContributionId, action, 0, id.ToString("D"));
+            var reject = Request(MapContributionReviewAction.Reject);
+            var approve = Request(MapContributionReviewAction.Approve);
+            Assert.Equal(MapModerationOutcome.Denied, await repository.DecideAsync(scope, reject, null, default));
+            permissions.Allowed = true;
+            Assert.Null(await repository.FindAsync(scope with { AttractionId = Guid.NewGuid() }, default));
+            Assert.Equal(MapModerationOutcome.Ineligible, await repository.DecideAsync(scope, approve, null, default));
+
+            await using (var tx = await map.Database.BeginTransactionAsync())
+            {
+                await map.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO andril_hobbies.map_moderation_receipts
+                        (decision_id, contribution_id, attraction_id, profile_id, session_id, reviewer_subject,
+                         action, expected_revision, revision, decided_at)
+                    VALUES ({Guid.NewGuid()}, {contribution.ContributionId}, {attraction.AttractionId},
+                        {profile}, {session.SessionId}, {id}, 2, 0, 1, {clock.Now})
+                    """);
+                var failure = await Assert.ThrowsAsync<PostgresException>(() => tx.CommitAsync());
+                Assert.Equal("fk_map_moderation_receipt_audit", failure.ConstraintName);
+            }
+
+            Assert.True((await repository.FindAsync(scope, default))!.IsPending);
+            var media = new VerifiedMapMedia(Guid.NewGuid(), "private/test.jpg", "version", new string('A', 64));
+            map.Add(new MapPrivateMediaRow
+            {
+                MediaId = media.MediaId, SubjectId = Guid.NewGuid(), ProfileId = profile,
+                AttractionId = attraction.AttractionId, SessionId = session.SessionId, Challenge = Guid.NewGuid(),
+                ReservedAt = clock.Now.AddSeconds(-18), UploadExpiresAt = clock.Now.AddSeconds(100),
+                PrivateReference = media.PrivateReference, Version = media.Version, Sha256 = media.Sha256,
+                CapturedAt = clock.Now.AddSeconds(-15), FinalizedAt = clock.Now
+            });
+            await map.SaveChangesAsync();
+            Assert.Equal(MapModerationOutcome.Ineligible,
+                await repository.DecideAsync(scope, approve, media with { Version = "changed" }, default));
+
+            var outcomes = await Task.WhenAll(repository.DecideAsync(scope, reject, null, default),
+                repository.DecideAsync(scope, approve, media, default));
+            Assert.Single(outcomes, x => x == MapModerationOutcome.Applied);
+            Assert.Single(outcomes, x => x == MapModerationOutcome.Conflict);
+            var winner = outcomes[0] == MapModerationOutcome.Applied ? reject : approve;
+            var receipt = await map.Set<MapModerationReceipt>().AsNoTracking().SingleAsync();
+            Assert.Equal(winner.DecisionId, receipt.DecisionId);
+            Assert.Equal(receipt.DecisionId, (await map.Set<MapModerationAudit>().SingleAsync()).DecisionId);
+            Assert.Equal(1L, receipt.Revision);
+            Assert.False((await repository.FindAsync(scope, default))!.IsPending);
+            Assert.Equal(MapModerationOutcome.Replay, await repository.DecideAsync(scope, winner, null, default));
+            Assert.Equal(MapModerationOutcome.Conflict,
+                await repository.DecideAsync(scope, new(winner.DecisionId, scope.ContributionId,
+                    winner.Action == MapContributionReviewAction.Approve
+                        ? MapContributionReviewAction.Reject : MapContributionReviewAction.Approve, 0, id.ToString("D")),
+                    null, default));
+            permissions.Allowed = false;
+            Assert.Equal(MapModerationOutcome.Denied, await repository.DecideAsync(scope, winner, null, default));
+
+            var nextSession = MapContributionCaptureSession.Create(Guid.NewGuid(), profile,
+                attraction.AttractionId, clock.Now.AddSeconds(-20));
+            nextSession.Complete(clock.Now.AddSeconds(-10));
+            var next = MapContribution.Create(Guid.NewGuid(), profile, attraction.AttractionId,
+                nextSession.SessionId, "private/next.jpg", "Second moderation test", contribution.LocationEvidence, clock.Now);
+            map.AddRange(nextSession, next);
+            await map.SaveChangesAsync();
+            permissions.Allowed = true;
+            var nextScope = new MapModerationScope(attraction.AttractionId, next.ContributionId);
+            var nextRequest = new MapContributionReviewRequest(Guid.NewGuid(), next.ContributionId,
+                MapContributionReviewAction.Reject, 0, id.ToString("D"));
+            var timeoutRepository = new MapModerationRepository(
+                new ModerationProbeContextFactory(connectionString, new ModerationLostAcknowledgement()),
+                reviewer, clock, permissions);
+
+            await using (var blocker = await map.Database.BeginTransactionAsync())
+            {
+                await map.Database.ExecuteSqlInterpolatedAsync($"""
+                    SELECT contribution_id FROM andril_hobbies.map_contributions
+                    WHERE contribution_id = {next.ContributionId} FOR UPDATE
+                    """);
+                using var cancellation = new CancellationTokenSource();
+                var blocked = repository.DecideAsync(nextScope, nextRequest, null, cancellation.Token);
+                try
+                {
+                    using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    await using var monitor = CreateContext(connectionString);
+                    while (!await monitor.Database.SqlQuery<bool>($"""
+                        SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+                            WHERE pid <> pg_backend_pid() AND {((NpgsqlConnection)map.Database.GetDbConnection()).ProcessID} = ANY(pg_blocking_pids(pid))
+                              AND query LIKE '%map_contributions%' AND query LIKE '%FOR UPDATE%') AS "Value"
+                        """).SingleAsync(deadline.Token))
+                        await Task.Delay(25, deadline.Token);
+                }
+                finally
+                {
+                    cancellation.Cancel();
+                }
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(() => blocked);
+                await blocker.RollbackAsync();
+            }
+
+            Assert.True((await repository.FindAsync(nextScope, default))!.IsPending);
+            Assert.False(await map.Set<MapModerationAudit>().AnyAsync(x => x.DecisionId == nextRequest.DecisionId));
+            Assert.Equal(MapModerationOutcome.OutcomeUnknown,
+                await timeoutRepository.DecideAsync(nextScope, nextRequest, null, default));
+            Assert.Equal(MapModerationOutcome.Replay, await repository.DecideAsync(nextScope, nextRequest, null, default));
+            Assert.Equal(1, await map.Set<MapModerationReceipt>().CountAsync(x => x.DecisionId == nextRequest.DecisionId));
+            Assert.Equal(1, await map.Set<MapModerationAudit>().CountAsync(x => x.DecisionId == nextRequest.DecisionId));
+        });
+
+    private sealed class ModerationLostAcknowledgement : DbTransactionInterceptor
+    {
+        public override Task TransactionCommittedAsync(DbTransaction transaction,
+            TransactionEndEventData eventData, CancellationToken cancellationToken = default) =>
+            Task.FromException(new TimeoutException("Simulated lost acknowledgement after commit."));
+    }
+
+    private sealed class ModerationProbeContextFactory(string connectionString, IInterceptor interceptor)
+        : IDbContextFactory<HobbiesMapDbContext>
+    {
+        public HobbiesMapDbContext CreateDbContext() => new(new DbContextOptionsBuilder<HobbiesMapDbContext>()
+            .UseNpgsql(connectionString, HobbiesDatabaseOptions.ConfigureMapHistory)
+            .AddInterceptors(interceptor).Options);
+    }
+    private sealed class ModerationAuthorization : IMapModerationTransactionAuthorization
+    {
+        internal bool Allowed { get; set; }
+
+        public Task<bool> CanReviewAsync(DbConnection connection, DbTransaction transaction, Guid reviewer,
+            MapModerationScope scope, CancellationToken cancellationToken) => Task.FromResult(Allowed);
+    }
+    private sealed class MediaClock : TimeProvider
+    {
+        internal DateTimeOffset Now { get; set; } = new(2026, 11, 26, 0, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    private sealed class MediaAuthorization(Guid profile) : IMapSubmissionTransactionAuthorization
+    {
+        public Task<Guid?> ResolveActiveHobbiesOwnerAsync(DbConnection connection, DbTransaction transaction,
+            CancellationToken cancellationToken = default) => Task.FromResult<Guid?>(profile);
+    }
+
+    private static HobbiesMapDbContext CreateContext(string connectionString) => new(
+        new DbContextOptionsBuilder<HobbiesMapDbContext>()
+            .UseNpgsql(connectionString, HobbiesDatabaseOptions.ConfigureMapHistory).Options);
+
+    private static async Task<Dictionary<Guid, (bool Active, long Version, long Sequence, Guid? Receipt)>> ReadStatesAsync(
+        HobbiesMapDbContext context)
+    {
+        var states = new Dictionary<Guid, (bool, long, long, Guid?)>();
+        await using var command = new NpgsqlCommand("""
+            SELECT attraction_id,is_active,version,operation_sequence,last_receipt_id
+            FROM andril_hobbies.map_attraction_lifecycle
+            """, (NpgsqlConnection)context.Database.GetDbConnection());
+        if (command.Connection!.State != ConnectionState.Open)
+            await command.Connection.OpenAsync();
+        await using var reader = await command.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+            states.Add(reader.GetGuid(0), (reader.GetBoolean(1), reader.GetInt64(2), reader.GetInt64(3),
+                reader.IsDBNull(4) ? null : reader.GetGuid(4)));
+        await command.Connection.CloseAsync();
+        return states;
+    }
+
+    private static async Task<long> ScalarAsync(HobbiesMapDbContext context, string sql)
+    {
+        await using var command = new NpgsqlCommand(sql,
+            (NpgsqlConnection)context.Database.GetDbConnection());
+        var connection = command.Connection!;
+        if (connection.State != ConnectionState.Open)
+            await connection.OpenAsync();
+        try
+        {
+            return Convert.ToInt64(await command.ExecuteScalarAsync());
+        }
+        finally
+        {
+            await connection.CloseAsync();
+        }
+    }
+
+    private static async Task AssertCatalogIntegrityAsync(HobbiesMapDbContext context)
+    {
+        Assert.Equal(3L, await ScalarAsync(context, """
+            SELECT count(*) FROM pg_constraint
+            WHERE connamespace='andril_hobbies'::regnamespace
+              AND conname IN ('fk_map_lifecycle_current_receipt','fk_map_lifecycle_receipt_audit','fk_map_lifecycle_audit_receipt')
+              AND convalidated AND condeferrable AND condeferred AND confdeltype='a'
+            """));
+        Assert.Equal(1L, await ScalarAsync(context, """
+            SELECT count(*) FROM pg_constraint
+            WHERE connamespace='andril_hobbies'::regnamespace
+              AND conname='fk_map_lifecycle_receipt_audit'
+              AND array_length(conkey,1)=14 AND array_length(confkey,1)=14
+            """));
+        Assert.Equal(1L, await ScalarAsync(context, """
+            SELECT count(*) FROM pg_trigger t
+            JOIN pg_class r ON r.oid=t.tgrelid
+            JOIN pg_namespace n ON n.oid=r.relnamespace
+            WHERE n.nspname='andril_hobbies' AND t.tgname='map_lifecycle_receipt_applied'
+              AND t.tgconstraint<>0 AND t.tgdeferrable AND t.tginitdeferred
+            """));
+        Assert.Equal(4L, await ScalarAsync(context, """
+            SELECT count(*) FROM pg_trigger t
+            JOIN pg_class r ON r.oid=t.tgrelid
+            JOIN pg_namespace n ON n.oid=r.relnamespace
+            WHERE n.nspname='andril_hobbies'
+              AND t.tgname IN ('map_lifecycle_update_link','map_lifecycle_receipt_applied',
+                               'map_lifecycle_receipt_immutable','map_lifecycle_audit_immutable')
+            """));
+        Assert.Equal(3L, await ScalarAsync(context, """
+            SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
+            WHERE n.nspname='andril_hobbies'
+              AND p.proname IN ('map_lifecycle_check_update','map_lifecycle_check_applied','map_lifecycle_immutable')
+            """));
+        Assert.Equal(0L, await ScalarAsync(context, """
+            SELECT count(*) FROM pg_index i
+            JOIN pg_class t ON t.oid=i.indrelid
+            JOIN pg_namespace n ON n.oid=t.relnamespace
+            WHERE n.nspname='andril_hobbies'
+              AND t.relname IN ('map_attraction_lifecycle','map_attraction_lifecycle_receipts','map_attraction_lifecycle_audit')
+              AND NOT i.indisunique
+            """));
+    }
+
+    private static async Task AssertDeferredReceiptFailureRollsBackAsync(
+        string connectionString, Guid attractionId, Guid subjectId)
+    {
+        await using var connection = new NpgsqlConnection(connectionString);
+        await connection.OpenAsync();
+        await using var transaction = await connection.BeginTransactionAsync();
+        var receiptId = Guid.NewGuid();
+        await using (var insert = new NpgsqlCommand("""
+            INSERT INTO andril_hobbies.map_attraction_lifecycle_receipts
+                (receipt_id,reviewer_subject_id,request_id,attraction_id,requested_is_active,expected_version,
+                 previous_is_active,previous_version,result_is_active,result_version,
+                 previous_operation_sequence,result_operation_sequence,outcome,accepted_at_utc)
+            VALUES ($1,$2,$3,$4,true,1,false,1,true,2,1,2,1,clock_timestamp())
+            """, connection, transaction))
+        {
+            insert.Parameters.AddWithValue(receiptId);
+            insert.Parameters.AddWithValue(subjectId);
+            insert.Parameters.AddWithValue(Guid.NewGuid());
+            insert.Parameters.AddWithValue(attractionId);
+            await insert.ExecuteNonQueryAsync();
+        }
+
+        var error = await Assert.ThrowsAsync<PostgresException>(() => transaction.CommitAsync());
+        Assert.Contains(error.ConstraintName,
+            new[] { "fk_map_lifecycle_receipt_audit", "ck_map_lifecycle_receipt_applied" });
+    }
+
+    private static async Task WithDisposableDatabaseAsync(Func<string, Task> test)
+    {
+        var configured = Environment.GetEnvironmentVariable("ANDRIL_M3_TEST_POSTGRES");
+        if (string.IsNullOrWhiteSpace(configured))
+            throw new InvalidOperationException("Disposable local PostgreSQL is not configured.");
+        var settings = new NpgsqlConnectionStringBuilder(configured);
+        if (settings.Host is not ("localhost" or "127.0.0.1" or "::1") || settings.Database != "postgres")
+            throw new InvalidOperationException("Only the configured local postgres maintenance database is allowed.");
+        if (settings.Host == "localhost")
+            settings.Host = "127.0.0.1";
+        settings.Pooling = false;
+        settings.Enlist = false;
+        settings.IncludeErrorDetail = false;
+        settings.Timeout = 10;
+        settings.CommandTimeout = 15;
+
+        await using var admin = new NpgsqlConnection(settings.ConnectionString);
+        await admin.OpenAsync();
+        await using (var verify = new NpgsqlCommand(
+            "SELECT inet_server_addr() IN ('127.0.0.1'::inet, '::1'::inet)", admin))
+        {
+            if (await verify.ExecuteScalarAsync() is not true)
+                throw new InvalidOperationException("PostgreSQL must report a loopback address.");
+        }
+
+        var databaseName = "andril_m3_map37b_test_" + Guid.NewGuid().ToString("N");
+        await using (var create = new NpgsqlCommand($"CREATE DATABASE \"{databaseName}\" TEMPLATE template0", admin))
+            await create.ExecuteNonQueryAsync();
+        try
+        {
+            settings.Database = databaseName;
+            await test(settings.ConnectionString);
+        }
+        finally
+        {
+            await using var drop = new NpgsqlCommand($"DROP DATABASE \"{databaseName}\"", admin);
+            await drop.ExecuteNonQueryAsync();
+        }
+    }
+
+    private sealed class TestUser(Guid subject) : ICurrentUser
+    {
+        public Guid? UserId { get; } = subject;
+        public bool IsAuthenticated { get; } = true;
+    }
+
+    private sealed class TestAuthorization(TestUser user) : IMapAttractionManagementAuthorization
+    {
+        public Task<MapAttractionManagementAuthorizationResult> AuthorizeAsync(
+            System.Data.Common.DbConnection connection,
+            System.Data.Common.DbTransaction transaction,
+            Guid attractionId,
+            bool requestedIsActive,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(new MapAttractionManagementAuthorizationResult(
+                MapAttractionManagementAuthorizationOutcome.Satisfied,
+                new MapAttractionManagementGrant(user.UserId!.Value, attractionId, requestedIsActive)));
+        }
+    }
+
+    private sealed class ContextFactory(string connectionString) : IDbContextFactory<HobbiesMapDbContext>
+    {
+        public HobbiesMapDbContext CreateDbContext() => CreateContext(connectionString);
+    }
+}

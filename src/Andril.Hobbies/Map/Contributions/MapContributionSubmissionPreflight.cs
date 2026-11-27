@@ -66,11 +66,12 @@ internal sealed class MapContributionSubmissionPreflight(
 
         var attraction = await attractions.FindByIdAsync(attractionId, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
-        if (attraction is null || attraction.AttractionId != attractionId
-            || !MapContributionEvidenceValidator.Validate(attraction, session, ownerId, reportedLocation).PassesChecks)
-        {
+        if (attraction is null || attraction.AttractionId != attractionId)
             return null;
-        }
+
+        var location = MapContributionEvidenceValidator.Validate(attraction, session, ownerId, reportedLocation);
+        if (!location.PassesChecks || location.Evidence is not { } evidence)
+            return null;
 
         if (!MapContributionSubmissionWindow.Allows(session, _timeProvider.GetUtcNow()))
             return null;
@@ -85,8 +86,6 @@ internal sealed class MapContributionSubmissionPreflight(
         if (!MapContributionSubmissionWindow.Allows(session, submittedAt))
             return null;
 
-        var evidence = MapContributionEvidenceValidator.Validate(
-            attraction, session, ownerId, reportedLocation).Evidence!;
         try
         {
             return new PreparedSubmission(MapContribution.Create(Guid.NewGuid(), ownerId,

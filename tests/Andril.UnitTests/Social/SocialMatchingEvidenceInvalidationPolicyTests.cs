@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json;
 using Andril.Social.Matching;
 using Xunit;
 
@@ -139,6 +140,110 @@ public class SocialMatchingEvidenceInvalidationPolicyTests
 
         Assert.Equal(SocialEvidenceCurrencyStatus.IncompatiblePolicyVersion, result.Status);
         Assert.Equal(SocialEvidenceInvalidationReason.PolicyVersionChanged, result.InvalidationReasons);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, true)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public void WithdrawalState_OnlyIdenticalSnapshotsAreCurrent(bool cachedWithdrawn, bool committedWithdrawn)
+    {
+        var id = Guid.NewGuid();
+        var cached = CreateBaselineSnapshot(id, isQuestionnaireWithdrawn: cachedWithdrawn);
+        var committed = CreateBaselineSnapshot(id, isQuestionnaireWithdrawn: committedWithdrawn);
+
+        var result = SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(cached, committed);
+
+        var identical = cachedWithdrawn == committedWithdrawn;
+        Assert.Equal(identical, result.IsCurrent);
+        Assert.Equal(identical ? SocialEvidenceCurrencyStatus.Current : SocialEvidenceCurrencyStatus.StaleRequiresRefresh, result.Status);
+        Assert.Equal(identical ? SocialEvidenceInvalidationReason.None : SocialEvidenceInvalidationReason.QuestionnaireWithdrawn,
+            result.InvalidationReasons);
+        Assert.Equal(cachedWithdrawn, cached.IsQuestionnaireWithdrawn);
+        Assert.Equal(committedWithdrawn, committed.IsQuestionnaireWithdrawn);
+        // Currency evaluation reports state; it does not restore answers or grant lifecycle access.
+        Assert.Equal("{}", JsonSerializer.Serialize(result));
+        Assert.Equal("SocialEvidenceCurrencyResult [private]", result.ToString());
+    }
+
+    [Theory]
+    [InlineData(false, false, SocialEvidenceInvalidationReason.ProfileDeactivated)]
+    [InlineData(true, true, SocialEvidenceInvalidationReason.AccountRestricted)]
+    [InlineData(false, true, SocialEvidenceInvalidationReason.ProfileDeactivated | SocialEvidenceInvalidationReason.AccountRestricted)]
+    public void ContradictoryCachedStanding_RequiresRefreshWithoutAuthorizingReactivation(
+        bool cachedActive, bool cachedRestricted, SocialEvidenceInvalidationReason reason)
+    {
+        var id = Guid.NewGuid();
+        var cached = CreateBaselineSnapshot(id, isActive: cachedActive, isRestricted: cachedRestricted);
+        var committed = CreateBaselineSnapshot(id);
+
+        var result = SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(cached, committed);
+
+        Assert.False(result.IsCurrent);
+        Assert.Equal(SocialEvidenceCurrencyStatus.StaleRequiresRefresh, result.Status);
+        Assert.Equal(reason, result.InvalidationReasons);
+        Assert.Equal(cachedActive, cached.IsProfileActive);
+        Assert.Equal(cachedRestricted, cached.IsAccountRestricted);
+        Assert.True(committed.IsProfileActive);
+        Assert.False(committed.IsAccountRestricted);
+        Assert.Equal("{}", JsonSerializer.Serialize(cached));
+        Assert.Equal("{}", JsonSerializer.Serialize(result));
+    }
+
+    [Theory]
+    [InlineData(false, false, SocialEvidenceInvalidationReason.ProfileDeactivated)]
+    [InlineData(true, true, SocialEvidenceInvalidationReason.AccountRestricted)]
+    [InlineData(false, true, SocialEvidenceInvalidationReason.AccountRestricted)]
+    public void CurrentRevocation_TakesPrecedenceOverPolicyAndRevisionChanges(
+        bool active, bool restricted, SocialEvidenceInvalidationReason reason)
+    {
+        var id = Guid.NewGuid();
+        var cached = CreateBaselineSnapshot(id);
+        var committed = CreateBaselineSnapshot(id, policyVersion: "changed-policy", questionnaireRev: 9,
+            isQuestionnaireWithdrawn: true, isActive: active, isRestricted: restricted);
+
+        var result = SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(cached, committed);
+
+        Assert.Equal(SocialEvidenceCurrencyStatus.RevokedOrDeactivated, result.Status);
+        Assert.Equal(reason, result.InvalidationReasons);
+        Assert.False(result.IsCurrent);
+    }
+
+    [Fact]
+    public void StateContradictions_AccumulateExistingRevisionReasonsAndKeepPolicyPrecedence()
+    {
+        var id = Guid.NewGuid();
+        var cached = CreateBaselineSnapshot(id, isQuestionnaireWithdrawn: true, isActive: false, isRestricted: true);
+        var committed = CreateBaselineSnapshot(id, questionnaireRev: 2, partnerPrefsRev: 2, blockRev: 2);
+        var result = SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(cached, committed);
+        Assert.Equal(SocialEvidenceInvalidationReason.QuestionnaireWithdrawn |
+            SocialEvidenceInvalidationReason.ProfileDeactivated | SocialEvidenceInvalidationReason.AccountRestricted |
+            SocialEvidenceInvalidationReason.QuestionnaireRevisionChanged |
+            SocialEvidenceInvalidationReason.PartnerPreferencesChanged | SocialEvidenceInvalidationReason.BlockingChanged,
+            result.InvalidationReasons);
+        var changedPolicy = CreateBaselineSnapshot(id, policyVersion: "changed-policy");
+        var policyResult = SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(cached, changedPolicy);
+        Assert.Equal(SocialEvidenceCurrencyStatus.IncompatiblePolicyVersion, policyResult.Status);
+        Assert.Equal(SocialEvidenceInvalidationReason.PolicyVersionChanged, policyResult.InvalidationReasons);
+        Assert.Equal("{}", JsonSerializer.Serialize(result));
+        Assert.DoesNotContain(id.ToString(), result.ToString());
+    }
+
+    [Fact]
+    public void AbortedTransaction_PreservesCommittedEvidenceAndEveryScoreEffectRemainsForbidden()
+    {
+        var id = Guid.NewGuid();
+        var cached = CreateBaselineSnapshot(id);
+        var committed = CreateBaselineSnapshot(id);
+        var aborted = CreateBaselineSnapshot(id, questionnaireRev: 2, isQuestionnaireWithdrawn: true, isActive: false);
+        Assert.False(SocialMatchingEvidenceInvalidationPolicy.ShouldInvalidateOnTransactionOutcome(false));
+        Assert.True(SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(cached, committed).IsCurrent);
+        Assert.False(SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(cached, aborted).IsCurrent);
+        Assert.True(SocialMatchingEvidenceInvalidationPolicy.ShouldInvalidateOnTransactionOutcome(true));
+        foreach (var effect in Enum.GetValues<SocialScoreChangeProhibitedEffect>())
+            Assert.Throws<InvalidOperationException>(() => SocialMatchingEvidenceInvalidationPolicy.AssertNoSideEffect(effect));
+        Assert.True(SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(cached, committed).IsCurrent);
     }
 
     [Fact]

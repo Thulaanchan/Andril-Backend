@@ -241,6 +241,356 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         });
                 });
 
+            modelBuilder.Entity("Andril.Persistence.Configurations.MapModerationAudit", b =>
+                {
+                    b.Property<Guid>("DecisionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decision_id");
+
+                    b.HasKey("DecisionId")
+                        .HasName("pk_map_moderation_audit");
+
+                    b.ToTable("map_moderation_audit", "andril_hobbies");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Configurations.MapModerationReceipt", b =>
+                {
+                    b.Property<Guid>("DecisionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decision_id");
+
+                    b.Property<int>("Action")
+                        .HasColumnType("integer")
+                        .HasColumnName("action");
+
+                    b.Property<Guid>("AttractionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attraction_id");
+
+                    b.Property<Guid>("ContributionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contribution_id");
+
+                    b.Property<DateTimeOffset>("DecidedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at");
+
+                    b.Property<long>("ExpectedRevision")
+                        .HasColumnType("bigint")
+                        .HasColumnName("expected_revision");
+
+                    b.Property<Guid?>("MediaId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("media_id");
+
+                    b.Property<Guid>("ProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("profile_id");
+
+                    b.Property<Guid>("ReviewerSubject")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewer_subject");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.HasKey("DecisionId")
+                        .HasName("pk_map_moderation_receipts");
+
+                    b.HasIndex("ContributionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_moderation_contribution");
+
+                    b.HasIndex("MediaId");
+
+                    b.HasIndex("ContributionId", "AttractionId", "ProfileId", "SessionId");
+
+                    b.ToTable("map_moderation_receipts", "andril_hobbies", t =>
+                        {
+                            t.HasCheckConstraint("ck_map_moderation_action", "(action = 1 AND media_id IS NOT NULL) OR (action = 2 AND media_id IS NULL)");
+
+                            t.HasCheckConstraint("ck_map_moderation_identity", "decision_id <> '00000000-0000-0000-0000-000000000000' AND reviewer_subject <> '00000000-0000-0000-0000-000000000000'");
+
+                            t.HasCheckConstraint("ck_map_moderation_revision", "expected_revision = 0 AND revision = 1");
+                        });
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleAuditRow", b =>
+                {
+                    b.Property<Guid>("ReceiptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("receipt_id");
+
+                    b.Property<DateTimeOffset>("AcceptedAtUtc")
+                        .HasColumnType("timestamp(6) with time zone")
+                        .HasColumnName("accepted_at_utc");
+
+                    b.Property<Guid>("AttractionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attraction_id");
+
+                    b.Property<long>("ExpectedVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("expected_version");
+
+                    b.Property<short>("Outcome")
+                        .HasColumnType("smallint")
+                        .HasColumnName("outcome");
+
+                    b.Property<bool>("PreviousIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("previous_is_active");
+
+                    b.Property<long>("PreviousOperationSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("previous_operation_sequence");
+
+                    b.Property<long>("PreviousVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("previous_version");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<bool>("RequestedIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("requested_is_active");
+
+                    b.Property<bool>("ResultIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("result_is_active");
+
+                    b.Property<long>("ResultOperationSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("result_operation_sequence");
+
+                    b.Property<long>("ResultVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("result_version");
+
+                    b.Property<Guid>("ReviewerSubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewer_subject_id");
+
+                    b.HasKey("ReceiptId")
+                        .HasName("pk_map_lifecycle_audit");
+
+                    b.HasAlternateKey("ReceiptId", "ReviewerSubjectId", "RequestId", "AttractionId", "RequestedIsActive", "ExpectedVersion", "PreviousIsActive", "PreviousVersion", "ResultIsActive", "ResultVersion", "PreviousOperationSequence", "ResultOperationSequence", "Outcome", "AcceptedAtUtc")
+                        .HasName("ak_map_lifecycle_audit_evidence");
+
+                    b.ToTable("map_attraction_lifecycle_audit", "andril_hobbies");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleReceiptRow", b =>
+                {
+                    b.Property<Guid>("ReceiptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("receipt_id");
+
+                    b.Property<DateTimeOffset>("AcceptedAtUtc")
+                        .HasColumnType("timestamp(6) with time zone")
+                        .HasColumnName("accepted_at_utc");
+
+                    b.Property<Guid>("AttractionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attraction_id");
+
+                    b.Property<long>("ExpectedVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("expected_version");
+
+                    b.Property<short>("Outcome")
+                        .HasColumnType("smallint")
+                        .HasColumnName("outcome");
+
+                    b.Property<bool>("PreviousIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("previous_is_active");
+
+                    b.Property<long>("PreviousOperationSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("previous_operation_sequence");
+
+                    b.Property<long>("PreviousVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("previous_version");
+
+                    b.Property<Guid>("RequestId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_id");
+
+                    b.Property<bool>("RequestedIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("requested_is_active");
+
+                    b.Property<bool>("ResultIsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("result_is_active");
+
+                    b.Property<long>("ResultOperationSequence")
+                        .HasColumnType("bigint")
+                        .HasColumnName("result_operation_sequence");
+
+                    b.Property<long>("ResultVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("result_version");
+
+                    b.Property<Guid>("ReviewerSubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewer_subject_id");
+
+                    b.HasKey("ReceiptId")
+                        .HasName("pk_map_lifecycle_receipts");
+
+                    b.HasAlternateKey("ReceiptId", "AttractionId", "ResultIsActive", "ResultVersion", "ResultOperationSequence")
+                        .HasName("ak_map_lifecycle_receipt_result");
+
+                    b.HasIndex("AttractionId", "ResultOperationSequence")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_lifecycle_operation");
+
+                    b.HasIndex("ReviewerSubjectId", "RequestId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_lifecycle_reviewer_request");
+
+                    b.ToTable("map_attraction_lifecycle_receipts", "andril_hobbies", t =>
+                        {
+                            t.HasCheckConstraint("ck_map_lifecycle_receipt_ids", "receipt_id<>'00000000-0000-0000-0000-000000000000'::uuid AND reviewer_subject_id<>'00000000-0000-0000-0000-000000000000'::uuid AND request_id<>'00000000-0000-0000-0000-000000000000'::uuid");
+
+                            t.HasCheckConstraint("ck_map_lifecycle_receipt_time", "isfinite(accepted_at_utc)");
+
+                            t.HasCheckConstraint("ck_map_lifecycle_receipt_transition", "expected_version=previous_version AND requested_is_active=result_is_active AND previous_version>=0 AND result_version>=0 AND previous_operation_sequence>=0 AND result_operation_sequence::numeric=previous_operation_sequence::numeric+1 AND ((outcome=1 AND previous_is_active<>result_is_active AND result_version::numeric=previous_version::numeric+1) OR (outcome=2 AND previous_is_active=result_is_active AND result_version=previous_version))");
+                        });
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleRow", b =>
+                {
+                    b.Property<Guid>("AttractionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attraction_id");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_active");
+
+                    b.Property<Guid?>("LastReceiptId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("last_receipt_id");
+
+                    b.Property<long>("OperationSequence")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("operation_sequence");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("AttractionId")
+                        .HasName("pk_map_attraction_lifecycle");
+
+                    b.ToTable("map_attraction_lifecycle", "andril_hobbies", t =>
+                        {
+                            t.HasCheckConstraint("ck_map_lifecycle_state", "version >= 0 AND operation_sequence >= 0 AND ((operation_sequence=0 AND version=0 AND last_receipt_id IS NULL) OR (operation_sequence>0 AND last_receipt_id IS NOT NULL))");
+                        });
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapPrivateMediaRow", b =>
+                {
+                    b.Property<Guid>("MediaId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("media_id");
+
+                    b.Property<Guid>("AttractionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attraction_id");
+
+                    b.Property<DateTimeOffset?>("CapturedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("captured_at");
+
+                    b.Property<Guid>("Challenge")
+                        .HasColumnType("uuid")
+                        .HasColumnName("capture_challenge");
+
+                    b.Property<DateTimeOffset?>("CleanedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("cleaned_at");
+
+                    b.Property<Guid?>("CleanupClaim")
+                        .HasColumnType("uuid")
+                        .HasColumnName("cleanup_claim");
+
+                    b.Property<DateTimeOffset?>("FinalizedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("finalized_at");
+
+                    b.Property<string>("PrivateReference")
+                        .HasColumnType("text")
+                        .HasColumnName("private_reference");
+
+                    b.Property<Guid>("ProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("profile_id");
+
+                    b.Property<DateTimeOffset>("ReservedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reserved_at");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<string>("Sha256")
+                        .HasColumnType("text")
+                        .HasColumnName("sha256");
+
+                    b.Property<Guid>("SubjectId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("subject_id");
+
+                    b.Property<DateTimeOffset>("UploadExpiresAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("upload_expires_at");
+
+                    b.Property<string>("Version")
+                        .HasColumnType("text")
+                        .HasColumnName("version");
+
+                    b.HasKey("MediaId")
+                        .HasName("pk_map_private_media");
+
+                    b.HasIndex("Challenge")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_private_media_challenge");
+
+                    b.HasIndex("PrivateReference")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_private_media_reference");
+
+                    b.HasIndex("SessionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_private_media_session");
+
+                    b.HasIndex("SessionId", "ProfileId", "AttractionId");
+
+                    b.ToTable("map_private_media", "andril_hobbies", t =>
+                        {
+                            t.HasCheckConstraint("ck_map_media_cleanup_state", "cleaned_at IS NULL OR (cleanup_claim IS NOT NULL AND finalized_at IS NULL)");
+
+                            t.HasCheckConstraint("ck_map_media_evidence_state", "(finalized_at IS NULL AND private_reference IS NULL AND version IS NULL AND sha256 IS NULL AND captured_at IS NULL)\nOR (finalized_at IS NOT NULL AND private_reference IS NOT NULL AND length(private_reference) > 0\n    AND version IS NOT NULL AND length(version) > 0 AND sha256 IS NOT NULL\n    AND sha256 ~ '^[0-9A-Fa-f]{64}$' AND captured_at IS NOT NULL\n    AND captured_at <= finalized_at AND cleanup_claim IS NULL)");
+
+                            t.HasCheckConstraint("ck_map_media_upload_window", "upload_expires_at > reserved_at AND upload_expires_at <= reserved_at + interval '120 seconds'");
+                        });
+                });
+
             modelBuilder.Entity("Andril.Economy.FlightPoints.FlightPointsLedgerEntry", b =>
                 {
                     b.HasOne("Andril.Economy.FlightPoints.FlightPointsLedgerEntry", null)
@@ -259,6 +609,89 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired()
                         .HasConstraintName("fk_map_contributions_capture_session_scope");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Configurations.MapModerationAudit", b =>
+                {
+                    b.HasOne("Andril.Persistence.Configurations.MapModerationReceipt", null)
+                        .WithOne()
+                        .HasForeignKey("Andril.Persistence.Configurations.MapModerationAudit", "DecisionId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_moderation_audit_receipt");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Configurations.MapModerationReceipt", b =>
+                {
+                    b.HasOne("Andril.Persistence.Repositories.Hobbies.MapPrivateMediaRow", null)
+                        .WithMany()
+                        .HasForeignKey("MediaId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .HasConstraintName("fk_map_moderation_media");
+
+                    b.HasOne("Andril.Hobbies.Map.Contributions.MapContribution", null)
+                        .WithMany()
+                        .HasForeignKey("ContributionId", "AttractionId", "ProfileId", "SessionId")
+                        .HasPrincipalKey("ContributionId", "AttractionId", "OwnerHobbiesModuleProfileId", "CaptureSessionId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_moderation_scope");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleAuditRow", b =>
+                {
+                    b.HasOne("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleReceiptRow", null)
+                        .WithMany()
+                        .HasForeignKey("ReceiptId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_lifecycle_audit_receipt");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleReceiptRow", b =>
+                {
+                    b.HasOne("Andril.Hobbies.Map.Places.MapAttraction", null)
+                        .WithMany()
+                        .HasForeignKey("AttractionId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_lifecycle_receipt_attraction");
+
+                    b.HasOne("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleAuditRow", null)
+                        .WithMany()
+                        .HasForeignKey("ReceiptId", "ReviewerSubjectId", "RequestId", "AttractionId", "RequestedIsActive", "ExpectedVersion", "PreviousIsActive", "PreviousVersion", "ResultIsActive", "ResultVersion", "PreviousOperationSequence", "ResultOperationSequence", "Outcome", "AcceptedAtUtc")
+                        .HasPrincipalKey("ReceiptId", "ReviewerSubjectId", "RequestId", "AttractionId", "RequestedIsActive", "ExpectedVersion", "PreviousIsActive", "PreviousVersion", "ResultIsActive", "ResultVersion", "PreviousOperationSequence", "ResultOperationSequence", "Outcome", "AcceptedAtUtc")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_lifecycle_receipt_audit");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleRow", b =>
+                {
+                    b.HasOne("Andril.Hobbies.Map.Places.MapAttraction", null)
+                        .WithMany()
+                        .HasForeignKey("AttractionId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_lifecycle_attraction");
+
+                    b.HasOne("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleReceiptRow", null)
+                        .WithMany()
+                        .HasForeignKey("LastReceiptId", "AttractionId", "IsActive", "Version", "OperationSequence")
+                        .HasPrincipalKey("ReceiptId", "AttractionId", "ResultIsActive", "ResultVersion", "ResultOperationSequence")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .HasConstraintName("fk_map_lifecycle_current_receipt");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapPrivateMediaRow", b =>
+                {
+                    b.HasOne("Andril.Hobbies.Map.Contributions.MapContributionCaptureSession", null)
+                        .WithMany()
+                        .HasForeignKey("SessionId", "ProfileId", "AttractionId")
+                        .HasPrincipalKey("SessionId", "OwnerHobbiesModuleProfileId", "AttractionId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_private_media_session_scope");
                 });
 #pragma warning restore 612, 618
         }

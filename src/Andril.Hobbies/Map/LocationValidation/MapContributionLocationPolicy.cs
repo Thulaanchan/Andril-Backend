@@ -39,7 +39,7 @@ public static class MapContributionLocationPolicy
     // Approximate mean spherical Earth radius used for the great-circle distance.
     private const double EarthRadiusMetres = 6_371_000;
 
-    private static readonly TimeSpan MaximumCaptureDuration = TimeSpan.FromSeconds(120);
+    internal static readonly TimeSpan MaximumCaptureDuration = TimeSpan.FromSeconds(120);
 
     /// <summary>
     /// Evaluates coordinate, reported accuracy and elapsed time checks.

@@ -78,10 +78,14 @@ public sealed class NotificationPushOrchestrationService
             scope,
             cancellationToken);
 
-        if (!NotificationChannelPreferencePolicy.CanDeliver(
+        var preferenceDecision =
+            NotificationChannelPreferencePolicy.Evaluate(
                 scope,
                 preferences,
-                NotificationDeliveryChannel.Push))
+                NotificationDeliveryChannel.Push);
+
+        if (preferenceDecision !=
+            NotificationPreferenceDecision.Allowed)
         {
             return Denied();
         }
@@ -101,6 +105,8 @@ public sealed class NotificationPushOrchestrationService
         {
             return Denied();
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         var result = await _sender.SendAsync(
             request,
