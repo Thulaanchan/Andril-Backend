@@ -54,6 +54,12 @@ public sealed class NotificationEntry
                 nameof(title));
         }
 
+        if (createdAt == default)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(createdAt));
+        }
+
         Id = id;
         Type = type;
         Title = title;

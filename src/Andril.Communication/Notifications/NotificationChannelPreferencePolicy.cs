@@ -46,6 +46,16 @@ public sealed class NotificationChannelPreferences
 }
 
 /// <summary>
+/// Outcome of evaluating trusted channel preference evidence.
+/// </summary>
+public enum NotificationPreferenceDecision
+{
+    Allowed = 1,
+    Denied = 2,
+    Unavailable = 3
+}
+
+/// <summary>
 /// Fail-closed preference evaluation for ordinary,
 /// preference-controlled module notifications.
 ///
@@ -56,26 +66,29 @@ public sealed class NotificationChannelPreferences
 /// </summary>
 public static class NotificationChannelPreferencePolicy
 {
-    public static bool CanDeliver(
+    public static NotificationPreferenceDecision Evaluate(
         NotificationModuleScope? authorizedScope,
         NotificationChannelPreferences? preferences,
         NotificationDeliveryChannel channel)
     {
-        // Missing authorization or preferences:
-        // do not deliver.
-        if (authorizedScope is null || preferences is null)
+        if (authorizedScope is null || !Enum.IsDefined(channel))
         {
-            return false;
+            return NotificationPreferenceDecision.Denied;
+        }
+
+        if (preferences is null)
+        {
+            return NotificationPreferenceDecision.Unavailable;
         }
 
         // Never use preferences belonging to another
         // module or another private module profile.
         if (authorizedScope != preferences.RecipientScope)
         {
-            return false;
+            return NotificationPreferenceDecision.Denied;
         }
 
-        return channel switch
+        var enabled = channel switch
         {
             NotificationDeliveryChannel.InApp =>
                 preferences.InAppEnabled,
@@ -86,9 +99,21 @@ public static class NotificationChannelPreferencePolicy
             NotificationDeliveryChannel.Email =>
                 preferences.EmailEnabled,
 
-            // Invalid channels fail closed.
             _ => false
         };
+
+        return enabled
+            ? NotificationPreferenceDecision.Allowed
+            : NotificationPreferenceDecision.Denied;
+    }
+
+    public static bool CanDeliver(
+        NotificationModuleScope? authorizedScope,
+        NotificationChannelPreferences? preferences,
+        NotificationDeliveryChannel channel)
+    {
+        return Evaluate(authorizedScope, preferences, channel) ==
+            NotificationPreferenceDecision.Allowed;
     }
 }
 
