@@ -14,6 +14,7 @@ $inventoryPath = Join-Path $repo 'scripts/ci/member-03-map-required-db-tests.jso
 $sharedInventoryPath = 'scripts/ci/member-02-required-db-tests.json'
 $inventoryTrigger = 'ec2216e543beba548f1e10aa7a135622c7750c73'
 $privateMediaIdentity = 'Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.PrivateMediaMigration_EnforcesScopedUniquenessFinalizationAndCleanup'
+$moderationIdentity = 'Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.DurableModeration_RequiresAuditAndSerializesScopedDecisions'
 $approvedDigest = 'sha256:837bed18782820fe967067cb5328b02b0d9992c1be9a37ee0c9c492cfc03af3b'
 $approvedPlatformDigest = 'sha256:8d174ddfb292f26b6ec8d97f55d944ccab547fa8bfe9e4fd3c24afdc819ee423'
 $runRoot = Join-Path $env:RUNNER_TEMP 'member03-map-qa'
@@ -170,17 +171,17 @@ function Invoke-TestPartition([string] $Label, [string] $Filter, [string[]] $Exp
 }
 
 function Verify-InventoryAndM2([object] $Inventory) {
-    if ($Inventory.lifecycleCases.Count -ne 42 -or $Inventory.lifecycleDatabase.Count -ne 37 -or
+    if ($Inventory.lifecycleCases.Count -ne 43 -or $Inventory.lifecycleDatabase.Count -ne 38 -or
         $Inventory.lifecycleOffline.Count -ne 5 -or $Inventory.remainingMap.Count -ne 148 -or
-        $Inventory.expected.livePostgreSql -ne 185 -or $Inventory.expected.offline -ne 5 -or
-        $Inventory.expected.total -ne 190 -or $Inventory.socialTestsIncluded -ne $false) {
-        throw 'M3 identity inventory does not match the approved 37/5/148 partition counts.'
+        $Inventory.expected.livePostgreSql -ne 186 -or $Inventory.expected.offline -ne 5 -or
+        $Inventory.expected.total -ne 191 -or $Inventory.socialTestsIncluded -ne $false) {
+        throw 'M3 identity inventory does not match the approved 38/5/148 partition counts.'
     }
     $all = @($Inventory.lifecycleCases) + @($Inventory.remainingMap)
-    if (@($all | Sort-Object -Unique).Count -ne 190 -or @($all | Where-Object { $_ -match 'Social' }).Count) {
+    if (@($all | Sort-Object -Unique).Count -ne 191 -or @($all | Where-Object { $_ -match 'Social' }).Count) {
         throw 'M3 identity inventory contains duplicates or Social tests.'
     }
-    if ($privateMediaIdentity -cnotin $Inventory.lifecycleDatabase -or
+    if ($privateMediaIdentity -cnotin $Inventory.lifecycleDatabase -or $moderationIdentity -cnotin $Inventory.lifecycleDatabase -or
         @($Inventory.lifecycleDatabase | Where-Object { $_ -notin $Inventory.lifecycleCases }).Count -or
         @($Inventory.lifecycleOffline | Where-Object { $_ -notin $Inventory.lifecycleCases }).Count -or
         @($Inventory.lifecycleDatabase | Where-Object { $_ -in $Inventory.lifecycleOffline }).Count) {
@@ -195,10 +196,11 @@ function Verify-InventoryAndM2([object] $Inventory) {
     $triggerRaw = @(& git show "${inventoryTrigger}:$sharedInventoryPath")
     if ($LASTEXITCODE -ne 0) { throw 'Could not read the trigger M2 inventory.' }
     $triggerM2 = ($triggerRaw -join "`n") | ConvertFrom-Json
-    $expectedCurrentSkips = @($triggerM2.offlineOnlySkips) + $privateMediaIdentity
+    $expectedR05Skips = @($triggerM2.offlineOnlySkips) + $privateMediaIdentity
+    $expectedCurrentSkips = $expectedR05Skips + $moderationIdentity
     if (($currentM2.requiredM2 -join "`n") -cne ($triggerM2.requiredM2 -join "`n") -or
         ($currentM2.offlineOnlySkips -join "`n") -cne ($expectedCurrentSkips -join "`n")) {
-        throw 'The checkout differs from the approved trigger inventory plus the R05 private-media identity.'
+        throw 'The checkout differs from the approved trigger inventory plus the separately approved R05 private-media and R03 moderation identities.'
     }
     $parentRaw = @(& git show "${inventoryTrigger}^:$sharedInventoryPath")
     if ($LASTEXITCODE -ne 0) { throw 'Could not read the inventory trigger parent.' }
@@ -224,6 +226,7 @@ function Verify-InventoryAndM2([object] $Inventory) {
     Add-Summary 'M2_REQUIRED_IDENTITIES=88; ORDER_PRESERVED=True'
     Add-Summary 'SHARED_OFFLINE_SKIP_ADDITIONS=3; EXACT_IDENTITIES_VERIFIED=True'
     Add-Summary 'R05_SHARED_OFFLINE_SKIP_ADDITIONS=1; EXACT_IDENTITY_VERIFIED=True'
+    Add-Summary 'R03_SHARED_OFFLINE_SKIP_ADDITIONS=1; EXACT_IDENTITY_VERIFIED=True'
 }
 
 function Invoke-Cleanup {
@@ -314,9 +317,9 @@ try {
     Add-Summary 'POSTGRES_TEST_ENDPOINT=127.0.0.1:5432; TEST_PROCESS=unprivileged runner in service network namespace'
     $env:ANDRIL_M3_TEST_POSTGRES = "Host=127.0.0.1;Port=5432;Database=postgres;Username=$fixtureRole;Password=$fixturePassword;SSL Mode=Disable;Pooling=false;Include Error Detail=false;Timeout=10;Command Timeout=15"
     Remove-Item Env:ANDRIL_M2_TEST_POSTGRES, Env:ANDRIL_M2_TEST_POSTGRES_ALLOW_ROLES -ErrorAction SilentlyContinue
-    Invoke-TestPartition 'lifecycle' $lifecycleFilter ([string[]] $inventory.lifecycleCases) 37
+    Invoke-TestPartition 'lifecycle' $lifecycleFilter ([string[]] $inventory.lifecycleCases) 38
     Invoke-TestPartition 'remaining-map' $mapFilter ([string[]] $inventory.remainingMap) 148
-    Add-Summary 'TOTAL_EXPECTED=190; LIVE_DATABASE=185; OFFLINE=5; ALL_PASSED=True'
+    Add-Summary 'TOTAL_EXPECTED=191; LIVE_DATABASE=186; OFFLINE=5; ALL_PASSED=True'
 } catch {
     $runCode = 1
     $firstFailure = $_.Exception.Message
