@@ -69,6 +69,50 @@ namespace Andril.Persistence.Migrations.Social
                         });
                 });
 
+            modelBuilder.Entity("Andril.Persistence.DbContexts.SocialLocationEvidenceRow", b =>
+                {
+                    b.Property<Guid>("ProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("profile_id");
+
+                    b.Property<decimal?>("LatitudeCell")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("latitude_cell");
+
+                    b.Property<decimal?>("LongitudeCell")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("numeric(5,2)")
+                        .HasColumnName("longitude_cell");
+
+                    b.Property<string>("Module")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("module");
+
+                    b.Property<DateTimeOffset>("ObservedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("observed_at_utc");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
+                    b.HasKey("ProfileId")
+                        .HasName("pk_social_location_evidence");
+
+                    b.ToTable("social_location_evidence", "andril_social", t =>
+                        {
+                            t.HasCheckConstraint("ck_social_location_cells", "(latitude_cell IS NULL AND longitude_cell IS NULL) OR\n(latitude_cell IS NOT NULL AND longitude_cell IS NOT NULL\n    AND latitude_cell BETWEEN -90 AND 90 AND longitude_cell >= -180 AND longitude_cell < 180)");
+
+                            t.HasCheckConstraint("ck_social_location_module", "module = 'social'");
+
+                            t.HasCheckConstraint("ck_social_location_revision", "revision > 0 AND isfinite(observed_at_utc)");
+                        });
+                });
+
             modelBuilder.Entity("Andril.Persistence.DbContexts.SocialMatchRow", b =>
                 {
                     b.Property<Guid>("Id")

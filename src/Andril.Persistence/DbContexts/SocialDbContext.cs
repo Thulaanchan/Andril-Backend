@@ -165,6 +165,27 @@ public sealed class SocialDbContext : DbContext
             b.Property(row => row.Revision).HasColumnName("revision").IsConcurrencyToken();
         });
 
+        modelBuilder.Entity<SocialLocationEvidenceRow>(b =>
+        {
+            b.ToTable("social_location_evidence", Schema, table =>
+            {
+                table.HasCheckConstraint("ck_social_location_module", "module = 'social'");
+                table.HasCheckConstraint("ck_social_location_revision", "revision > 0 AND isfinite(observed_at_utc)");
+                table.HasCheckConstraint("ck_social_location_cells", """
+                    (latitude_cell IS NULL AND longitude_cell IS NULL) OR
+                    (latitude_cell IS NOT NULL AND longitude_cell IS NOT NULL
+                        AND latitude_cell BETWEEN -90 AND 90 AND longitude_cell >= -180 AND longitude_cell < 180)
+                    """.ReplaceLineEndings("\n"));
+            });
+            b.HasKey(row => row.ProfileId).HasName("pk_social_location_evidence");
+            b.Property(row => row.ProfileId).HasColumnName("profile_id").ValueGeneratedNever();
+            b.Property(row => row.Module).HasColumnName("module").HasMaxLength(16).IsRequired();
+            b.Property(row => row.LatitudeCell).HasColumnName("latitude_cell").HasPrecision(5, 2);
+            b.Property(row => row.LongitudeCell).HasColumnName("longitude_cell").HasPrecision(5, 2);
+            b.Property(row => row.ObservedAtUtc).HasColumnName("observed_at_utc");
+            b.Property(row => row.Revision).HasColumnName("revision").IsConcurrencyToken();
+        });
+
         modelBuilder.Entity<QuestionnaireAnswerEntity>(b =>
         {
             b.ToTable("social_questionnaire_answers", Schema, t =>
@@ -212,4 +233,14 @@ internal sealed class SocialMatchRow(Guid id, Guid firstProfileId, Guid secondPr
     public string State { get; private set; } = "active";
     public DateTime CreatedAtUtc { get; private set; } = createdAtUtc;
     public DateTime? RevokedAtUtc { get; private set; }
+}
+
+internal sealed class SocialLocationEvidenceRow
+{
+    public Guid ProfileId { get; private set; }
+    public string Module { get; private set; } = null!;
+    public decimal? LatitudeCell { get; private set; }
+    public decimal? LongitudeCell { get; private set; }
+    public DateTimeOffset ObservedAtUtc { get; private set; }
+    public long Revision { get; private set; }
 }
