@@ -32,7 +32,53 @@ public sealed class GroupDiscoveryService
         if (maximumCandidates <= 0) throw new ArgumentOutOfRangeException(nameof(maximumCandidates));
         if (!IsEligibleActor(actor, scope, _clock.GetUtcNow())) return null;
         var query = new GroupDiscoveryQuery(actor.ProfileId, scope, searchText, maximumCandidates);
-        var result = await _repository.WithAuthorizedReadAsync<AuthorizedGroupDiscoveryResult>(query, async (snapshot, ct) =>
+        var projectionGate = new object();
+        var projectionStarted = false;
+        var projectionRejected = false;
+        var readClosed = false;
+        Task<AuthorizedGroupDiscoveryResult?>? projection = null;
+        Task<AuthorizedGroupDiscoveryResult?>? read = null;
+
+        try
+        {
+            var authorizedRead = _repository.WithAuthorizedReadAsync<AuthorizedGroupDiscoveryResult>(
+                query, ProjectOnce, cancellationToken);
+            lock (projectionGate) read = authorizedRead;
+
+            var result = await authorizedRead;
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (projectionGate)
+            {
+                if (projectionRejected || projection is not { IsCompletedSuccessfully: true } ||
+                    !ReferenceEquals(result, projection.Result)) return null;
+            }
+
+            return IsEligibleActor(actor, scope, _clock.GetUtcNow()) ? result : null;
+        }
+        finally
+        {
+            lock (projectionGate) readClosed = true;
+        }
+
+        Task<AuthorizedGroupDiscoveryResult?> ProjectOnce(GroupDiscoverySnapshot snapshot, CancellationToken ct)
+        {
+            lock (projectionGate)
+            {
+                if (readClosed || projectionStarted || read is { IsCompleted: true })
+                {
+                    projectionRejected = true;
+                    return Task.FromResult<AuthorizedGroupDiscoveryResult?>(null);
+                }
+
+                projectionStarted = true;
+            }
+
+            var callback = ProjectAsync(snapshot, ct);
+            lock (projectionGate) projection = callback;
+            return callback;
+        }
+
+        async Task<AuthorizedGroupDiscoveryResult?> ProjectAsync(GroupDiscoverySnapshot snapshot, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
             if (snapshot is null || snapshot.ActorProfileId != actor.ProfileId || snapshot.Scope != scope ||
@@ -58,9 +104,7 @@ public sealed class GroupDiscoveryService
             if (!IsEligibleActor(actor, scope, _clock.GetUtcNow()) ||
                 groups.Keys.Any(id => !Permitted(evidenceById[id], scope, _clock.GetUtcNow()))) return null;
             return new AuthorizedGroupDiscoveryResult(actor.ProfileId, scope, groups.Values.OrderBy(group => group.Id));
-        }, cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
-        return IsEligibleActor(actor, scope, _clock.GetUtcNow()) ? result : null;
+        }
     }
 
     public static bool IsEligibleActor(AuthoritativeGroupProfileEvidence? actor, GroupModuleScope? scope, DateTimeOffset now)
