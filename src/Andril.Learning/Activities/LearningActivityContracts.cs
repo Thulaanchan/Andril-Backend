@@ -2,8 +2,8 @@ using System.Text.Json.Serialization;
 
 namespace Andril.Learning.Activities;
 
-public enum LearningActivityKind { SkillExchange = 1, Pact = 2, GrowthSelfReport = 3, MentorshipOffer = 4, MentorshipRequest = 5, Circle = 6 }
-public enum LearningActivityAction { Read = 1, Create = 2, Accept = 3, Decline = 4, Cancel = 5, ConfirmCompletion = 6, Withdraw = 7, CreateGoal = 8, EditGoal = 9, UpdateGoalProgress = 10, List = 11 }
+public enum LearningActivityKind { SkillExchange = 1, Pact = 2, GrowthSelfReport = 3, MentorshipOffer = 4, MentorshipRequest = 5, Circle = 6, Connection = 7 }
+public enum LearningActivityAction { Read = 1, Create = 2, Accept = 3, Decline = 4, Cancel = 5, ConfirmCompletion = 6, Withdraw = 7, CreateGoal = 8, EditGoal = 9, UpdateGoalProgress = 10, List = 11, Disconnect = 12 }
 public enum LearningActivityOutcome { Unavailable, Available, Saved, Denied, Invalid, Conflict, NotFound, CommitUnknown }
 public enum LearningActivityPermissionOutcome { Unavailable, Denied, Allowed }
 
@@ -43,6 +43,9 @@ public sealed record LearningActivityPermission(LearningActivityPermissionOutcom
 /// or membership from the domain ID. Implementations must coordinate revocation with the
 /// enclosing transaction. Unknown policy, mapping or evidence returns Unavailable/Denied.
 /// No production implementation or permissive default is supplied.
+/// Connection operations additionally require the approved B4-07 participant-only privacy,
+/// current blocking in both directions and lifecycle checks through commit/read release.
+/// Blocking denies access immediately; stored Accepted status is never an access grant.
 /// </summary>
 public interface ILearningActivityAuthority
 {
