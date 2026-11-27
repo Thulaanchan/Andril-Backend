@@ -18,6 +18,7 @@ public sealed class SocialMigrationTests
     private const string RelationshipMigrationName = "20261127220222_SocialRelationshipPersistence";
     private const string PreferencesMigrationName = "20261127222933_SocialMatchingPreferences";
     private const string SafetyMigrationName = "20261127223734_SocialSafetyAuthority";
+    private const string MatchingMigrationName = "20261127224847_SocialMatchingEvidence";
     private static readonly string[] ExpectedTables = ["social_questionnaire_answers", "social_questionnaire_responses"];
 
     [Fact]
@@ -26,7 +27,7 @@ public sealed class SocialMigrationTests
         using var context = new SocialDbContextFactory().CreateDbContext([]);
         var migrations = context.Database.GetMigrations().ToArray();
 
-        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName, PreferencesMigrationName, SafetyMigrationName }, migrations);
+        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName, PreferencesMigrationName, SafetyMigrationName, MatchingMigrationName }, migrations);
         Assert.NotNull(context.GetService<IMigrationsAssembly>().ModelSnapshot);
         Assert.False(context.Database.HasPendingModelChanges());
     }
@@ -104,7 +105,7 @@ public sealed class SocialMigrationTests
         await context.Database.MigrateAsync();
 
         var applied = (await context.Database.GetAppliedMigrationsAsync()).ToArray();
-        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName, PreferencesMigrationName, SafetyMigrationName }, applied);
+        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName, PreferencesMigrationName, SafetyMigrationName, MatchingMigrationName }, applied);
 
         // 2. Verify expected schema objects exist in andril_social without disposing EF Core-owned connection
         var conn = context.Database.GetDbConnection();
@@ -134,6 +135,7 @@ public sealed class SocialMigrationTests
             Assert.Contains("social_matching_preferences", tables);
             Assert.Contains("social_profile_blocks", tables);
             Assert.Contains("social_profile_restrictions", tables);
+            Assert.Contains("social_location_evidence", tables);
         }
         finally
         {

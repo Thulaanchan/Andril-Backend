@@ -194,6 +194,33 @@ public sealed class PostgresSocialRelationshipTransactionRepositoryTests
         Assert.Equal(4L, await fixture.AuditCountAsync());
     }
 
+    [LocalPostgresFact]
+    public async Task ConsentedLocationsUseCoarseCellsAndWithdrawalRemovesDistance()
+    {
+        await using var fixture = await RelationshipDatabase.CreateAsync();
+        var first = await fixture.SeedAsync();
+        var second = await fixture.SeedAsync();
+        await fixture.PrepareMatchingAsync(first);
+        await fixture.PrepareMatchingAsync(second);
+        await fixture.LocationAsync(first).UpdateSelfAsync(6.912345m, 79.911111m, consent: true);
+        await fixture.LocationAsync(second).UpdateSelfAsync(7.021234m, 79.923456m, consent: true);
+
+        var firstStored = await fixture.LocationRecordAsync(first);
+        Assert.Equal((6.90m, 79.90m), firstStored);
+        var cards = await fixture.DiscoveryAsync(first);
+        var card = Assert.Single(cards);
+        Assert.Equal(second.Profile, card.Evidence.ProfileId);
+        Assert.Equal(11, card.ApproximateDistanceKm);
+        Assert.Null(card.Evidence.QuestionnaireAnswers);
+        Assert.Equal(card.CachedRevision, card.CommittedRevision);
+
+        await fixture.LocationAsync(second).WithdrawSelfAsync();
+        Assert.Equal((null, null), await fixture.LocationRecordAsync(second));
+        var withoutConsent = Assert.Single(await fixture.DiscoveryAsync(first));
+        Assert.Null(withoutConsent.ApproximateDistanceKm);
+        Assert.NotEqual(card.CommittedRevision, withoutConsent.CommittedRevision);
+    }
+
     private sealed class IntentionalFailure : Exception;
 
     private sealed record Actor(Guid Account, Guid Profile, Guid Subject) : ICurrentUser, Andril.Common.Accounts.Onboarding.IOnboardingIdentity
@@ -219,11 +246,13 @@ public sealed class PostgresSocialRelationshipTransactionRepositoryTests
                     GRANT USAGE ON SCHEMA andril_social TO {role};
                     GRANT SELECT, INSERT, UPDATE (is_positive, recorded_at_utc) ON andril_social.social_directional_interests TO {role};
                     GRANT SELECT, UPDATE (state, revoked_at_utc) ON andril_social.social_matches TO {role};
+                    GRANT SELECT, INSERT, UPDATE ON andril_social.social_location_evidence TO {role};
                     GRANT EXECUTE ON FUNCTION andril_social.questionnaire_owner_visible(uuid),
                         andril_social.social_reciprocal_interest(uuid, uuid),
                         andril_social.try_form_social_match(uuid, uuid, uuid, timestamp with time zone),
                         andril_social.social_safety_lock(), andril_social.social_safety_decision(uuid, uuid),
-                        andril_social.set_social_block(uuid, boolean), andril_social.set_social_restriction(uuid, boolean) TO {role};
+                        andril_social.set_social_block(uuid, boolean), andril_social.set_social_restriction(uuid, boolean),
+                        andril_social.read_social_matching_evidence(uuid, uuid, integer) TO {role};
                     """;
                 await context.Database.ExecuteSqlRawAsync(grants);
                 await transaction.CommitAsync();
@@ -296,6 +325,74 @@ public sealed class PostgresSocialRelationshipTransactionRepositoryTests
         {
             await using var context = fixture.Open();
             return await context.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM andril_social.social_safety_audit").SingleAsync();
+        }
+
+        private static readonly SocialLocationSettings LocationSettings = new(0.10m, TimeSpan.FromMinutes(5));
+
+        public async Task PrepareMatchingAsync(Actor actor)
+        {
+            await using var db = fixture.OpenAccounts();
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO andril_identity.account_demographics(account_id, date_of_birth, gender, created_at_utc, updated_at_utc)
+                    VALUES ({actor.Account}, DATE '1990-01-01', 'female', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+                UPDATE andril_identity.private_module_profiles SET display_name = {"Social-" + actor.Profile.ToString("N")[..8]}
+                    WHERE id = {actor.Profile};
+                INSERT INTO andril_social.social_matching_preferences(profile_id, module, discoverable, show_me,
+                    min_age, max_age, min_distance_km, max_distance_km, languages, connection_goals, revision)
+                    VALUES ({actor.Profile}, 'social', true, 'All', 18, 99, 0, 100, ARRAY['Tamil'], ARRAY['Friendship'], 1);
+                """);
+        }
+
+        public LocationScope LocationAsync(Actor actor) => new(this, actor);
+
+        public sealed class LocationScope(RelationshipDatabase database, Actor actor)
+        {
+            public Task UpdateSelfAsync(decimal latitude, decimal longitude, bool consent) => database.RunLocationAsync(actor,
+                repository => repository.UpdateSelfAsync(latitude, longitude, consent));
+
+            public Task WithdrawSelfAsync() => database.RunLocationAsync(actor, repository => repository.WithdrawSelfAsync());
+        }
+
+        private async Task RunLocationAsync(Actor actor, Func<PostgresSocialLocationRepository, Task> action)
+        {
+            await using var accounts = fixture.OpenAccounts();
+            var owner = new OwnerProfileService(new PrivateProfileRepository(accounts), actor.Account);
+            var scope = new PostgresSocialQuestionnaireLifecycleRepository(accounts,
+                new DbContextOptionsBuilder<SocialDbContext>().UseNpgsql(fixture.ConnectionString).Options, actor, role);
+            await action(new PostgresSocialLocationRepository(owner, scope, LocationSettings, TimeProvider.System));
+        }
+
+        public async Task<IReadOnlyList<SocialAuthoritativeCandidateItem>> DiscoveryAsync(Actor actor)
+        {
+            await using var accounts = fixture.OpenAccounts();
+            var owner = new OwnerProfileService(new PrivateProfileRepository(accounts), actor.Account);
+            var scope = new PostgresSocialQuestionnaireLifecycleRepository(accounts,
+                new DbContextOptionsBuilder<SocialDbContext>().UseNpgsql(fixture.ConnectionString).Options, actor, role);
+            var evidence = new Andril.API.Authorization.Social.PostgresSocialMatchingEvidenceProvider(
+                new PostgresSocialMatchingEvidenceReader(scope), LocationSettings, TimeProvider.System);
+            return await owner.WithAuthorizedProfileAsync("social", profile => evidence.GetCandidateBatchAsync(profile.ProfileId, 10), CancellationToken.None);
+        }
+
+        public async Task<(decimal? Latitude, decimal? Longitude)> LocationRecordAsync(Actor actor)
+        {
+            await using var db = fixture.Open();
+            var row = await db.Database.SqlQuery<LocationRecord>($"""
+                SELECT latitude_cell AS "Latitude", longitude_cell AS "Longitude"
+                FROM andril_social.social_location_evidence WHERE profile_id = {actor.Profile}
+                """).SingleAsync();
+            return (row.Latitude, row.Longitude);
+        }
+
+        private sealed record LocationRecord(decimal? Latitude, decimal? Longitude);
+
+        private sealed class OwnerProfileService(PrivateProfileRepository repository, Guid account) : IPrivateProfileService
+        {
+            public Task<T> WithAuthorizedProfileAsync<T>(string module, Func<PrivateProfileDto, Task<T>> action, CancellationToken token) =>
+                repository.WithAuthorizedProfileAsync(account, module, _ => { },
+                    profile => action(new(profile.Id, profile.Module, profile.CreatedAtUtc)), token);
+
+            public Task<PrivateProfileDto> GetAsync(string module, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+            public Task<PrivateProfileDto> CreateAsync(string module, CancellationToken cancellationToken = default) => throw new NotSupportedException();
         }
 
         public async Task<bool> CheckRoleAsync()

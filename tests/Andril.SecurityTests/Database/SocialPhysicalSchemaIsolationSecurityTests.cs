@@ -28,7 +28,8 @@ public sealed class SocialPhysicalSchemaIsolationSecurityTests
         "Andril.Persistence.DbContexts.SocialQuestionnaireCurrentResponse",
         "Andril.Persistence.DbContexts.SocialDirectionalInterestRow",
         "Andril.Persistence.DbContexts.SocialMatchRow",
-        "Andril.Persistence.DbContexts.SocialMatchingPreferencesRow"
+        "Andril.Persistence.DbContexts.SocialMatchingPreferencesRow",
+        "Andril.Persistence.DbContexts.SocialLocationEvidenceRow"
     ];
 
     private static readonly string[] AllowedTables =
@@ -38,7 +39,8 @@ public sealed class SocialPhysicalSchemaIsolationSecurityTests
         "social_questionnaire_current_responses",
         "social_directional_interests",
         "social_matches",
-        "social_matching_preferences"
+        "social_matching_preferences",
+        "social_location_evidence"
     ];
 
     [Fact]
