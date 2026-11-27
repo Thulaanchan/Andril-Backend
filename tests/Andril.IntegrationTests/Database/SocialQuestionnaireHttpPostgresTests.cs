@@ -280,7 +280,7 @@ public sealed class SocialQuestionnaireHttpPostgresTests
         return client;
     }
 
-    private static async Task<SocialLifecycleDatabase.Actor> SeedAsync(SocialLifecycleDatabase store,
+    internal static async Task<SocialLifecycleDatabase.Actor> SeedAsync(SocialLifecycleDatabase store,
         bool active = true, bool optedIn = true, bool minor = false, string module = "social")
     {
         await using var accounts = store.Database.OpenAccounts();
@@ -347,7 +347,7 @@ public sealed class SocialQuestionnaireHttpPostgresTests
         }
     }
 
-    private sealed class FixtureAuthentication(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
+    internal sealed class FixtureAuthentication(IOptionsMonitor<AuthenticationSchemeOptions> options, ILoggerFactory logger, UrlEncoder encoder)
         : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
     {
         protected override Task<AuthenticateResult> HandleAuthenticateAsync()
@@ -366,7 +366,7 @@ public sealed class SocialQuestionnaireHttpPostgresTests
         }
     }
 
-    private sealed class FixtureConfirmation : ISupabaseUserVerifier
+    internal sealed class FixtureConfirmation : ISupabaseUserVerifier
     {
         public Task<SupabaseUserVerification> VerifyAsync(Guid subject, string accessToken, CancellationToken cancellationToken)
         {
@@ -376,7 +376,7 @@ public sealed class SocialQuestionnaireHttpPostgresTests
         }
     }
 
-    private sealed class Loopback : IStartupFilter
+    internal sealed class Loopback : IStartupFilter
     {
         public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
         {

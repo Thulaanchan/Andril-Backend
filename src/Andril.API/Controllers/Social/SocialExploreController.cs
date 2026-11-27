@@ -32,6 +32,8 @@ public sealed record SocialExploreCandidateDto(
 [ApiController]
 [Authorize]
 [NonController]
+[SocialMatchingErrors]
+[ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
 [Route("api/v1/social/explore")]
 public sealed class SocialExploreController : ControllerBase
 {
