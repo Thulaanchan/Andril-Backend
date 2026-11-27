@@ -23,6 +23,118 @@ namespace Andril.Persistence.Migrations.Social
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
+            modelBuilder.Entity("Andril.Persistence.DbContexts.SocialDirectionalInterestRow", b =>
+                {
+                    b.Property<Guid>("ActorProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("actor_profile_id");
+
+                    b.Property<Guid>("TargetProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("target_profile_id");
+
+                    b.Property<bool>("IsPositive")
+                        .HasColumnType("boolean")
+                        .HasColumnName("is_positive");
+
+                    b.Property<string>("Module")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("module");
+
+                    b.Property<DateTime>("RecordedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("recorded_at_utc");
+
+                    b.Property<uint>("RowVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.HasKey("ActorProfileId", "TargetProfileId")
+                        .HasName("pk_social_directional_interests");
+
+                    b.HasIndex("TargetProfileId")
+                        .HasDatabaseName("ix_social_interests_target");
+
+                    b.ToTable("social_directional_interests", "andril_social", t =>
+                        {
+                            t.HasCheckConstraint("ck_social_interest_distinct", "actor_profile_id <> target_profile_id");
+
+                            t.HasCheckConstraint("ck_social_interest_module", "module = 'social'");
+
+                            t.HasCheckConstraint("ck_social_interest_timestamp", "isfinite(recorded_at_utc)");
+                        });
+                });
+
+            modelBuilder.Entity("Andril.Persistence.DbContexts.SocialMatchRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<Guid>("FirstProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("first_profile_id");
+
+                    b.Property<string>("Module")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("module");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("revoked_at_utc");
+
+                    b.Property<uint>("RowVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAddOrUpdate()
+                        .HasColumnType("xid")
+                        .HasColumnName("xmin");
+
+                    b.Property<Guid>("SecondProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("second_profile_id");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("state");
+
+                    b.HasKey("Id")
+                        .HasName("pk_social_matches");
+
+                    b.HasIndex("SecondProfileId")
+                        .HasDatabaseName("ix_social_matches_second");
+
+                    b.HasIndex("FirstProfileId", "SecondProfileId")
+                        .HasDatabaseName("ix_social_matches_pair");
+
+                    b.HasIndex(new[] { "FirstProfileId", "SecondProfileId" }, "UX_SocialMatchActivePair")
+                        .IsUnique()
+                        .HasDatabaseName("ux_social_matches_active_pair")
+                        .HasFilter("state = 'active'");
+
+                    b.ToTable("social_matches", "andril_social", t =>
+                        {
+                            t.HasCheckConstraint("ck_social_match_canonical_pair", "first_profile_id < second_profile_id");
+
+                            t.HasCheckConstraint("ck_social_match_id", "id <> '00000000-0000-0000-0000-000000000000'::uuid");
+
+                            t.HasCheckConstraint("ck_social_match_module", "module = 'social'");
+
+                            t.HasCheckConstraint("ck_social_match_state", "isfinite(created_at_utc) AND (\n    (state = 'active' AND revoked_at_utc IS NULL) OR\n    (state = 'revoked' AND revoked_at_utc IS NOT NULL AND isfinite(revoked_at_utc) AND revoked_at_utc >= created_at_utc)\n)");
+                        });
+                });
+
             modelBuilder.Entity("Andril.Persistence.DbContexts.SocialQuestionnaireCurrentResponse", b =>
                 {
                     b.Property<Guid>("ProfileId")
