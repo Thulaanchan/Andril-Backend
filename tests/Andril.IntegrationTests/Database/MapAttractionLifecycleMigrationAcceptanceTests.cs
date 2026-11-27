@@ -15,7 +15,7 @@ using Xunit;
 
 namespace Andril.IntegrationTests.Database;
 
-public sealed class MapAttractionLifecycleMigrationAcceptanceTests
+public sealed partial class MapAttractionLifecycleMigrationAcceptanceTests
 {
     private const string InitialMap = "20261121032052_InitialHobbiesMap";
     private const string UniqueSession = "20261121185145_AddMapSubmissionSessionUniqueness";
