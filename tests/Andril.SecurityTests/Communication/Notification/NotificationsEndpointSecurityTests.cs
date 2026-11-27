@@ -6,7 +6,14 @@ using System.Net.Http.Headers;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.Common.Accounts;
+using Andril.Common.Accounts.Onboarding;
+using Andril.API.Authentication;
+using Andril.API.Controllers.Common;
+using Andril.Communication.Interfaces;
+using Andril.Communication.Notifications;
 using Andril.SecurityTests.Authentication;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -104,8 +111,8 @@ public sealed class NotificationsEndpointSecurityTests
     // Fail-closed behavior without a confirmed
     // identity context.
     //
-    // This is NOT a full unconfirmed-user test.
-    // M2 identity middleware integration remains pending.
+    // This is NOT a full unconfirmed-user test. Notification
+    // routes do not establish the confirmed identity feature.
 
     [Theory]
     [InlineData("learning")]
@@ -146,6 +153,157 @@ public sealed class NotificationsEndpointSecurityTests
         Assert.Equal(0, fakeAccounts.Calls);
     }
 
+    [Theory]
+    [InlineData("learning")]
+    [InlineData("hobbies")]
+    [InlineData("social")]
+    public async Task Details_MissingConfirmedIdentityScope_ShouldDenyBeforeProtectedOperations(
+        string module)
+    {
+        await AssertMissingConfirmedIdentityAsync("GET", module);
+    }
+
+    [Theory]
+    [InlineData("learning")]
+    [InlineData("hobbies")]
+    [InlineData("social")]
+    public async Task MarkRead_MissingConfirmedIdentityScope_ShouldDenyWithoutReadStateMutation(
+        string module)
+    {
+        await AssertMissingConfirmedIdentityAsync("PATCH", module);
+    }
+
+    private static async Task AssertMissingConfirmedIdentityAsync(
+        string method,
+        string module)
+    {
+        var accounts = new FakeAccountService();
+        var operations = new NotificationOperationProbe(module);
+        var identity = new NotificationIdentityProbe();
+        using var baseFactory = new AuthenticationFactory();
+        using var factory = baseFactory.WithWebHostBuilder(
+            builder => builder.ConfigureTestServices(services =>
+            {
+                services.Replace(ServiceDescriptor.Scoped<IAccountService>(_ => accounts));
+                services.Replace(ServiceDescriptor.Scoped<INotificationRecipientAccessReader>(_ => operations));
+                services.Replace(ServiceDescriptor.Scoped<INotificationRepository>(_ => operations));
+                services.Configure<MvcOptions>(options => options.Filters.Add(identity));
+            }));
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization =
+            new AuthenticationHeaderValue("Bearer", baseFactory.Token());
+
+        Assert.False(operations.Entry.IsRead);
+        Assert.Null(operations.Entry.ReadAtUtc);
+        var path = $"/api/v1/notifications/{module}/{NotificationId}";
+        if (method == "PATCH")
+            path += "/read";
+
+        using var request = new HttpRequestMessage(new HttpMethod(method), path);
+        using var response = await client.SendAsync(request);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(1, identity.Calls);
+        Assert.Equal(0, accounts.Calls);
+        Assert.Equal(0, operations.AccessCalls);
+        Assert.Equal(0, operations.RepositoryCalls);
+        Assert.False(operations.Entry.IsRead);
+        Assert.Null(operations.Entry.ReadAtUtc);
+    }
+
+    // Observe the real request without replacing authentication or identity.
+    private sealed class NotificationIdentityProbe : IActionFilter
+    {
+        public int Calls { get; private set; }
+
+        public void OnActionExecuting(ActionExecutingContext context)
+        {
+            Assert.IsType<NotificationsController>(context.Controller);
+            Assert.True(context.HttpContext.User.Identity?.IsAuthenticated);
+            Assert.Equal(AuthenticationFactory.Subject.ToString(),
+                Assert.Single(context.HttpContext.User.FindAll("sub")).Value);
+            var identity = context.HttpContext.RequestServices
+                .GetRequiredService<IOnboardingIdentity>();
+            Assert.IsType<OnboardingIdentity>(identity);
+            Assert.False(identity.IsConfirmedFor(AuthenticationFactory.Subject));
+            Assert.DoesNotContain(context.HttpContext.Features,
+                feature => feature.Key.FullName ==
+                    "Andril.API.Authentication.ConfirmedIdentityFeature");
+            Calls++;
+        }
+
+        public void OnActionExecuted(ActionExecutedContext context) { }
+    }
+
+    // Test-only sentinels: access must never reach the application-service
+    // dependency or repository. The PATCH sentinel would mutate the entry.
+    private sealed class NotificationOperationProbe :
+        INotificationRecipientAccessReader, INotificationRepository
+    {
+        private int _accessCalls;
+        private int _repositoryCalls;
+        public int AccessCalls => Volatile.Read(ref _accessCalls);
+        public int RepositoryCalls => Volatile.Read(ref _repositoryCalls);
+        public NotificationEntry Entry { get; }
+
+        public NotificationOperationProbe(string module)
+        {
+            Entry = new NotificationEntry(
+                Guid.Parse(NotificationId),
+                new NotificationModuleScope(
+                    Enum.Parse<NotificationModule>(module, ignoreCase: true),
+                    Guid.Parse("22222222-2222-2222-2222-222222222222")),
+                "test", "Synthetic notification", null,
+                new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero));
+        }
+
+        public Task<NotificationModuleScope?> ResolveOwnedActiveScopeAsync(
+            Guid authenticatedAccountId, NotificationModule module,
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _accessCalls);
+            throw new InvalidOperationException("Denied request reached notification access.");
+        }
+
+        private void RejectRepositoryCall()
+        {
+            Interlocked.Increment(ref _repositoryCalls);
+            throw new InvalidOperationException("Denied request reached notification persistence.");
+        }
+
+        public Task AddAsync(NotificationEntry notification,
+            CancellationToken cancellationToken = default)
+        {
+            RejectRepositoryCall();
+            return Task.CompletedTask;
+        }
+
+        public Task<NotificationEntry?> FindAsync(NotificationModuleScope recipientScope,
+            Guid notificationId, CancellationToken cancellationToken = default)
+        {
+            RejectRepositoryCall();
+            return Task.FromResult<NotificationEntry?>(null);
+        }
+
+        public Task<System.Collections.Generic.IReadOnlyList<NotificationEntry>> ListLatestAsync(
+            NotificationModuleScope recipientScope, int maxItems,
+            CancellationToken cancellationToken = default)
+        {
+            RejectRepositoryCall();
+            return Task.FromResult<System.Collections.Generic.IReadOnlyList<NotificationEntry>>(
+                Array.Empty<NotificationEntry>());
+        }
+
+        public Task<bool> TryMarkReadAsync(NotificationModuleScope recipientScope,
+            Guid notificationId, DateTimeOffset readAtUtc,
+            CancellationToken cancellationToken = default)
+        {
+            Entry.MarkAsRead(readAtUtc);
+            RejectRepositoryCall();
+            return Task.FromResult(false);
+        }
+    }
+
     // SECTION C:
     // Test-only account dependency.
     // No real PostgreSQL connection.
@@ -167,6 +325,7 @@ public sealed class NotificationsEndpointSecurityTests
         public Task<AccountDto> InitializeAsync(
             CancellationToken cancellationToken = default)
         {
+            Interlocked.Increment(ref _calls);
             throw new InvalidOperationException(
                 "Account initialization is not allowed in this test.");
         }
