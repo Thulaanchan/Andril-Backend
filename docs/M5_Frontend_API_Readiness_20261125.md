@@ -1,226 +1,96 @@
-# ANDRIL M5 — FRONTEND API READINESS CONTRACT & ACTIVATION BOUNDARIES
-## Technical Reference for ANDRIL Mobile (Flutter) & Web (Angular) Frontend Teams
+# M5 frontend API readiness and activation boundaries
 
-> **DOCUMENT CLASSIFICATION:** Architecture & API Integration Documentation Deliverable (Task 254)  
-> **DATE:** 2026-11-25  
-> **DOMAIN / AUTHORITY:** M5 — Social Domain, Matching & Groups (Thulaanchan)  
-> **REPOSITORY:** `E:\Andril-Backend`  
-> **BRANCH:** `Member-5`  
-> **INTEGRATION TARGET:** `Develop`  
-> **GOVERNING GATES:** Relational Gates R01/R02 Deferred; Policy Gates P-04/P-06/P-07/P-10 Pending  
+Updated 2026-11-27 for Task 255. Repository: `Thulaanchan/Andril-Backend`; working branch: `Member-5`; integration branch: `Develop`. This reference describes checked-in contracts, not evidence of a production deployment.
 
----
+## Source-configured questionnaire definition API
 
-## 1. Executive Summary & Purpose
+`GET /api/v1/social/questionnaires/active` is discoverable by MVC in the default host. `Program.cs` calls `AddSocialQuestionnaireServices()`, `AddControllers()` and `MapControllers()`. The controller requires `[Authorize]` and delegates to `ISocialQuestionnaireDefinitionAccessService`; this does not establish a deployed URL, a healthy database or successful production acceptance.
 
-This contract establishes the authoritative backend integration reference for the ANDRIL frontend development teams (Flutter Android/iOS client and Angular Administration console). It specifies:
+Send a valid configured Supabase JWT bearer access token. The server derives account/profile scope; clients must not supply a profile or account ID to select another user's questionnaire. `SocialQuestionnaireDefinitionAccessService` calls `IPrivateProfileService.WithAuthorizedProfileAsync("social", ...)`, verifies a nonempty authorized Social profile and forwards cancellation. Authentication alone does not grant private-module access. Missing profiles, rejected access and unavailable approved contracts map through `PrivateProfileExceptionHandler` to 404, 403 and 503 respectively; authentication failures are handled by the bearer pipeline (normally 401). Do not infer age or account standing details from a generic 403.
 
-1. The exact **currently active and verified production API endpoint** provided by Member-5.
-2. The exact **approved request and response DTO schemas**, serialization boundaries, and security headers.
-3. The comprehensive inventory of **dormant controllers** that are strictly excluded from runtime MVC dispatch via `[NonController]`.
-4. The architectural boundaries, upstream member dependencies (M2, M4, M6), deferred tasks (Tasks 237–244), and required production activation gates.
+The action returns `QuestionnaireDefinitionDto` with camelCase JSON properties `version` and `questions`. Each question contains `id`, `prompt`, `isRequired` and `options`; each option contains `id` and `label`. The action declares `[ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]`. Clients must not cache private responses or rely on exact cache-header ordering.
 
-> [!IMPORTANT]
-> **PROHIBITION AGAINST CALLING DORMANT CONTROLLERS:** Frontend clients must not treat dormant controllers (such as `/api/v1/social/explore`, `/api/v1/social/questionnaires/responses`, `/api/v1/social/relationships`, `/api/v1/groups`, or `/api/v1/social/ai/recommendations`) as live backend endpoints. Because they are annotated with `[NonController]` in production, ASP.NET Core MVC routing ignores them, and any HTTP request to those routes will return `404 Not Found`.
+### Canonical V1 content
 
----
+`src/Andril.Social/Personality/QuestionnaireV1Definition.cs` is the source of truth. Version is exactly **`v1`**, with these twelve questions in order:
 
-## 2. Active Production Endpoint Inventory
+| ID | Prompt |
+|---|---|
+| q01 | I enjoy meeting new people and starting conversations. |
+| q02 | I prefer a few meaningful connections over many casual ones. |
+| q03 | I usually respond to messages within a reasonable time. |
+| q04 | I need regular personal space even when I feel close to someone. |
+| q05 | If something bothers me, I prefer to discuss it openly. |
+| q06 | When I am busy, I still try to send a quick update. |
+| q07 | I enjoy joining social activities and group plans. |
+| q08 | Shared values matter more to me than shared hobbies. |
+| q09 | I am comfortable taking the first step to start a conversation. |
+| q10 | I prefer planned meetups more than spontaneous plans. |
+| q11 | I enjoy lighthearted humor and playful conversation. |
+| q12 | I am open to building connections with people from different backgrounds. |
 
-The only active, routed, and DI-registered M5 endpoint in the current production configuration (`Program.cs`) is the Questionnaire Definitions endpoint:
+Every question uses the same five-point Likert scale:
 
-| Method | Path | Controller | Authorization | Status |
-|---|---|---|---|---|
-| `GET` | `/api/v1/social/questionnaires/active` | `SocialQuestionnaireDefinitionsController` | `[Authorize]` | **LIVE & ACTIVE** |
+| Option ID | Label |
+|---|---|
+| 1 | Strongly Disagree |
+| 2 | Disagree |
+| 3 | Neutral |
+| 4 | Agree |
+| 5 | Strongly Agree |
 
-### 2.1 Endpoint Specification: `GET /api/v1/social/questionnaires/active`
+All twelve questions have `isRequired: true` for a completed submission. **Questionnaire participation itself remains optional.** A skipped submission contains no answers; incomplete answers do not constitute a completed questionnaire. The definition API does not submit or persist answers. Render server-provided IDs, labels and version rather than fabricated questions or alternative option identifiers. Keep loading, authentication failure, forbidden/unavailable and retry states distinct. A missing canonical definition is a server configuration failure, not an approved empty-catalog response.
 
-- **Route:** `api/v1/social/questionnaires/active`
-- **HTTP Method:** `GET`
-- **Controller:** `Andril.API.Controllers.Social.SocialQuestionnaireDefinitionsController`
-- **Service Dependency:** `ISocialQuestionnaireDefinitionAccessService` (resolved via `AddSocialQuestionnaireServices()` in `Program.cs`)
-- **Authentication & Authorization:**
-  - Requires valid JWT Bearer token in the `Authorization: Bearer <token>` header.
-  - Caller subject (`sub`) or profile identity must be present in claims.
-  - Unauthenticated requests return `401 Unauthorized`.
-  - Callers failing token validation or account standing policies return `403 Forbidden`.
-- **Cache-Control Header:**
-  - Enforced via `[ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]`.
-  - Response headers include: `Cache-Control: no-store, no-cache, max-age=0`.
-- **Request Parameters:** None.
-- **Request Body:** None.
+## Dormant HTTP surfaces
 
-### 2.2 Approved Response DTO Schema (`QuestionnaireDefinitionDto`)
+These classes retain `[NonController]` and are excluded from default MVC discovery. Route attributes describe proposed contracts, not callable APIs. An absent route may produce 404, but middleware or other host configuration can affect an HTTP response; do not use a particular status as proof of deployment.
 
-Upon success (`200 OK`), the endpoint returns the canonical questionnaire definition for client rendering:
+| Controller | Declared route | Current boundary |
+|---|---|---|
+| `SocialQuestionnaireResponsesController` | `/api/v1/social/questionnaires/responses` | POST submission and GET `me` are dormant; the typed submission overload also has `[NonAction]`. |
+| `SocialExploreController` | `/api/v1/social/explore` | Matching evidence, access, repository and activation acceptance remain required. |
+| `SocialRelationshipsController` | `/api/v1/social/relationships` | Relationship persistence and authorized transaction integration remain required. |
+| `GroupMembershipController` | `/api/v1/groups` | Trusted actor evidence, persistence and transaction integration remain required. |
+| `SocialContextualRecommendationController` | `/api/v1/social/ai/recommendations` | Actions also retain `[NonAction]`; authoritative consent, admission, dispatch and delivery acceptance remain required. |
+| `AiChatController` | No HTTP route attributes | Direct service preparation only; default host does not activate it. |
 
-```json
-{
-  "version": "v1.0",
-  "questions": [
-    {
-      "id": "q01",
-      "prompt": "How do you prefer to spend your free weekends?",
-      "isRequired": true,
-      "options": [
-        { "id": "1", "label": "Exploring outdoors or traveling to new places" },
-        { "id": "2", "label": "Social gatherings, dinner parties, or events with friends" },
-        { "id": "3", "label": "Relaxing at home with books, movies, or solo hobbies" },
-        { "id": "4", "label": "Working on creative personal projects or learning new skills" }
-      ]
-    },
-    {
-      "id": "q02",
-      "prompt": "When meeting new people in a social setting, you typically:",
-      "isRequired": true,
-      "options": [
-        { "id": "1", "label": "Introduce yourself proactively and start conversations" },
-        { "id": "2", "label": "Wait for others to approach you or warm up gradually" },
-        { "id": "3", "label": "Prefer deep one-on-one discussions over group chatter" },
-        { "id": "4", "label": "Observe the atmosphere before actively engaging" }
-      ]
-    }
-  ]
-}
-```
+No client should invoke these dormant surfaces as live endpoints. Existing direct-call tests and opt-in registrations do not change MVC discovery. `Program.cs` is not modified by this documentation. Development OpenAPI/Swagger remains Development-only and restricted by the host's localhost/loopback checks; this document does not authorize public documentation exposure.
 
-#### DTO Field Specifications:
+## Persistence already present and remaining gaps
 
-| JSON Property | Type | Nullable | Description |
-|---|---|---|---|
-| `version` | `string` | No | Authoritative questionnaire version identifier (e.g. `"v1.0"`). Must be transmitted with submissions. |
-| `questions` | `array` | No | Immutable list of canonical questionnaire questions in display order. |
-| `questions[].id` | `string` | No | Canonical question key (e.g. `"q01"`, `"q02"`). Used for answer mapping. |
-| `questions[].prompt` | `string` | No | User-facing localized question text prompt. |
-| `questions[].isRequired` | `boolean` | No | Flag indicating whether this question must have a chosen option before submission. |
-| `questions[].options` | `array` | No | Immutable list of available options for this question. |
-| `questions[].options[].id` | `string` | No | Canonical option key (e.g. `"1"`, `"2"`). Transmitted as `optionId` upon response submission. |
-| `questions[].options[].label` | `string` | No | User-facing localized option label text. |
+`SocialQuestionnairePersistenceRepository` implements `IQuestionnairePersistenceRepository` with `SocialDbContext` and a PostgreSQL read adapter. Questionnaire response/answer entities, EF mappings, snapshot persistence and owner-scoped orchestration already exist. Do not describe snapshot storage as wholly missing or authorize reimplementation from this document.
 
-### 2.3 Frontend Client State Handling
+The separate `ISocialQuestionnaireLifecycleRepository` contract underpins active-response lookup, initial creation, replacement and withdrawal. No concrete production lifecycle repository is supplied by the existing snapshot repository. `AddSocialQuestionnaireResponseServices()` is explicitly opt-in and requires separately supplied persistence dependencies; the default host calls only the baseline questionnaire registration. Existing lifecycle interfaces and service methods do not approve retakes, restoration, retention periods or deployment.
 
-Frontend clients integrating with `GET /api/v1/social/questionnaires/active` must implement the following state transitions:
+`IPrivateProfileService` already has an Accounts registration. Production integration still requires authoritative authorized profile evidence and accepted runtime dependencies. Group integration requires a trusted `IGroupAuthoritativeEvidenceProvider` and real repositories/transaction boundaries. Test doubles and in-memory fixtures are not production authorities. Existing AI/communication implementations elsewhere in the repository must be assessed against their own contracts; do not characterize all upstream work as scaffolding.
 
-1. **Loading State:** Display localized skeleton shimmer or loading indicator while HTTP request is in-flight.
-2. **Success State (`200 OK`):**
-   - Store `version` in questionnaire flow state.
-   - Render questions sequentially with radio buttons or single-choice selection cards based on `options`.
-   - Prevent client progression until all questions with `isRequired: true` have an option selected.
-3. **Empty / Unavailable State:** If `questions` array is empty (e.g., catalog maintenance), render localized fallback: *"Personality questionnaire is temporarily unavailable."*
-4. **Unauthorized State (`401 Unauthorized`):** Refresh authentication token or redirect to login flow.
-5. **Forbidden State (`403 Forbidden`):** Display error banner indicating account standing or age restrictions prevent Social participation.
-6. **Network / Server Error (`5xx`):** Provide a *"Retry"* action with exponential backoff; do not crash UI.
+## Deferred work and governing decisions
 
----
+Tasks **237–244 remain deferred** under the Team Lead directive, as do **R01/R02**. This task does not reopen them. The checked-in references do not provide a verified per-number specification for 237–244; do not relabel that range as eight approved Group schema/migration tasks. Existing Social snapshot persistence must be distinguished from remaining lifecycle, relationship and Group integration requirements.
 
-## 3. Actual Response Serialization Boundaries
+The governing M5 integration contracts define these pending decisions:
 
-All M5 API responses enforce strict privacy and serialization boundaries:
+| Decision | Scope |
+|---|---|
+| P-04 | Social scoring weights, questionnaire retention and matching thresholds. |
+| P-06 | Zone roles, joining and non-Club quotas. |
+| P-07 | Group inactivity and restoration rules. |
+| P-10 | Contextual AI consent, provider, retention and quotas. |
 
-- **Naming Policy:** Standard camelCase property naming.
-- **Diagnostic Confidentiality:** Internal server stack traces, database identifiers, SQL error messages, raw exception strings, and sensitive property diagnostics are strictly suppressed (Task 248).
-- **Prohibited Data Surfaces:**
-  - No account email addresses, phone numbers, or authentication passwords.
-  - No database surrogate primary keys (`Id` long/int identity columns).
-  - No raw personality dimension scoring formulas, internal psychological traits, or confidential cluster weights.
-  - All sensitive matching entities and cards enforce `[JsonIgnore]` on diagnostic properties, returning `{}` if inadvertently serialized.
+These are not approvals for a five-Zone quota, a notification mechanism, a default age gap or a thirty-day questionnaire cooldown. Do not invent policy values or treat pending decisions as implemented lifecycle permissions.
 
----
+Activation requires explicit approval for the affected surface, authoritative dependency wiring, privacy/security acceptance, applicable relational gates and deployment verification. No mandatory Redis installation, Supabase migration, schema change or endpoint activation is introduced here. Preserve PostgreSQL and existing configuration. Source configuration and offline test success alone do not prove staging or production readiness.
 
-## 4. Dormant Controller Inventory & Production Non-Activation Boundaries
+## Verification references
 
-The following controllers exist in the codebase for offline contract verification, unit testing, and architectural preparation, but are **explicitly dormant in production** via `[NonController]`:
-
-```mermaid
-graph TD
-    Client[Frontend Client] -->|Calls /api/v1/social/questionnaires/active| ActiveCtrl[Active: SocialQuestionnaireDefinitionsController]
-    ActiveCtrl -->|200 OK| DTO[QuestionnaireDefinitionDto]
-    
-    Client -.->|404 Not Found| Dormant1[Dormant: SocialQuestionnaireResponsesController]
-    Client -.->|404 Not Found| Dormant2[Dormant: SocialExploreController]
-    Client -.->|404 Not Found| Dormant3[Dormant: SocialRelationshipsController]
-    Client -.->|404 Not Found| Dormant4[Dormant: GroupMembershipController]
-    Client -.->|404 Not Found| Dormant5[Dormant: SocialContextualRecommendationController]
-    Client -.->|404 Not Found| Dormant6[Dormant: AiChatController]
-    
-    subgraph Dormancy Boundary [Protected by NonController Attribute]
-        Dormant1
-        Dormant2
-        Dormant3
-        Dormant4
-        Dormant5
-        Dormant6
-    end
-```
-
-### 4.1 Detailed Dormancy Inventory
-
-| Controller | Proposed Route | Protection Attribute | Reason for Dormancy |
-|---|---|---|---|
-| `SocialQuestionnaireResponsesController` | `/api/v1/social/questionnaires/responses` | `[NonController]` | Relational questionnaire response persistence and lifecycle access services not wired in production `Program.cs`. |
-| `SocialExploreController` | `/api/v1/social/explore` | `[NonController]` | Production authoritative matching evidence provider, Redis cache, and live candidate repository unactivated. |
-| `SocialRelationshipsController` | `/api/v1/social/relationships` | `[NonController]` | Mutual match persistence, reciprocal decision state store, and bidirectional blocking database tables not provisioned. |
-| `GroupMembershipController` | `/api/v1/groups` | `[NonController]` | Relational group persistence deferred (Tasks 237–244); physical schema and cross-module transactions pending. |
-| `SocialContextualRecommendationController` | `/api/v1/social/ai/recommendations` | `[NonController]` | Contextual recommendation AI provider and verified live evidence pipelines pending M6 integration. |
-| `AiChatController` | Direct service invocation | `[NonController]` | Live AI streaming provider, middleware verification, and Section 05 security acceptance pending. |
-
----
-
-## 5. Missing Authoritative Providers & Relational Repositories
-
-Before any dormant controller can be activated for production, concrete implementations of the following interfaces must be implemented and registered:
-
-1. **`IPrivateProfileService` (M2 Dependency):** Authoritative identity verification, age verification, active account standing, and profile opt-in resolution.
-2. **`IQuestionnairePersistenceRepository` (M5 Social Persistence):** Relational storage for questionnaire responses (`social_questionnaire_responses`) and answer line items (`social_questionnaire_answers`).
-3. **`ISocialMatchRepository` & `ISocialDirectionalInterestRepository` (M5 Matching Persistence):** Relational tables for reciprocal decisions, mutual match timestamps, and unmatch/block records.
-4. **`IGroupEntryRepository`, `IGroupMembershipRepository`, `IGroupJoinRequestRepository` (M5 Groups Persistence):** Relational tables for group entries, memberships, and join requests.
-5. **`IGroupAuthoritativeEvidenceProvider` (M5/M2 Groups Context):** Authoritative resolution of member identity, age, and module standing for group join operations.
-
----
-
-## 6. Upstream Team Dependencies & Deferred Tasks
-
-| Cross-Member Area | Upstream Owner | Current Status | Impact on M5 Frontend Delivery |
-|---|---|---|---|
-| **PostgreSQL Database** | M2 / Infrastructure | Gates R01/R02 Deferred | Live relational tables cannot be migrated to Supabase/PostgreSQL until gates are formally opened. |
-| **User Profile Management** | M2 (Accounts/Onboarding) | Integrated Baseline | Profile creation, gender demographics, and photo storage are managed by M2 endpoints. |
-| **Groups Persistence Tasks 237–244** | M5 / Team Lead | Deferred by Directive | Tasks 237–244 (EF Core models, physical schema migrations, and repositories) remain deferred. |
-| **Real-time Match Chat** | M4 (Communication) | Integration In-Progress | Mutual match state (State 2) does not authorize chat access until M4 chat authorizer is coordinated. |
-| **AI Model & Moderation** | M6 (AI & Moderation) | Scaffolding Only | Contextual recommendations and AI chat endpoints remain dormant pending M6 provider wiring. |
-
----
-
-## 7. Outstanding Product & Governance Decisions
-
-The following policy decisions remain pending Team Lead approval and must not be assumed by frontend clients:
-
-- **Decision P-04:** Maximum number of active Social Zones a user may join simultaneously (proposed: 5).
-- **Decision P-06:** Mutual match notification mechanism (push notification vs in-app badge vs silent discovery refresh).
-- **Decision P-07:** Age disparity guardrails for Social discovery (strict reciprocal age bands vs server-side default ±5 years).
-- **Decision P-10:** Questionnaire retake cooldown interval (proposed: 30 days between full retakes).
-
----
-
-## 8. Development Fixtures vs Production Activation Gates
-
-For local UI testing and Flutter widget development, frontend teams may mock questionnaire responses or use offline contract test fixtures. However, production readiness requires passing the following mandatory gates:
-
-```mermaid
-flowchart TD
-    G1["Gate 1: PostgreSQL R01/R02 Acceptance<br/>(Live Database Provisioning & Migrations)"] --> G2["Gate 2: Concrete Provider Wiring<br/>(IPrivateProfileService, IGroupAuthoritativeEvidenceProvider)"]
-    G2 --> G3["Gate 3: Tasks 237-244 Completion<br/>(Groups Relational Persistence & Repositories)"]
-    G3 --> G4["Gate 4: End-to-End Security Audit<br/>(Removal of [NonController] Attributes)"]
-    G4 --> G5["Gate 5: Production Deployment<br/>(Full Live Mobile & Web Integration)"]
-```
-
-1. **Gate 1 (Database Provisioning):** PostgreSQL daemon and Supabase connection verified under live network conditions.
-2. **Gate 2 (Provider Wiring):** Concrete adapters replace offline development fixtures.
-3. **Gate 3 (Tasks 237–244 Resolution):** Groups relational persistence and cross-module transactions approved.
-4. **Gate 4 (Security Audit):** Verification that removing `[NonController]` does not expose unauthenticated or unprotected resources.
-5. **Gate 5 (Production Deployment):** Integration tests pass against live staging backend.
-
----
-
-## 9. Conclusion
-
-Frontend engineers should immediately proceed with building the **Personality Questionnaire Presentation UI** against the active `GET /api/v1/social/questionnaires/active` endpoint. All other Social and Groups flows should maintain appropriate mock boundaries or disabled states until formal activation notices are published by Member-5 and the Team Lead.
+- `src/Andril.API/Program.cs`
+- `src/Andril.API/Controllers/Social/SocialQuestionnaireDefinitionsController.cs`
+- `src/Andril.API/Authorization/Social/SocialQuestionnaireDefinitionAccessService.cs`
+- `src/Andril.API/Extensions/SocialQuestionnaireServiceCollectionExtensions.cs`
+- `src/Andril.API/Middleware/PrivateProfileExceptionHandler.cs`
+- `src/Andril.Social/Personality/QuestionnaireV1Definition.cs`
+- `src/Andril.Persistence/Repositories/Social/SocialQuestionnairePersistenceRepository.cs`
+- `src/Andril.API/Authorization/Social/SocialQuestionnaireLifecycleAccessService.cs`
+- `docs/M5_Social_Integration_Contract_PROPOSED.md`
+- `docs/M5_CF07_Groups_Integration_Contract_PROPOSED.md`
+- `docs/M5_Offline_Development_Readiness_20261124.md`
