@@ -213,15 +213,17 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
     }
     public async ValueTask DisposeAsync()
     {
-        if (RuntimeConnection.Length > 0)
-        {
-            using var pool = new NpgsqlConnection(RuntimeConnection);
-            NpgsqlConnection.ClearPool(pool);
-        }
+        NpgsqlConnection.ClearAllPools();
         if (created)
         {
-            await Admin($"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='{name}' AND usename='{runtimeRole}' AND pid<>pg_backend_pid()", asRuntime: true);
-            await Admin($"DROP DATABASE {name} WITH (FORCE)", true);
+            try
+            {
+                await Admin($"DROP DATABASE {name} WITH (FORCE)", true);
+            }
+            catch (PostgresException)
+            {
+                await Admin($"DROP DATABASE IF EXISTS {name} WITH (FORCE)");
+            }
             created = false;
         }
         await Admin($"DROP ROLE IF EXISTS {runtimeRole}");
