@@ -16,6 +16,7 @@ public sealed class SocialMigrationTests
     private const string InitialMigrationName = "20261124000100_InitialSocialQuestionnaire";
     private const string LifecycleMigrationName = "20261127203424_SocialQuestionnaireLifecycle";
     private const string RelationshipMigrationName = "20261127220222_SocialRelationshipPersistence";
+    private const string PreferencesMigrationName = "20261127222933_SocialMatchingPreferences";
     private static readonly string[] ExpectedTables = ["social_questionnaire_answers", "social_questionnaire_responses"];
 
     [Fact]
@@ -24,7 +25,7 @@ public sealed class SocialMigrationTests
         using var context = new SocialDbContextFactory().CreateDbContext([]);
         var migrations = context.Database.GetMigrations().ToArray();
 
-        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName }, migrations);
+        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName, PreferencesMigrationName }, migrations);
         Assert.NotNull(context.GetService<IMigrationsAssembly>().ModelSnapshot);
         Assert.False(context.Database.HasPendingModelChanges());
     }
@@ -102,7 +103,7 @@ public sealed class SocialMigrationTests
         await context.Database.MigrateAsync();
 
         var applied = (await context.Database.GetAppliedMigrationsAsync()).ToArray();
-        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName }, applied);
+        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName, PreferencesMigrationName }, applied);
 
         // 2. Verify expected schema objects exist in andril_social without disposing EF Core-owned connection
         var conn = context.Database.GetDbConnection();
@@ -129,6 +130,7 @@ public sealed class SocialMigrationTests
             Assert.Contains("social_questionnaire_current_responses", tables);
             Assert.Contains("social_directional_interests", tables);
             Assert.Contains("social_matches", tables);
+            Assert.Contains("social_matching_preferences", tables);
         }
         finally
         {

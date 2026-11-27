@@ -77,7 +77,7 @@ public sealed class PostgresSocialQuestionnaireLifecycleRepository(
             throw new ProfileAccessDeniedException();
     }
 
-    private async Task<T> InAuthorizedTransactionAsync<T>(Guid profileId,
+    internal async Task<T> InAuthorizedTransactionAsync<T>(Guid profileId,
         Func<SocialDbContext, CancellationToken, Task<T>> action, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
