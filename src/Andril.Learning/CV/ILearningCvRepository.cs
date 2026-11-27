@@ -69,6 +69,21 @@ public sealed class CvSaveChange
         return new(cv => cv.EditSection(section.Id, section.Category, section.Entries));
     }
     public static CvSaveChange Template(CvTemplate template) => new(cv => cv.SelectTemplate(template));
+    public static CvSaveChange ReviewedFields(CvSectionCategory category, IEnumerable<CvSection.Entry> entries)
+    {
+        var copied = entries.ToArray();
+        return new(cv =>
+        {
+            var current = cv.GetSection(category);
+            var validated = new CvSection(current.Id,category,copied);
+            var replacements = validated.Entries.ToDictionary(x => x.Id);
+            var merged = new List<CvSection.Entry>();
+            foreach(var old in current.Entries)
+                merged.Add(replacements.Remove(old.Id,out var replacement) ? new CvSection.Entry(old.Id,old.SectionId,old.Text,replacement.Fields) : old);
+            merged.AddRange(replacements.Values);
+            cv.EditSection(current.Id,category,merged);
+        });
+    }
     public static CvSaveChange ContactConsent(bool include) => new(cv => cv.SetContactInclusionConsent(cv.Id, include));
     public void Apply(LearningCv cv) { ArgumentNullException.ThrowIfNull(cv); apply(cv); }
     public override string ToString() => "Private explicit CV save [values omitted]";

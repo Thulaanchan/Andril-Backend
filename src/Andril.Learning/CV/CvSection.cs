@@ -36,6 +36,7 @@ public sealed class CvSection
         foreach (var entry in copy)
             if (entry is null || entry.SectionId != id || !ids.Add(entry.Id))
                 throw new ArgumentException("Entries must have distinct identities bound to this section.", nameof(entries));
+        foreach (var entry in copy) _ = CvStructuredFields.Validate(category, entry.Fields);
         Id = id; Category = category; Entries = Array.AsReadOnly(copy);
     }
 
@@ -50,12 +51,15 @@ public sealed class CvSection
         public Guid SectionId { get; }
         [JsonIgnore]
         public string? Text { get; }
+        [JsonIgnore] public IReadOnlyDictionary<string,string> Fields { get; }
 
-        public Entry(Guid id, Guid sectionId, string? text)
+        public Entry(Guid id, Guid sectionId, string? text) : this(id,sectionId,text,null) { }
+        public Entry(Guid id, Guid sectionId, string? text, IReadOnlyDictionary<string,string>? fields)
         {
             if (id == Guid.Empty) throw new ArgumentException("A CV entry ID is required.", nameof(id));
             if (sectionId == Guid.Empty) throw new ArgumentException("A CV section ID is required.", nameof(sectionId));
             Id = id; SectionId = sectionId; Text = text;
+            Fields = new System.Collections.ObjectModel.ReadOnlyDictionary<string,string>(new Dictionary<string,string>(fields ?? new Dictionary<string,string>(),StringComparer.Ordinal));
         }
         public override string ToString() => "Private editable CV entry [identity and text omitted]";
     }

@@ -27,15 +27,20 @@ public sealed class CvPreview
     {
         var projection = CvOutputProjection.From(cv);
         var html = new StringBuilder("<article><h1>Private CV preview</h1><p>");
+        var family = projection.Template switch { CvTemplate.Professional => "serif", CvTemplate.Creative => "monospace", _ => "sans-serif" };
+        // Static template styling only: no user CSS, links or resource fetches.
+        html.Replace("<article>","<article><div style=\"font-family:"+family+"\">");
         html.Append(WebUtility.HtmlEncode(projection.Template.ToString()));
         html.Append("</p><p>").Append(WebUtility.HtmlEncode(CvOutputProjection.Notice)).Append("</p>");
         foreach (var category in projection.Sections)
         {
             html.Append("<section><h2>");
             html.Append(WebUtility.HtmlEncode(category.ToString()));
-            html.Append("</h2></section>");
+            html.Append("</h2>");
+            foreach(var line in projection.Content[category]) html.Append("<p>").Append(WebUtility.HtmlEncode(line)).Append("</p>");
+            html.Append("</section>");
         }
-        html.Append("</article>");
+        html.Append("</div></article>");
         return new(html.ToString());
     }
 
