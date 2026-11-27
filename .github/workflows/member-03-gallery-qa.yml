@@ -1,0 +1,54 @@
+name: ANDRIL Member-03 Gallery QA
+
+on:
+  push:
+    branches: [Member-3]
+  pull_request:
+    branches: [Develop]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  gallery-postgres:
+    if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'Member-3')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    services:
+      postgres:
+        image: postgres:17.12-bookworm@sha256:837bed18782820fe967067cb5328b02b0d9992c1be9a37ee0c9c492cfc03af3b
+        env:
+          POSTGRES_DB: postgres
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: disposable_ci_postgres
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73
+        with:
+          global-json-file: global.json
+      - name: Verify Gallery PostgreSQL acceptance
+        timeout-minutes: 44
+        env:
+          QA_SERVICE_ID: ${{ job.services.postgres.id }}
+        run: ./scripts/ci/member-03-gallery-qa.ps1 -ServiceId $env:QA_SERVICE_ID
+      - name: Upload sanitized Gallery evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: member03-gallery-postgres-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/member03-gallery-qa
+          if-no-files-found: error
+          retention-days: 7
