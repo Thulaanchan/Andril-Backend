@@ -106,6 +106,8 @@ public sealed class NotificationPushOrchestrationService
             return Denied();
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         var result = await _sender.SendAsync(
             request,
             cancellationToken);
