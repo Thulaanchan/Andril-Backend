@@ -30,7 +30,8 @@ if ($exitCode -ne 0) { exit $exitCode }
 $observed = @($result.TestRun.Results.UnitTestResult)
 $counters = $result.TestRun.ResultSummary.Counters
 $mismatch = Compare-Object $expected @($observed | ForEach-Object testName) -CaseSensitive
-if ($mismatch -or $observed.Count -ne $expected.Count -or [int]$counters.passed -ne $expected.Count -or
+if ($mismatch -or $observed.Count -ne $expected.Count -or [int]$counters.total -ne $expected.Count -or
+    [int]$counters.executed -ne $expected.Count -or [int]$counters.passed -ne $expected.Count -or
     [int]$counters.notExecuted -ne 0 -or @($observed | Where-Object outcome -cne 'Passed').Count -ne 0) {
     $mismatch | Format-Table -AutoSize
     throw 'The Social acceptance gate requires a passing result for every exact manifest entry, with zero skips.'
