@@ -113,7 +113,7 @@ public sealed class SocialDbContext : DbContext
                         (state = 'active' AND revoked_at_utc IS NULL) OR
                         (state = 'revoked' AND revoked_at_utc IS NOT NULL AND isfinite(revoked_at_utc) AND revoked_at_utc >= created_at_utc)
                     )
-                    """);
+                    """.ReplaceLineEndings("\n"));
             });
             b.HasKey(row => row.Id).HasName("pk_social_matches");
             b.HasIndex(row => new { row.FirstProfileId, row.SecondProfileId })
@@ -146,7 +146,7 @@ public sealed class SocialDbContext : DbContext
                         AND partner_social IN ('Either', 'Reserved', 'Outgoing')
                         AND partner_communication IN ('Either', 'LessExpressive', 'Expressive')
                         AND partner_planning IN ('Either', 'Spontaneous', 'Structured'))
-                    """);
+                    """.ReplaceLineEndings("\n"));
             });
             b.HasKey(row => row.ProfileId).HasName("pk_social_matching_preferences");
             b.Property(row => row.ProfileId).HasColumnName("profile_id").ValueGeneratedNever();

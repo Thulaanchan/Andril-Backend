@@ -166,12 +166,41 @@ public sealed class PostgresSocialRelationshipTransactionRepositoryTests
         Assert.True(await fixture.CheckRoleAsync());
     }
 
+    [LocalPostgresFact]
+    public async Task BlockAndAuthorizedModerationSuppressBothDirectionsAndAuditOnlyChanges()
+    {
+        await using var fixture = await RelationshipDatabase.CreateAsync();
+        var first = await fixture.SeedAsync();
+        var second = await fixture.SeedAsync();
+        var moderator = await fixture.SeedAsync();
+        var pair = new SocialProfilePairKey(first.Profile, second.Profile);
+        await fixture.InterestAsync(first, pair, true);
+        Assert.True((await fixture.InterestAsync(second, pair, true)).MatchCreated);
+
+        await fixture.Safety(first).SetBlockAsync(second.Profile, true);
+        await fixture.Safety(first).SetBlockAsync(second.Profile, true);
+        await fixture.Safety(second).SetBlockAsync(first.Profile, false);
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() => fixture.ReadAsync(first, pair));
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() => fixture.InterestAsync(second, pair, true));
+        await fixture.Safety(first).SetBlockAsync(second.Profile, false);
+        Assert.Equal(SocialRelationshipState.Revoked, (await fixture.ReadAsync(second, pair)).State);
+
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() => fixture.Safety(first).SetRestrictionAsync(second.Profile, true));
+        await fixture.GrantModerationAsync(moderator);
+        await fixture.Safety(moderator).SetRestrictionAsync(second.Profile, true);
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() => fixture.ReadAsync(first, pair));
+        await fixture.Safety(moderator).SetRestrictionAsync(second.Profile, false);
+        Assert.Equal(SocialRelationshipState.Revoked, (await fixture.ReadAsync(first, pair)).State);
+        Assert.Equal(4L, await fixture.AuditCountAsync());
+    }
+
     private sealed class IntentionalFailure : Exception;
 
-    private sealed record Actor(Guid Account, Guid Profile, Guid Subject) : ICurrentUser
+    private sealed record Actor(Guid Account, Guid Profile, Guid Subject) : ICurrentUser, Andril.Common.Accounts.Onboarding.IOnboardingIdentity
     {
         public bool IsAuthenticated => true;
         public Guid? UserId => Subject;
+        public bool IsConfirmedFor(Guid subject) => subject == Subject;
     }
 
     private sealed class RelationshipDatabase(LocalSocialQuestionnaireDatabase fixture, string role) : IAsyncDisposable
@@ -192,7 +221,9 @@ public sealed class PostgresSocialRelationshipTransactionRepositoryTests
                     GRANT SELECT, UPDATE (state, revoked_at_utc) ON andril_social.social_matches TO {role};
                     GRANT EXECUTE ON FUNCTION andril_social.questionnaire_owner_visible(uuid),
                         andril_social.social_reciprocal_interest(uuid, uuid),
-                        andril_social.try_form_social_match(uuid, uuid, uuid, timestamp with time zone) TO {role};
+                        andril_social.try_form_social_match(uuid, uuid, uuid, timestamp with time zone),
+                        andril_social.social_safety_lock(), andril_social.social_safety_decision(uuid, uuid),
+                        andril_social.set_social_block(uuid, boolean), andril_social.set_social_restriction(uuid, boolean) TO {role};
                     """;
                 await context.Database.ExecuteSqlRawAsync(grants);
                 await transaction.CommitAsync();
@@ -248,6 +279,23 @@ public sealed class PostgresSocialRelationshipTransactionRepositoryTests
             return (
                 await context.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM andril_social.social_directional_interests").SingleAsync(),
                 await context.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM andril_social.social_matches").SingleAsync());
+        }
+
+        public PostgresSocialSafetyRepository Safety(Actor actor) => new(new DbContextOptionsBuilder<SocialDbContext>()
+            .UseNpgsql(fixture.ConnectionString).Options, actor, actor, role);
+
+        public async Task GrantModerationAsync(Actor actor)
+        {
+            await using var context = fixture.Open();
+            await context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO andril_social.social_moderation_grants(account_id) VALUES ({actor.Account})
+                """);
+        }
+
+        public async Task<long> AuditCountAsync()
+        {
+            await using var context = fixture.Open();
+            return await context.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM andril_social.social_safety_audit").SingleAsync();
         }
 
         public async Task<bool> CheckRoleAsync()
