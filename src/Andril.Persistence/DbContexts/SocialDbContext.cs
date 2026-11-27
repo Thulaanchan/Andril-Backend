@@ -63,7 +63,8 @@ public sealed class SocialDbContext : DbContext
                 .HasConstraintName("fk_social_questionnaire_answers_response");
 
             b.Navigation(x => x.Answers)
-                .UsePropertyAccessMode(PropertyAccessMode.Property);
+                .HasField("_answers")
+                .UsePropertyAccessMode(PropertyAccessMode.Field);
         });
 
         modelBuilder.Entity<QuestionnaireAnswerEntity>(b =>
