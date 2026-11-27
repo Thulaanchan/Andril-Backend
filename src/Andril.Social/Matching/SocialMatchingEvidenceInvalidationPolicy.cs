@@ -148,12 +148,24 @@ public static class SocialMatchingEvidenceInvalidationPolicy
         // 3. Accumulate revision invalidation reasons
         var reasons = SocialEvidenceInvalidationReason.None;
 
+        // A change from cached revoked standing requires fresh evidence, not implicit
+        // permission to reactivate the profile or resume matching/lifecycle operations.
+        if (cachedSnapshot.IsProfileActive != latestCommittedSnapshot.IsProfileActive)
+        {
+            reasons |= SocialEvidenceInvalidationReason.ProfileDeactivated;
+        }
+
+        if (cachedSnapshot.IsAccountRestricted != latestCommittedSnapshot.IsAccountRestricted)
+        {
+            reasons |= SocialEvidenceInvalidationReason.AccountRestricted;
+        }
+
         if (cachedSnapshot.QuestionnaireRevision != latestCommittedSnapshot.QuestionnaireRevision)
         {
             reasons |= SocialEvidenceInvalidationReason.QuestionnaireRevisionChanged;
         }
 
-        if (!cachedSnapshot.IsQuestionnaireWithdrawn && latestCommittedSnapshot.IsQuestionnaireWithdrawn)
+        if (cachedSnapshot.IsQuestionnaireWithdrawn != latestCommittedSnapshot.IsQuestionnaireWithdrawn)
         {
             reasons |= SocialEvidenceInvalidationReason.QuestionnaireWithdrawn;
         }
