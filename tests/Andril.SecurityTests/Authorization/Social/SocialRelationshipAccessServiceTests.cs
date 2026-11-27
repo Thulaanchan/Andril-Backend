@@ -386,7 +386,11 @@ public sealed class SocialRelationshipAccessServiceTests
         {
             SnapshotResult = new SocialRelationshipSnapshot(pair, SocialRelationshipState.Matched, match)
         };
-        var stubEvidence = new StubEvidenceProvider();
+        var stubEvidence = new StubEvidenceProvider
+        {
+            CallerEvidence = new SocialDiscoveryCallerEvidence(idA, 25, isOptedIn: true, isActive: true),
+            CandidateEvidence = CreateCandidateEvidence(idB, 26)
+        };
 
         var service = new SocialRelationshipAccessService(stubProfileService, stubRepo, stubEvidence);
 
@@ -395,6 +399,22 @@ public sealed class SocialRelationshipAccessServiceTests
         Assert.True(result.HasActiveMatch);
         Assert.Equal(matchId, result.MatchId);
         Assert.NotNull(result.MatchedAtUtc);
+    }
+
+    [Fact]
+    public async Task GetRelationshipStatusAsync_WithoutCurrentTargetEvidence_SuppressesTheMatch()
+    {
+        var (owner, target, pair) = CreatePair();
+        var provider = new StubPrivateProfileService(new PrivateProfileDto(owner, "social", DateTimeOffset.UtcNow));
+        var repository = new StubTransactionRepository(pair)
+        {
+            SnapshotResult = new SocialRelationshipSnapshot(pair, SocialRelationshipState.Matched,
+                SocialMatchEntity.Create(Guid.NewGuid(), pair, DateTime.UtcNow))
+        };
+        var service = new SocialRelationshipAccessService(provider, repository, new StubEvidenceProvider());
+        var status = await service.GetRelationshipStatusAsync(target);
+        Assert.False(status.HasActiveMatch);
+        Assert.Null(status.MatchId);
     }
 
     [Fact]

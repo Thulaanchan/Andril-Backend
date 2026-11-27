@@ -115,7 +115,9 @@ public static class SocialPersistenceServiceCollectionExtensions
                     socialSettings.Database != identitySettings.Database || socialSettings.Username != identitySettings.Username)
                     throw new InvalidOperationException("The Accounts and Social database connections must match.");
 
-                if ((await database.Database.GetPendingMigrationsAsync(cancellationToken)).Any())
+                // The questionnaire routes require their own migration history even when matching is disabled.
+                if ((await database.Database.GetPendingMigrationsAsync(cancellationToken))
+                    .Any(id => string.CompareOrdinal(id, "20261127203424_SocialQuestionnaireLifecycle") <= 0))
                     throw new InvalidOperationException("The Social questionnaire migrations must be applied before activation.");
 
                 await using var tx = await database.Database.BeginTransactionAsync(cancellationToken);

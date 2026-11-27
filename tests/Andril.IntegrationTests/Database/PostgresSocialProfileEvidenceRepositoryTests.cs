@@ -100,7 +100,7 @@ public sealed class PostgresSocialProfileEvidenceRepositoryTests
             GRANT SELECT, INSERT ON andril_social.social_questionnaire_responses, andril_social.social_questionnaire_answers,
                 andril_social.social_questionnaire_current_responses TO {role};
             GRANT SELECT, INSERT, UPDATE ON andril_social.social_matching_preferences TO {role};
-            GRANT EXECUTE ON FUNCTION andril_social.questionnaire_owner_visible(uuid) TO {role};
+            GRANT EXECUTE ON FUNCTION andril_social.questionnaire_owner_visible(uuid), andril_social.social_safety_lock() TO {role};
             """;
         await db.Database.ExecuteSqlRawAsync(grants);
         await transaction.CommitAsync();

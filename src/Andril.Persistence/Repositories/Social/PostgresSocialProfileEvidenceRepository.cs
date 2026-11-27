@@ -73,8 +73,10 @@ public sealed class PostgresSocialProfileEvidenceRepository(
             var facts = await ReadVerifiedIdentityAsync(profile, cancellationToken);
             if (facts.State != "active" || !facts.OptedIn) throw new ProfileAccessDeniedException();
             var ranges = preferences.Ranges;
-            return await questionnaires.InAuthorizedTransactionAsync(profile.ProfileId, (db, token) =>
-                db.Database.ExecuteSqlInterpolatedAsync($"""
+            return await questionnaires.InAuthorizedTransactionAsync(profile.ProfileId, async (db, token) =>
+            {
+                await db.Database.ExecuteSqlRawAsync("SELECT andril_social.social_safety_lock()", token);
+                return await db.Database.ExecuteSqlInterpolatedAsync($"""
                     INSERT INTO andril_social.social_matching_preferences AS saved
                         (profile_id, module, discoverable, show_me, min_age, max_age, min_distance_km, max_distance_km,
                          languages, connection_goals, partner_social, partner_communication, partner_planning, revision)
@@ -91,7 +93,8 @@ public sealed class PostgresSocialProfileEvidenceRepository(
                         IS DISTINCT FROM (EXCLUDED.discoverable, EXCLUDED.show_me, EXCLUDED.min_age, EXCLUDED.max_age, EXCLUDED.min_distance_km,
                             EXCLUDED.max_distance_km, EXCLUDED.languages, EXCLUDED.connection_goals, EXCLUDED.partner_social,
                             EXCLUDED.partner_communication, EXCLUDED.partner_planning)
-                    """, token), cancellationToken);
+                    """, token);
+            }, cancellationToken);
         }, cancellationToken);
     }
 
