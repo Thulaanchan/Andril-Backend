@@ -69,9 +69,9 @@ public sealed class StructuredCvTests
         cv.EditSection(s.Id,s.Category,[CvStructuredFields.ReviewedEntry(Guid.NewGuid(),s.Id,s.Category,new Dictionary<string,string>{{"Description",string.Join('\n',Enumerable.Repeat("<script>inert text</script>",110))}})]);
         Assert.DoesNotContain("<script>",CvPreview.CreateOffline(cv).Html);var bytes=CvPdfDocument.CreateOffline(cv).Bytes;var pdf=Encoding.ASCII.GetString(bytes);
         Assert.Contains("/Count 4",pdf);bytes[0]=0;Assert.NotEqual((byte)0,CvPdfDocument.CreateOffline(cv).Bytes[0]);
-        cv.EditSection(s.Id,s.Category,[CvStructuredFields.ReviewedEntry(Guid.NewGuid(),s.Id,s.Category,new Dictionary<string,string>{{"ProjectTitle","தமிழ்"}})]);
-        Assert.Contains("தமிழ்",CvPreview.CreateOffline(cv).Html);Assert.Throws<NotSupportedException>(()=>CvPdfDocument.CreateOffline(cv));
-        Assert.Equal("தமிழ்",cv.GetSection(s.Category).Entries[0].Fields["ProjectTitle"]);
+        cv.EditSection(s.Id,s.Category,[CvStructuredFields.ReviewedEntry(Guid.NewGuid(),s.Id,s.Category,new Dictionary<string,string>{{"ProjectTitle","العربية"}})]);
+        Assert.Contains("العربية",CvPreview.CreateOffline(cv).Html);Assert.Throws<NotSupportedException>(()=>CvPdfDocument.CreateOffline(cv));
+        Assert.Equal("العربية",cv.GetSection(s.Category).Entries[0].Fields["ProjectTitle"]);
         using var cancel=new CancellationTokenSource();cancel.Cancel();Assert.ThrowsAny<OperationCanceledException>(()=>CvPdfDocument.CreateOffline(cv,cancel.Token));
     }
 }

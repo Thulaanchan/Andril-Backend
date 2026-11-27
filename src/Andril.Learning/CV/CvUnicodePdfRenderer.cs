@@ -83,10 +83,10 @@ internal static class CvUnicodePdfRenderer
         foreach(var rune in text.EnumerateRunes())content.Append(cids[rune.Value].ToString("X4",CultureInfo.InvariantCulture));
         content.Append("> Tj ET\n");
     }
-    private static byte[] Compress(byte[] bytes)
+    internal static byte[] Compress(byte[] bytes)
     {using var memory=new MemoryStream();using(var compressed=new ZLibStream(memory,CompressionLevel.Optimal,true))compressed.Write(bytes);return memory.ToArray();}
-    private static byte[] Stream(byte[] bytes,string attributes="")
+    internal static byte[] Stream(byte[] bytes,string attributes="")
     {using var stream=new MemoryStream();Write(stream,$"<< /Length {bytes.Length} {attributes} >>\nstream\n");stream.Write(bytes);Write(stream,"\nendstream");return stream.ToArray();}
-    private static byte[] Ascii(string text)=>Encoding.ASCII.GetBytes(text);
-    private static void Write(MemoryStream stream,string text)=>stream.Write(Ascii(text));
+    internal static byte[] Ascii(string text)=>Encoding.ASCII.GetBytes(text);
+    internal static void Write(MemoryStream stream,string text)=>stream.Write(Ascii(text));
 }

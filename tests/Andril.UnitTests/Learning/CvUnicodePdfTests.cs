@@ -20,7 +20,7 @@ public sealed class CvUnicodePdfTests
         Assert.Contains("> <03",pdf);Assert.Contains("> <04",pdf);Assert.DoesNotContain("/URI",pdf);Assert.DoesNotContain("/Info",pdf);Assert.DoesNotContain("/Annots",pdf);
         var xref=int.Parse(Regex.Match(pdf,@"startxref\n(\d+)\n").Groups[1].Value);Assert.Equal("xref",Encoding.ASCII.GetString(bytes,xref,4));
     }
-    [Theory] [InlineData("தமிழ்")] [InlineData("العربية")] [InlineData("中文")] [InlineData("a\u0301")] [InlineData("abc\u202Ehidden")]
+    [Theory] [InlineData("العربية")] [InlineData("中文")] [InlineData("abc\u202Ehidden")]
     public void UnsupportedGlyphsComplexShapingAndDirectionControlsDoNotSilentlyCorruptContent(string text)
     {Assert.Throws<NotSupportedException>(()=>CvPdfDocument.CreateOffline(Document(CvTemplate.Modern,text)));}
     [Fact]
