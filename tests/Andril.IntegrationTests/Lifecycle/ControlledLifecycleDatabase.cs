@@ -211,9 +211,33 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
         await using var command = new NpgsqlCommand(sql, db);
         await command.ExecuteNonQueryAsync();
     }
+    private readonly List<string> trackedConnectionStrings = new();
+    internal void RegisterConnectionString(string connectionString)
+    {
+        if (!trackedConnectionStrings.Contains(connectionString))
+            trackedConnectionStrings.Add(connectionString);
+    }
     public async ValueTask DisposeAsync()
     {
-        NpgsqlConnection.ClearAllPools();
+        if (RuntimeConnection.Length > 0)
+        {
+            foreach (var size in new[] { 1, 4, 16 })
+            {
+                var b = new NpgsqlConnectionStringBuilder(RuntimeConnection) { MaxPoolSize = size };
+                using var pool = new NpgsqlConnection(b.ConnectionString);
+                NpgsqlConnection.ClearPool(pool);
+            }
+        }
+        if (MigrationConnection.Length > 0)
+        {
+            using var pool = new NpgsqlConnection(MigrationConnection);
+            NpgsqlConnection.ClearPool(pool);
+        }
+        foreach (var connStr in trackedConnectionStrings)
+        {
+            using var pool = new NpgsqlConnection(connStr);
+            NpgsqlConnection.ClearPool(pool);
+        }
         if (created)
         {
             try
