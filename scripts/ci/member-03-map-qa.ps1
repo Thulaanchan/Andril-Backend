@@ -199,10 +199,10 @@ function Verify-InventoryAndM2([object] $Inventory) {
     $triggerM2 = ($triggerRaw -join "`n") | ConvertFrom-Json
     $expectedR05Skips = @($triggerM2.offlineOnlySkips) + $privateMediaIdentity
     $expectedR03Skips = $expectedR05Skips + $moderationIdentity
-    $expectedCurrentSkips = $expectedR03Skips + $eligibilityIdentity + 'Andril.IntegrationTests.Database.GalleryPersistenceTests.TrustedRead_UsesScopedPostgresRowsAndReauthorizesContinuation'
+    $expectedCurrentSkips = $expectedR03Skips + $eligibilityIdentity + 'Andril.IntegrationTests.Database.GalleryPersistenceTests.TrustedRead_UsesScopedPostgresRowsAndReauthorizesContinuation' + 'Andril.IntegrationTests.Database.GalleryPersistenceTests.MetadataHttp_PostgresScopesDetailAndTraversesProtectedContinuation'
     if (($currentM2.requiredM2 -join "`n") -cne ($triggerM2.requiredM2 -join "`n") -or
         ($currentM2.offlineOnlySkips -join "`n") -cne ($expectedCurrentSkips -join "`n")) {
-        throw 'The checkout differs from the approved trigger inventory plus the separately approved R05 private-media, R03 moderation, M3-05 reward eligibility, and M3-06 Gallery trusted-read identities.'
+        throw 'The checkout differs from the approved trigger inventory plus the separately approved R05 private-media, R03 moderation, M3-05 reward eligibility, M3-06 Gallery trusted-read, and R06 Gallery metadata HTTP identities.'
     }
     $parentRaw = @(& git show "${inventoryTrigger}^:$sharedInventoryPath")
     if ($LASTEXITCODE -ne 0) { throw 'Could not read the inventory trigger parent.' }
@@ -231,6 +231,7 @@ function Verify-InventoryAndM2([object] $Inventory) {
     Add-Summary 'R03_SHARED_OFFLINE_SKIP_ADDITIONS=1; EXACT_IDENTITY_VERIFIED=True'
     Add-Summary 'M3_05_SHARED_OFFLINE_SKIP_ADDITIONS=1; EXACT_IDENTITY_VERIFIED=True'
     Add-Summary 'M3_06_GALLERY_SHARED_OFFLINE_SKIP_ADDITIONS=1; EXACT_IDENTITY_VERIFIED=True'
+    Add-Summary 'M3_06_R06_GALLERY_SHARED_OFFLINE_SKIP_ADDITIONS=1; EXACT_IDENTITY_VERIFIED=True'
 }
 
 function Invoke-Cleanup {

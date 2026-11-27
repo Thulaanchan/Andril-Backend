@@ -164,13 +164,15 @@ public sealed partial class GalleryPersistenceTests
         public Guid? ProfileId { get; set; } = Owner;
         public bool Allowed { get; set; } = true;
         public bool AccountUnavailable { get; set; }
+        public bool AccountMissing { get; set; }
         public int AccountLookups { get; private set; }
         public int ProfileLookups { get; private set; }
         public int OperationLookups { get; private set; }
         public GalleryReadOperation LastOperation { get; private set; }
 
-        public GalleryReadBoundary CreateBoundary(IGalleryRepository repository, IGalleryPageRepository pages) =>
-            new(new AccountBackedGalleryActorResolver(this, this, this), AuthorizeAsync, repository, pages, 3);
+        public GalleryReadBoundary CreateBoundary(IGalleryRepository repository, IGalleryPageRepository pages,
+            ICurrentUser? currentUser = null) =>
+            new(new AccountBackedGalleryActorResolver(currentUser ?? this, this, this), AuthorizeAsync, repository, pages, 3);
 
         public Task<Account?> FindBySubjectAsync(Guid subject, CancellationToken cancellationToken = default)
         {
@@ -178,7 +180,7 @@ public sealed partial class GalleryPersistenceTests
             AccountLookups++;
             if (AccountUnavailable)
                 throw new InvalidOperationException("synthetic account provider details");
-            return Task.FromResult<Account?>(_account);
+            return Task.FromResult(AccountMissing ? null : _account);
         }
 
         public Task<Guid?> FindActiveOwnedHobbiesProfileIdAsync(Guid accountId, CancellationToken cancellationToken = default)
@@ -220,6 +222,10 @@ public sealed partial class GalleryPersistenceTests
         public int DetailReads { get; private set; }
         public GalleryMedia? Media { get; set; }
         public bool DetailUnavailable { get; set; }
+        public Action? DuringDetail { get; set; }
+        public Action? DuringPage { get; set; }
+        public bool FinalPage { get; set; }
+        public int LastPageSize { get; private set; }
 
         public Task<GalleryMedia?> GetOwnedByIdAsync(Guid mediaId, Guid ownerModuleProfileId, CancellationToken token)
         {
@@ -227,6 +233,7 @@ public sealed partial class GalleryPersistenceTests
             DetailReads++;
             if (DetailUnavailable)
                 throw new InvalidOperationException("synthetic database details");
+            DuringDetail?.Invoke();
             return Task.FromResult(Media);
         }
 
@@ -236,6 +243,10 @@ public sealed partial class GalleryPersistenceTests
             Assert.Equal(Owner, ownerId);
             Assert.Equal(3, maximum);
             PageReads++;
+            LastPageSize = size;
+            DuringPage?.Invoke();
+            if (FinalPage)
+                return Task.FromResult(new GalleryPage([], null));
             return Task.FromResult(new GalleryPage([NewPrivateMedia()], new(ownerId, "Hobbies", CreatedAt, Newer)));
         }
 

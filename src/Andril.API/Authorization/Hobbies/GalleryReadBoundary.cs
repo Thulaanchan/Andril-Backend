@@ -7,7 +7,9 @@ namespace Andril.API.Authorization.Hobbies;
 internal enum GalleryReadOperation
 {
     Metadata,
-    PrivateObjectEvidence
+    PrivateObjectEvidence,
+    MetadataList,
+    MetadataDetail
 }
 
 // Explicit backend composition. The existing Gallery registration and HTTP route inventory do not use it.
@@ -25,6 +27,59 @@ internal sealed class GalleryReadBoundary(
         CancellationToken cancellationToken = default) =>
         ReadAsync((service, token) => service.GetMinePageAsync(pageSize, trustedPageMaximum, after, token),
             cancellationToken);
+
+    internal Task<GalleryMetadataResult<GalleryMetadataPage>> ReadMetadataPageAsync(string? pageSize, string? cursor,
+        GalleryPageBounds bounds, GalleryMetadataCursor codec, CancellationToken cancellationToken = default) =>
+        ReadForReleaseAsync<GalleryMetadataPage>(GalleryReadOperation.MetadataList, async (scope, token) =>
+        {
+            if (bounds.Maximum > trustedPageMaximum)
+                return new(GalleryMetadataStatus.DependencyUnavailable);
+            if (!bounds.TryResolve(pageSize, out var size))
+                return new(GalleryMetadataStatus.InvalidPageSize);
+            GalleryPagePosition? position = null;
+            if (cursor is not null && !codec.TryDecode(scope.Actor, cursor, out position))
+                return new(GalleryMetadataStatus.InvalidCursor);
+
+            if (await ResolveAuthorizedScopeAsync(GalleryReadOperation.MetadataList, token) != scope)
+                return new(GalleryMetadataStatus.Denied);
+            var page = await CreateService(scope.Actor).GetMinePageAsync(size, trustedPageMaximum, position, token);
+            var next = page.Next is null ? null : codec.Encode(scope.Actor, page.Next);
+            return new(GalleryMetadataStatus.Success, new GalleryMetadataPage(page.Items, next));
+        }, cancellationToken);
+
+    internal Task<GalleryMetadataResult<GalleryPhotoDto>> ReadMetadataDetailAsync(string mediaId,
+        CancellationToken cancellationToken = default) =>
+        ReadForReleaseAsync<GalleryPhotoDto>(GalleryReadOperation.MetadataDetail, async (scope, token) =>
+        {
+            if (mediaId.Length != 36 || !Guid.TryParseExact(mediaId, "D", out var id) || id == Guid.Empty)
+                return new(GalleryMetadataStatus.InvalidMediaId);
+            var photo = await CreateService(scope.Actor).GetMineByIdAsync(id, token);
+            return photo is null ? new(GalleryMetadataStatus.MediaUnavailable) : new(GalleryMetadataStatus.Success, photo);
+        }, cancellationToken);
+
+    private async Task<GalleryMetadataResult<T>> ReadForReleaseAsync<T>(GalleryReadOperation operation,
+        Func<GalleryReadScope, CancellationToken, Task<GalleryMetadataResult<T>>> read, CancellationToken token)
+        where T : class
+    {
+        try
+        {
+            var scope = await ResolveAuthorizedScopeAsync(operation, token);
+            if (scope is null)
+                return new(GalleryMetadataStatus.Denied);
+            var result = await read(scope, token);
+            token.ThrowIfCancellationRequested();
+            // Recheck before handing buffered data to the caller. A production release fence needs a separate contract.
+            if (result.Status is GalleryMetadataStatus.Success or GalleryMetadataStatus.MediaUnavailable &&
+                await ResolveAuthorizedScopeAsync(operation, token) != scope)
+                return new(GalleryMetadataStatus.Denied);
+            return result;
+        }
+        catch (Exception)
+        {
+            token.ThrowIfCancellationRequested();
+            return new(GalleryMetadataStatus.DependencyUnavailable);
+        }
+    }
 
     internal async Task<bool> VerifyPrivateMediaAsync(Guid mediaId, IGalleryPrivateObjectEvidenceReader objects,
         CancellationToken cancellationToken = default)
@@ -61,13 +116,10 @@ internal sealed class GalleryReadBoundary(
         CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
-        GalleryActor? actor = null;
-        var allowed = false;
+        GalleryReadScope? scope = null;
         try
         {
-            actor = await actors.ResolveAsync(cancellationToken);
-            if (actor is not null)
-                allowed = await authorizeOperation(actor, operation, cancellationToken);
+            scope = await ResolveAuthorizedScopeAsync(operation, cancellationToken);
         }
         catch (Exception)
         {
@@ -75,11 +127,25 @@ internal sealed class GalleryReadBoundary(
         }
 
         cancellationToken.ThrowIfCancellationRequested();
-        if (actor is null || !allowed)
+        if (scope is null)
             throw new UnauthorizedAccessException("An active Hobbies profile is required.");
 
-        return new GalleryService(repository, new ResolvedActorContext(actor), pages);
+        return CreateService(scope.Actor);
     }
+
+    private async Task<GalleryReadScope?> ResolveAuthorizedScopeAsync(GalleryReadOperation operation, CancellationToken token)
+    {
+        var scope = await actors.ResolveScopeAsync(token);
+        token.ThrowIfCancellationRequested();
+        if (scope is null)
+            return null;
+        var allowed = await authorizeOperation(scope.Actor, operation, token);
+        token.ThrowIfCancellationRequested();
+        return allowed ? scope : null;
+    }
+
+    private GalleryService CreateService(GalleryActor actor) =>
+        new(repository, new ResolvedActorContext(actor), pages);
 
     private sealed class ResolvedActorContext(GalleryActor actor) : IGalleryActorContext
     {
