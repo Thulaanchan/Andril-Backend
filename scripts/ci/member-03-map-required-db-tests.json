@@ -44,7 +44,8 @@
     "Andril.IntegrationTests.Database.MapAttractionLifecycleTransactionPrototypeTests.Lifecycle_LostAcknowledgement_ReconcilesWithoutSecondTransition",
     "Andril.IntegrationTests.Database.MapAttractionLifecycleTransactionPrototypeTests.SharedLock_StatePrecedesSession_WithoutAnInvertedWaitCycle",
     "Andril.IntegrationTests.Database.MapAttractionLifecycleTransactionPrototypeTests.SharedLock_FailedSubmission_ReleasesAuditedDeactivation",
-    "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.DurableModeration_RequiresAuditAndSerializesScopedDecisions"
+    "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.DurableModeration_RequiresAuditAndSerializesScopedDecisions",
+    "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.RewardEligibility_RequiresDurableApprovalAndActiveHobbiesScope"
   ],
   "lifecycleDatabase": [
     "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.MigratedSchema_PreservesAttractionsAndRequiresExplicitStateWithIntegrity",
@@ -84,7 +85,8 @@
     "Andril.IntegrationTests.Database.MapAttractionLifecycleTransactionPrototypeTests.Lifecycle_LostAcknowledgement_ReconcilesWithoutSecondTransition",
     "Andril.IntegrationTests.Database.MapAttractionLifecycleTransactionPrototypeTests.SharedLock_StatePrecedesSession_WithoutAnInvertedWaitCycle",
     "Andril.IntegrationTests.Database.MapAttractionLifecycleTransactionPrototypeTests.SharedLock_FailedSubmission_ReleasesAuditedDeactivation",
-    "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.DurableModeration_RequiresAuditAndSerializesScopedDecisions"
+    "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.DurableModeration_RequiresAuditAndSerializesScopedDecisions",
+    "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.RewardEligibility_RequiresDurableApprovalAndActiveHobbiesScope"
   ],
   "lifecycleOffline": [
     "Andril.IntegrationTests.Database.MapAttractionLifecycleMigrationAcceptanceTests.Migration_IsMapOnlyForwardOnlyAndMatchesLifecycleModelOffline",
@@ -244,9 +246,9 @@
     "Andril.IntegrationTests.Database.MapContributionSubmissionWriterTests.Service_LostCommitAcknowledgementRemainsUnknownUntilExplicitAuthorizedRetry"
   ],
   "expected": {
-    "livePostgreSql": 186,
+    "livePostgreSql": 187,
     "offline": 5,
-    "total": 191
+    "total": 192
   },
   "socialTestsIncluded": false
 }
