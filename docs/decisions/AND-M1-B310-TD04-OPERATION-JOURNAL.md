@@ -52,9 +52,20 @@ an external provider. Provider dispatch remains disabled.
 `ValidateForReleaseAsync` validates journal/authority state inside a coordinated
 read; it is not an atomic HTTP response or conversation-persistence operation.
 An independently committed conversation write after it would be a TOCTOU defect,
-not an approved integration pattern. The future result-persistence participant
-must join the same transaction, and the future transport fence must specify its
-actual send/revoke linearization before either is activated.
+not an approved integration pattern. `CompleteConversationResultAsync` now provides
+the joined database command: one assistant message for an existing same-operation
+user message and Claimed → Completed journal state are saved in the same transaction.
+Current privacy, policy, acknowledgement revision, lifecycle, conversation ownership
+and expiry are revalidated before commit. Both writes roll back together on denial,
+cancellation or failure; assistant saves do not renew expiry. Completed is terminal,
+and duplicate completion conflicts rather than replaying. The command returns only
+sanitized operation status, never reply text or transport permission.
+
+An ambiguous commit still returns CommitUnknown through the existing transaction
+boundary; the caller must reconcile the persisted state without automatic replay.
+Reply delivery remains a separately coordinated release operation. The future
+transport fence must specify actual send/revoke linearization before provider
+dispatch can be activated. No provider selection or live execution is introduced.
 
 Indeterminate state is a conservative record, not a complete reconciliation of an
 ambiguous provider send. The existing boundary reports unknown commits without

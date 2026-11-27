@@ -2,7 +2,7 @@ using Andril.AI.ChatBox;
 
 namespace Andril.AI.Interfaces;
 
-public enum AiDispatchOperationState { Prepared = 1, Claimed = 2, Cancelled = 3, Indeterminate = 4 }
+public enum AiDispatchOperationState { Prepared = 1, Claimed = 2, Cancelled = 3, Indeterminate = 4, Completed = 5 }
 public enum AiDispatchJournalOutcome { Unavailable, Saved, Available, Denied, Conflict, CommitUnknown }
 
 public sealed record AiDispatchOperationSnapshot(Guid OperationId, AiDispatchOperationState State,
@@ -31,4 +31,11 @@ public interface IAiDispatchOperationRepository
     Task<AiDispatchJournalResult> CancelAsync(AiAuthorizedActor actor, Guid operationId, CancellationToken cancellationToken = default);
     Task<AiDispatchJournalResult> MarkIndeterminateAsync(AiAuthorizedActor actor, Guid operationId, CancellationToken cancellationToken = default);
     Task<AiDispatchJournalResult> ReconcileAsync(AiAuthorizedActor actor, Guid operationId, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// Atomically save one assistant result for the existing same-operation user message and
+    /// transition Claimed to Completed. This is not provider dispatch authority. No reply data
+    /// is returned; ambiguous commit requires owner-scoped reconciliation without replay.
+    /// </summary>
+    Task<AiDispatchJournalResult> CompleteConversationResultAsync(AiAuthorizedActor actor, Guid operationId,
+        Guid conversationId, string assistantText, CancellationToken cancellationToken = default);
 }
