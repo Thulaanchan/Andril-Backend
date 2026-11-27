@@ -1,0 +1,45 @@
+name: ANDRIL Member-05 Social PostgreSQL
+
+on:
+  push:
+    branches: [Member-5]
+  pull_request:
+    branches: [Develop]
+
+permissions:
+  contents: read
+
+jobs:
+  social-questionnaire-postgres:
+    if: github.event_name == 'push' || (github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'Member-5')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+      - name: Verify the Social acceptance manifest on PostgreSQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          container="andril-social-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          password="$(openssl rand -hex 32)"
+          printf '::add-mask::%s\n' "$password"
+          export POSTGRES_PASSWORD="$password"
+          docker run --detach --rm --name "$container" -p '127.0.0.1::5432' -e POSTGRES_PASSWORD postgres:17.12 >/dev/null
+          trap 'docker stop "$container" >/dev/null' EXIT
+          for attempt in $(seq 1 30); do
+            if docker exec "$container" pg_isready -h 127.0.0.1 -U postgres -d postgres >/dev/null; then
+              break
+            fi
+            if [[ "$attempt" == 30 ]]; then
+              printf '%s\n' 'Disposable PostgreSQL did not become ready.' >&2
+              exit 1
+            fi
+            sleep 2
+          done
+          binding="$(docker port "$container" 5432/tcp)"
+          [[ "$binding" =~ ^127\.0\.0\.1:[0-9]+$ ]]
+          export ANDRIL_M2_TEST_POSTGRES="Host=127.0.0.1;Port=${binding##*:};Database=postgres;Username=postgres;Password=$password;Pooling=false;Include Error Detail=false"
+          pwsh -NoProfile -File scripts/ci/run-member-05-social-db.ps1 -ResultsDirectory "$RUNNER_TEMP/member-05-social-db"
