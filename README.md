@@ -53,7 +53,7 @@ The four solution test projects are `Andril.UnitTests`, `Andril.IntegrationTests
 
 These are 21 shared operations plus health. There are no active Learning, Diary or AI feature endpoints in the current API composition. Test-only probe/prototype routes do not count as application APIs.
 
-The [OpenAPI contract](contracts/openapi/andril-api.v1.yaml) documents account, profile/photo, onboarding and health operations. It does not yet include the notification routes. Source/contract parity and client compatibility still require review.
+The [OpenAPI contract](contracts/openapi/andril-api.v1.yaml) documents account, profile/photo, onboarding, health and the three existing Notification routes listed above. Notification access requires bearer authentication plus a matching server-established confirmed identity and is isolated to the caller's private module profile. The current default identity middleware excludes Notification paths from confirmed-identity feature establishment, so requests lacking that feature fail closed with 403 before account lookup. Recipient resolution and the Notification repository remain Deny-All. Documented success responses are conditional controller contracts; production Notification access, persistence, providers and delivery are not activated. M2 identity review and M5/M6 contract/client review remain required; **P-19 contract publication/versioning remains PENDING**.
 
 ## Authentication and integration boundaries
 

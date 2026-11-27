@@ -317,6 +317,38 @@ components:
         updatedAtUtc:
           type: string
           format: date-time
+    NotificationListItemDto:
+      type: object
+      additionalProperties: false
+      required: [id, type, title, preview, createdAtUtc, readAtUtc, isRead]
+      description: >-
+        Conditional owner-scoped response from the existing Notification controller.
+        The default ASP.NET Core JSON configuration emits all seven properties,
+        including nullable preview and readAtUtc. No account, private module-profile,
+        device-registration or provider identifiers are exposed.
+      properties:
+        id:
+          type: string
+          format: uuid
+        type:
+          type: string
+          description: Existing notification type; no closed set of event kinds is specified.
+        title:
+          type: string
+        preview:
+          type: string
+          nullable: true
+        createdAtUtc:
+          type: string
+          format: date-time
+        readAtUtc:
+          type: string
+          format: date-time
+          nullable: true
+        isRead:
+          type: boolean
+          readOnly: true
+          description: True exactly when readAtUtc is non-null; not proof of push delivery.
     AccountProblem:
       type: object
       properties:
@@ -1106,6 +1138,156 @@ paths:
                 $ref: '#/components/schemas/AccountProblem'
         '503':
           $ref: '#/components/responses/AccountUnavailable'
+  /api/v1/notifications/{module}:
+    parameters:
+      - name: module
+        in: path
+        required: true
+        description: >-
+          Canonical module name. The controller trims whitespace and compares
+          case-insensitively. Only learning, hobbies and social are supported;
+          there is no dating alias or numeric module value.
+        schema:
+          type: string
+          enum: [learning, hobbies, social]
+    get:
+      operationId: listNotifications
+      summary: List the latest notifications for the caller's private module profile
+      security:
+        - supabaseBearer: []
+      description: >-
+        Bearer authentication alone does not grant Notification access. A matching
+        server-established confirmed-identity feature is also required. The current
+        default identity middleware excludes /api/v1/notifications from feature
+        establishment, so requests without that feature fail closed with 403 before
+        account or Notification lookup. Binding errors can be rejected before the action.
+        Production Notification recipient resolution and repository remain Deny-All.
+        The 200 response below describes the conditional controller contract, not
+        activated production access. If a trusted confirmed context is supplied,
+        account lookup precedes resolution of an owned, active private module profile;
+        unavailable or denied Notification scope returns an empty array. Results
+        cannot cross module/profile boundaries. This is a bounded latest-items list,
+        not cursor pagination: no total count, page envelope or continuation token.
+        The item bound is not an entitlement. No production notification delivery,
+        provider, persistence or authorization activation is implied. No uniform
+        cache-header guarantee or account identity-specific 429/503 behavior is asserted.
+      parameters:
+        - name: maxItems
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int32
+            default: 20
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Conditional bounded list; denied or unavailable Notification scope yields an empty array.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/NotificationListItemDto'
+        '400':
+          description: maxItems cannot be bound to an integer or is outside 1–100. No error-body shape is specified here.
+        '401':
+          description: Missing or invalid bearer authentication; Bearer challenge. No error-body shape is specified here.
+        '403':
+          description: Matching confirmed-identity context is absent; the action does not read the account or notifications.
+        '404':
+          description: Unsupported module or, after confirmed-identity checks, no account for the caller.
+  /api/v1/notifications/{module}/{notificationId}:
+    parameters:
+      - name: module
+        in: path
+        required: true
+        description: Canonical module; whitespace is trimmed and comparison is case-insensitive. No dating or numeric alias.
+        schema:
+          type: string
+          enum: [learning, hobbies, social]
+      - name: notificationId
+        in: path
+        required: true
+        description: UUID constrained by routing; the empty UUID is rejected by the action. Malformed UUID paths do not match this route.
+        schema:
+          type: string
+          format: uuid
+    get:
+      operationId: getNotification
+      summary: Read one notification within the caller's private module profile
+      security:
+        - supabaseBearer: []
+      description: >-
+        Requires bearer authentication and a matching server-established confirmed
+        identity; bearer authentication alone is insufficient. Current default identity
+        middleware excludes Notification paths, so a missing confirmed feature fails
+        closed with 403 before account lookup. Production recipient resolution and
+        repository remain Deny-All. The 200 response is a conditional controller
+        contract, not activated production access. After a trusted confirmed context
+        and account lookup, the application requires an owned, active private module
+        profile and exact notification/module/profile match. Missing and out-of-scope
+        records use the same 404 result. No production delivery, provider, persistence
+        or authorization activation, uniform cache headers, or identity-specific
+        429/503 response is implied. Error-body shapes are not specified here.
+      responses:
+        '200':
+          description: Conditional response for the exact authorized notification.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NotificationListItemDto'
+        '401':
+          description: Missing or invalid bearer authentication; Bearer challenge.
+        '403':
+          description: Matching confirmed-identity context is absent; account and Notification lookup do not execute.
+        '404':
+          description: Unsupported module, empty UUID, missing account, denied/unavailable Notification scope, or missing/out-of-scope notification. Malformed UUID paths do not match this route.
+  /api/v1/notifications/{module}/{notificationId}/read:
+    parameters:
+      - name: module
+        in: path
+        required: true
+        description: Canonical module; whitespace is trimmed and comparison is case-insensitive. No dating or numeric alias.
+        schema:
+          type: string
+          enum: [learning, hobbies, social]
+      - name: notificationId
+        in: path
+        required: true
+        description: UUID constrained by routing; the empty UUID is rejected by the action. Malformed UUID paths do not match this route.
+        schema:
+          type: string
+          format: uuid
+    patch:
+      operationId: markNotificationRead
+      summary: Mark an authorized notification as read
+      security:
+        - supabaseBearer: []
+      description: >-
+        This operation has no request body. The server supplies the UTC read time;
+        clients do not submit a recipient, module-profile identifier or timestamp.
+        Requires bearer authentication and a matching server-established confirmed
+        identity. Current default identity middleware excludes Notification paths,
+        so a missing confirmed feature fails closed with 403 before account lookup.
+        Production recipient resolution and repository remain Deny-All. The 204
+        response describes the conditional controller contract, not activated
+        production access. An update requires exact owned, active module-profile
+        scope and notification identity; the repository contract preserves the
+        original read timestamp on repeated reads. Denied and missing targets use
+        the same 404 result. No production notification delivery, provider, persistence
+        or authorization activation, uniform cache headers, or identity-specific
+        429/503 behavior is implied. Error-body shapes are not specified here.
+      responses:
+        '204':
+          description: Conditional successful mark-read result; no response body. This is not push-delivery confirmation.
+        '401':
+          description: Missing or invalid bearer authentication; Bearer challenge.
+        '403':
+          description: Matching confirmed-identity context is absent; account and Notification operations do not execute.
+        '404':
+          description: Unsupported module, empty UUID, missing account, denied/unavailable Notification scope, or missing/out-of-scope notification. Malformed UUID paths do not match this route.
   /health:
     get:
       security: []
