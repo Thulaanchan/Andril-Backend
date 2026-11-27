@@ -135,6 +135,104 @@ public sealed class GroupDiscoveryServiceTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => service.DiscoverAsync(Actor("social"), scope, "", 1));
     }
 
+    [Fact]
+    public async Task MissingOrLateProjection_CannotReleasePreviouslyAuthorizedResult()
+    {
+        var scope = Scope("learning");
+        var repository = new RepositoryDouble([Evidence(scope)]);
+        var service = new GroupDiscoveryService(repository, new Clock());
+        var previous = await service.DiscoverAsync(Actor("learning"), scope, "", 1);
+        Assert.NotNull(previous);
+
+        Func<Task<object?>>? invokeLate = null;
+        repository.Release = project =>
+        {
+            invokeLate = project;
+            return Task.FromResult<object?>(previous);
+        };
+
+        Assert.Null(await service.DiscoverAsync(Actor("learning"), scope, "", 1));
+        Assert.NotNull(invokeLate);
+        Assert.Null(await invokeLate());
+        Assert.Equal(1, repository.Rechecks);
+    }
+
+    [Fact]
+    public async Task SubstitutedProjection_IsRejectedEvenWhenActorScopeAndGroupsMatch()
+    {
+        var scope = Scope("hobbies");
+        var repository = new RepositoryDouble([Evidence(scope)]);
+        var service = new GroupDiscoveryService(repository, new Clock());
+        var previous = await service.DiscoverAsync(Actor("hobbies"), scope, "", 1);
+        Assert.NotNull(previous);
+        repository.Release = async project =>
+        {
+            var current = Assert.IsType<AuthorizedGroupDiscoveryResult>(await project());
+            Assert.NotSame(previous, current);
+            Assert.Equal(previous.ActorProfileId, current.ActorProfileId);
+            Assert.Equal(previous.Scope, current.Scope);
+            Assert.Equal(previous.Groups, current.Groups);
+            return previous;
+        };
+
+        Assert.Null(await service.DiscoverAsync(Actor("hobbies"), scope, "", 1));
+        Assert.Equal(2, repository.Rechecks);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RepeatedProjection_InvalidatesFirstResult(bool concurrent)
+    {
+        var scope = Scope("social");
+        var repository = new RepositoryDouble([Evidence(scope)]);
+        var finishRecheck = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        if (concurrent) repository.WaitDuringRecheck = () => finishRecheck.Task;
+        repository.Release = async project =>
+        {
+            var first = project();
+            Assert.Equal(!concurrent, first.IsCompleted);
+            try
+            {
+                Assert.Null(await project().WaitAsync(TimeSpan.FromSeconds(10)));
+            }
+            finally
+            {
+                finishRecheck.SetResult();
+            }
+
+            return Assert.IsType<AuthorizedGroupDiscoveryResult>(await first);
+        };
+
+        var service = new GroupDiscoveryService(repository, new Clock());
+        Assert.Null(await service.DiscoverAsync(Actor("social"), scope, "", 1));
+        Assert.Equal(1, repository.Rechecks);
+    }
+
+    [Fact]
+    public async Task RepositoryRevocationSuppressesVerifiedProjectionAndCallerCancellationTakesPriority()
+    {
+        var scope = Scope("social");
+        var repository = new RepositoryDouble([Evidence(scope)]);
+        var service = new GroupDiscoveryService(repository, new Clock());
+        using var cancellation = new CancellationTokenSource();
+        repository.Release = async project =>
+        {
+            Assert.IsType<AuthorizedGroupDiscoveryResult>(await project());
+            return null;
+        };
+        Assert.Null(await service.DiscoverAsync(Actor("social"), scope, "", 1));
+
+        repository.Release = async project =>
+        {
+            var result = Assert.IsType<AuthorizedGroupDiscoveryResult>(await project());
+            cancellation.Cancel();
+            return result;
+        };
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            service.DiscoverAsync(Actor("social"), scope, "", 1, cancellation.Token));
+    }
+
     private sealed class RepositoryDouble(IReadOnlyList<GroupDiscoveryEvidence> rows) : IGroupDiscoveryReadRepository
     {
         public IReadOnlyList<GroupDiscoveryEvidence> Rows = rows;
@@ -143,15 +241,28 @@ public sealed class GroupDiscoveryServiceTests
         public int Rechecks;
         public bool ForeignActor, SuppressRelease;
         public Action? OnRecheck;
+        public Func<Task>? WaitDuringRecheck;
+        public Func<Func<Task<object?>>, Task<object?>>? Release;
         public GroupDiscoveryDecision Decision = GroupDiscoveryDecision.Allowed;
         public async Task<T?> WithAuthorizedReadAsync<T>(GroupDiscoveryQuery query,
             Func<GroupDiscoverySnapshot, CancellationToken, Task<T?>> project, CancellationToken cancellationToken = default) where T : class
         {
             Query = query;
-            var result = await project(new(ForeignActor ? Guid.NewGuid() : query.ActorProfileId, query.Scope, Rows, "a1"), cancellationToken);
+            var snapshot = new GroupDiscoverySnapshot(
+                ForeignActor ? Guid.NewGuid() : query.ActorProfileId, query.Scope, Rows, "a1");
+            if (Release is { } release) return (T?)await release(async () => await project(snapshot, cancellationToken));
+            var result = await project(snapshot, cancellationToken);
             return SuppressRelease ? null : result;
         }
-        public Task<GroupDiscoveryDecision> RevalidateAsync(GroupDiscoveryQuery query, GroupDiscoverySnapshot snapshot, CancellationToken cancellationToken = default)
-        { Rechecks++; Token = cancellationToken; OnRecheck?.Invoke(); return Task.FromResult(Decision); }
+
+        public async Task<GroupDiscoveryDecision> RevalidateAsync(GroupDiscoveryQuery query,
+            GroupDiscoverySnapshot snapshot, CancellationToken cancellationToken = default)
+        {
+            Rechecks++;
+            Token = cancellationToken;
+            OnRecheck?.Invoke();
+            if (WaitDuringRecheck is { } wait) await wait();
+            return Decision;
+        }
     }
 }
