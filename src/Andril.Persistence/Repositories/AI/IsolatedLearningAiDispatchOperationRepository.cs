@@ -1,5 +1,6 @@
 using Andril.AI.ChatBox;
 using Andril.AI.Interfaces;
+using Andril.AI.Persistence;
 using Andril.AI.Services;
 using Andril.Common.Accounts.Profiles;
 using Andril.Persistence.DbContexts;
@@ -46,7 +47,7 @@ internal sealed class IsolatedLearningAiDispatchOperationRepository : IAiDispatc
         boundary = new(options, user, access, profiles); this.policies = policies; this.privacy = privacy; this.clock = clock;
     }
 
-    private enum Action { Prepare, Claim, ValidateRelease, Cancel, Indeterminate, Reconcile }
+    private enum Action { Prepare, Claim, ValidateRelease, Cancel, Indeterminate, Reconcile, Complete }
     public Task<AiDispatchJournalResult> PrepareAsync(AiAuthorizedActor actor, Guid operationId,
         AiAcknowledgementRevision reviewedAcknowledgement, CancellationToken cancellationToken = default)
         => Run(actor, operationId, Action.Prepare, reviewedAcknowledgement, cancellationToken);
@@ -60,20 +61,26 @@ internal sealed class IsolatedLearningAiDispatchOperationRepository : IAiDispatc
         => Run(actor, operationId, Action.Indeterminate, null, cancellationToken);
     public Task<AiDispatchJournalResult> ReconcileAsync(AiAuthorizedActor actor, Guid operationId, CancellationToken cancellationToken = default)
         => Run(actor, operationId, Action.Reconcile, null, cancellationToken);
+    public Task<AiDispatchJournalResult> CompleteConversationResultAsync(AiAuthorizedActor actor, Guid operationId,
+        Guid conversationId, string assistantText, CancellationToken cancellationToken = default)
+        => Run(actor, operationId, Action.Complete, null, cancellationToken, conversationId, assistantText);
 
     private async Task<AiDispatchJournalResult> Run(AiAuthorizedActor actor, Guid operationId, Action action,
-        AiAcknowledgementRevision? reviewed, CancellationToken ct)
+        AiAcknowledgementRevision? reviewed, CancellationToken ct, Guid? conversationId = null, string? assistantText = null)
     {
         ct.ThrowIfCancellationRequested();
         if (actor is null || actor.Module != AiModule.Learning || actor.UserId == Guid.Empty || actor.ModuleProfileId == Guid.Empty)
             return new(AiDispatchJournalOutcome.Denied);
         if (operationId == Guid.Empty || (action == Action.Prepare && (reviewed is null || reviewed.Generation == Guid.Empty || reviewed.Version < 1)))
             return new(AiDispatchJournalOutcome.Conflict);
+        if (action == Action.Complete && (conversationId is null || conversationId == Guid.Empty || string.IsNullOrWhiteSpace(assistantText)))
+            return new(AiDispatchJournalOutcome.Conflict);
         var write = action is not (Action.ValidateRelease or Action.Reconcile);
-        var protectedAction = action is Action.Prepare or Action.Claim or Action.ValidateRelease;
+        var protectedAction = action is Action.Prepare or Action.Claim or Action.ValidateRelease or Action.Complete;
         LearningDbContext? transactionContext = null;
         AiAcknowledgementRevision? lease = null;
         string? policyVersion = null;
+        AiConversationEntity? completedConversation = null;
 
         return await boundary.Run(async (parent, owner, token) =>
         {
@@ -113,10 +120,24 @@ internal sealed class IsolatedLearningAiDispatchOperationRepository : IAiDispatc
                 if (action == Action.Reconcile) return new(AiDispatchJournalOutcome.Available, Snapshot(row));
                 if (action == Action.ValidateRelease)
                     return row.State == AiDispatchOperationState.Claimed ? new(AiDispatchJournalOutcome.Available, Snapshot(row)) : new(AiDispatchJournalOutcome.Conflict);
+                if (action == Action.Complete)
+                {
+                    if (row.State != AiDispatchOperationState.Claimed) return new(AiDispatchJournalOutcome.Conflict);
+                    var conversation = await db.Set<AiConversationEntity>().SingleOrDefaultAsync(x =>
+                        x.Id == conversationId && x.AccountId == actor.UserId && x.ModuleProfileId == actor.ModuleProfileId && x.Module == AiModule.Learning, token);
+                    if (conversation is null || !conversation.IsAccessibleBy(actor, clock.GetUtcNow())) return new(AiDispatchJournalOutcome.Denied);
+                    var messages = db.Set<AiMessageEntity>().Where(x => x.AccountId == actor.UserId &&
+                        x.ModuleProfileId == actor.ModuleProfileId && x.Module == AiModule.Learning && x.OperationId == operationId);
+                    if (!await messages.AnyAsync(x => x.ConversationId == conversationId && x.Role == AiStoredMessageRole.User, token) ||
+                        await messages.AnyAsync(x => x.Role == AiStoredMessageRole.Assistant, token)) return new(AiDispatchJournalOutcome.Conflict);
+                    db.Add(AiMessageEntity.CreateAssistantMessage(conversation, actor, operationId, assistantText, clock.GetUtcNow()));
+                    completedConversation = conversation;
+                }
                 if (action == Action.Claim && row.State != AiDispatchOperationState.Prepared) return new(AiDispatchJournalOutcome.Conflict);
                 if (action == Action.Indeterminate && row.State != AiDispatchOperationState.Claimed) return new(AiDispatchJournalOutcome.Conflict);
-                if (action == Action.Cancel && row.State == AiDispatchOperationState.Indeterminate) return new(AiDispatchJournalOutcome.Conflict);
-                row.State = action switch { Action.Claim => AiDispatchOperationState.Claimed, Action.Indeterminate => AiDispatchOperationState.Indeterminate, _ => AiDispatchOperationState.Cancelled };
+                if (action == Action.Cancel && row.State is AiDispatchOperationState.Indeterminate or AiDispatchOperationState.Completed) return new(AiDispatchJournalOutcome.Conflict);
+                row.State = action switch { Action.Claim => AiDispatchOperationState.Claimed, Action.Indeterminate => AiDispatchOperationState.Indeterminate,
+                    Action.Complete => AiDispatchOperationState.Completed, _ => AiDispatchOperationState.Cancelled };
                 row.UpdatedAtUtc = clock.GetUtcNow();
             }
             await db.SaveChangesAsync(token);
@@ -139,6 +160,7 @@ internal sealed class IsolatedLearningAiDispatchOperationRepository : IAiDispatc
                 await db.Database.UseTransactionAsync(transactionContext!.Database.CurrentTransaction!.GetDbTransaction(), token);
                 var ack = await db.Set<IsolatedAiAcknowledgementRow>().SingleOrDefaultAsync(x => x.AccountId == actor.UserId && x.ModuleProfileId == actor.ModuleProfileId && x.Module == AiModule.Learning, token);
                 if (ack is null || !ack.Acknowledged || ack.Generation != lease.Generation || ack.Version != lease.Version) throw new ProfileAccessDeniedException();
+                if (completedConversation is not null && !completedConversation.IsAccessibleBy(actor, clock.GetUtcNow())) throw new ProfileAccessDeniedException();
             }
         });
     }

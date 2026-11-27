@@ -43,7 +43,7 @@ internal sealed class IsolatedLearningAiDbContext(DbContextOptions<IsolatedLearn
         operation.ToTable("dispatch_operations", t =>
         {
             t.HasCheckConstraint("ck_ai_dispatch_scope", "module = 'Learning' AND operation_id <> '00000000-0000-0000-0000-000000000000'::uuid");
-            t.HasCheckConstraint("ck_ai_dispatch_state", "state IN ('Prepared','Claimed','Cancelled','Indeterminate')");
+            t.HasCheckConstraint("ck_ai_dispatch_state", "state IN ('Prepared','Claimed','Cancelled','Indeterminate','Completed')");
             t.HasCheckConstraint("ck_ai_dispatch_ack", "acknowledgement_generation <> '00000000-0000-0000-0000-000000000000'::uuid AND acknowledgement_version > 0 AND length(trim(policy_version)) > 0");
         });
         operation.HasKey(x => new { x.AccountId, x.ModuleProfileId, x.Module, x.OperationId });
