@@ -135,6 +135,93 @@ namespace Andril.Persistence.Migrations.Social
                         });
                 });
 
+            modelBuilder.Entity("Andril.Persistence.DbContexts.SocialMatchingPreferencesRow", b =>
+                {
+                    b.Property<Guid>("ProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("profile_id");
+
+                    b.PrimitiveCollection<string[]>("ConnectionGoals")
+                        .IsRequired()
+                        .HasColumnType("text[]")
+                        .HasColumnName("connection_goals");
+
+                    b.Property<bool>("Discoverable")
+                        .HasColumnType("boolean")
+                        .HasColumnName("discoverable");
+
+                    b.PrimitiveCollection<string[]>("Languages")
+                        .IsRequired()
+                        .HasColumnType("text[]")
+                        .HasColumnName("languages");
+
+                    b.Property<int>("MaxAge")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_age");
+
+                    b.Property<int>("MaxDistanceKm")
+                        .HasColumnType("integer")
+                        .HasColumnName("max_distance_km");
+
+                    b.Property<int>("MinAge")
+                        .HasColumnType("integer")
+                        .HasColumnName("min_age");
+
+                    b.Property<int>("MinDistanceKm")
+                        .HasColumnType("integer")
+                        .HasColumnName("min_distance_km");
+
+                    b.Property<string>("Module")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("module");
+
+                    b.Property<string>("PartnerCommunication")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("partner_communication");
+
+                    b.Property<string>("PartnerPlanning")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("partner_planning");
+
+                    b.Property<string>("PartnerSocial")
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("partner_social");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("ShowMe")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("show_me");
+
+                    b.HasKey("ProfileId")
+                        .HasName("pk_social_matching_preferences");
+
+                    b.ToTable("social_matching_preferences", "andril_social", t =>
+                        {
+                            t.HasCheckConstraint("ck_social_matching_preferences_age", "min_age >= 18 AND max_age <= 99 AND min_age <= max_age");
+
+                            t.HasCheckConstraint("ck_social_matching_preferences_distance", "min_distance_km >= 0 AND max_distance_km <= 999 AND min_distance_km <= max_distance_km");
+
+                            t.HasCheckConstraint("ck_social_matching_preferences_gender", "show_me IN ('All', 'Men', 'Women')");
+
+                            t.HasCheckConstraint("ck_social_matching_preferences_module", "module = 'social'");
+
+                            t.HasCheckConstraint("ck_social_matching_preferences_partner", "num_nonnulls(partner_social, partner_communication, partner_planning) = 0 OR\n(num_nonnulls(partner_social, partner_communication, partner_planning) = 3\n    AND partner_social IN ('Either', 'Reserved', 'Outgoing')\n    AND partner_communication IN ('Either', 'LessExpressive', 'Expressive')\n    AND partner_planning IN ('Either', 'Spontaneous', 'Structured'))");
+
+                            t.HasCheckConstraint("ck_social_matching_preferences_revision", "revision > 0");
+                        });
+                });
+
             modelBuilder.Entity("Andril.Persistence.DbContexts.SocialQuestionnaireCurrentResponse", b =>
                 {
                     b.Property<Guid>("ProfileId")

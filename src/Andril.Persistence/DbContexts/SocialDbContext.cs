@@ -131,6 +131,40 @@ public sealed class SocialDbContext : DbContext
             b.Property<uint>("RowVersion").HasColumnName("xmin").IsRowVersion();
         });
 
+        modelBuilder.Entity<SocialMatchingPreferencesRow>(b =>
+        {
+            b.ToTable("social_matching_preferences", Schema, table =>
+            {
+                table.HasCheckConstraint("ck_social_matching_preferences_module", "module = 'social'");
+                table.HasCheckConstraint("ck_social_matching_preferences_age", "min_age >= 18 AND max_age <= 99 AND min_age <= max_age");
+                table.HasCheckConstraint("ck_social_matching_preferences_distance", "min_distance_km >= 0 AND max_distance_km <= 999 AND min_distance_km <= max_distance_km");
+                table.HasCheckConstraint("ck_social_matching_preferences_gender", "show_me IN ('All', 'Men', 'Women')");
+                table.HasCheckConstraint("ck_social_matching_preferences_revision", "revision > 0");
+                table.HasCheckConstraint("ck_social_matching_preferences_partner", """
+                    num_nonnulls(partner_social, partner_communication, partner_planning) = 0 OR
+                    (num_nonnulls(partner_social, partner_communication, partner_planning) = 3
+                        AND partner_social IN ('Either', 'Reserved', 'Outgoing')
+                        AND partner_communication IN ('Either', 'LessExpressive', 'Expressive')
+                        AND partner_planning IN ('Either', 'Spontaneous', 'Structured'))
+                    """);
+            });
+            b.HasKey(row => row.ProfileId).HasName("pk_social_matching_preferences");
+            b.Property(row => row.ProfileId).HasColumnName("profile_id").ValueGeneratedNever();
+            b.Property(row => row.Module).HasColumnName("module").HasMaxLength(16).IsRequired();
+            b.Property(row => row.Discoverable).HasColumnName("discoverable");
+            b.Property(row => row.ShowMe).HasColumnName("show_me").HasMaxLength(16).IsRequired();
+            b.Property(row => row.MinAge).HasColumnName("min_age");
+            b.Property(row => row.MaxAge).HasColumnName("max_age");
+            b.Property(row => row.MinDistanceKm).HasColumnName("min_distance_km");
+            b.Property(row => row.MaxDistanceKm).HasColumnName("max_distance_km");
+            b.Property(row => row.Languages).HasColumnName("languages").IsRequired();
+            b.Property(row => row.ConnectionGoals).HasColumnName("connection_goals").IsRequired();
+            b.Property(row => row.PartnerSocial).HasColumnName("partner_social").HasMaxLength(16);
+            b.Property(row => row.PartnerCommunication).HasColumnName("partner_communication").HasMaxLength(16);
+            b.Property(row => row.PartnerPlanning).HasColumnName("partner_planning").HasMaxLength(16);
+            b.Property(row => row.Revision).HasColumnName("revision").IsConcurrencyToken();
+        });
+
         modelBuilder.Entity<QuestionnaireAnswerEntity>(b =>
         {
             b.ToTable("social_questionnaire_answers", Schema, t =>
