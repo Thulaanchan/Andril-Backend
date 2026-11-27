@@ -221,6 +221,155 @@ public sealed class PostgresSocialRelationshipTransactionRepositoryTests
         Assert.NotEqual(card.CommittedRevision, withoutConsent.CommittedRevision);
     }
 
+    [LocalPostgresFact]
+    public async Task AConcurrentBlockWaitsForInterestThenRevokesTheCommittedMatch()
+    {
+        await using var fixture = await RelationshipDatabase.CreateAsync();
+        var first = await fixture.SeedAsync();
+        var second = await fixture.SeedAsync();
+        var pair = new SocialProfilePairKey(first.Profile, second.Profile);
+        await fixture.InterestAsync(first, pair, true);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var like = fixture.ExecuteAsync(second, async repository =>
+        {
+            var result = await repository.RecordInterestAndTryMatchAsync(pair, second.Profile, true, DateTime.UtcNow, deadline.Token);
+            held.SetResult();
+            await release.Task.WaitAsync(deadline.Token);
+            return result;
+        }, deadline.Token);
+        await held.Task.WaitAsync(deadline.Token);
+        var block = fixture.Safety(first).SetBlockAsync(second.Profile, true, deadline.Token);
+        try { await fixture.WaitForAdvisoryWaiterAsync(deadline.Token); }
+        finally { release.TrySetResult(); }
+        Assert.True((await like).MatchCreated);
+        await block;
+        Assert.Equal(0L, await fixture.ActiveMatchesAsync());
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() => fixture.ReadAsync(second, pair));
+    }
+
+    [LocalPostgresFact]
+    public async Task DeactivationAndMatchAreSerializedAndACommittedDeactivationRevokesTheMatch()
+    {
+        await using var fixture = await RelationshipDatabase.CreateAsync();
+        var first = await fixture.SeedAsync();
+        var second = await fixture.SeedAsync();
+        var pair = new SocialProfilePairKey(first.Profile, second.Profile);
+        await fixture.InterestAsync(first, pair, true);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var match = fixture.ExecuteAsync(second, async repository =>
+        {
+            var result = await repository.RecordInterestAndTryMatchAsync(pair, second.Profile, true, DateTime.UtcNow, deadline.Token);
+            held.SetResult();
+            await release.Task.WaitAsync(deadline.Token);
+            return result;
+        }, deadline.Token);
+        await held.Task.WaitAsync(deadline.Token);
+        var deactivate = fixture.DeactivateAsync(first, deadline.Token);
+        try { await fixture.WaitForAdvisoryWaiterAsync(deadline.Token); }
+        finally { release.TrySetResult(); }
+        Assert.True((await match).MatchCreated);
+        await deactivate;
+        Assert.Equal(0L, await fixture.ActiveMatchesAsync());
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() => fixture.ReadAsync(second, pair));
+    }
+
+    [LocalPostgresFact]
+    public async Task AnAuthorizedReadQueuedBehindRevocationCannotReleaseTheOldMatch()
+    {
+        await using var fixture = await RelationshipDatabase.CreateAsync();
+        var first = await fixture.SeedAsync();
+        var second = await fixture.SeedAsync();
+        var pair = new SocialProfilePairKey(first.Profile, second.Profile);
+        await fixture.InterestAsync(first, pair, true);
+        Assert.True((await fixture.InterestAsync(second, pair, true)).MatchCreated);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var held = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var revoke = fixture.ExecuteAsync(first, async repository =>
+        {
+            var result = await repository.RevokeMatchAsync(pair, first.Profile, DateTime.UtcNow, deadline.Token);
+            held.SetResult();
+            await release.Task.WaitAsync(deadline.Token);
+            return result;
+        }, deadline.Token);
+        await held.Task.WaitAsync(deadline.Token);
+        var read = fixture.ExecuteAsync(second, repository => repository.GetRelationshipStateAsync(pair, second.Profile, deadline.Token), deadline.Token);
+        try { await fixture.WaitForAdvisoryWaiterAsync(deadline.Token); }
+        finally { release.TrySetResult(); }
+        Assert.True((await revoke).MatchRevoked);
+        Assert.Null((await read).ActiveMatch);
+    }
+
+    [LocalPostgresFact]
+    public async Task DiscoveryOmitsHiddenUnderageInactiveRestrictedAndBlockedCandidates()
+    {
+        await using var fixture = await RelationshipDatabase.CreateAsync();
+        var caller = await fixture.SeedAsync();
+        var candidate = await fixture.SeedAsync();
+        var unauthorized = await fixture.SeedAsync("hobbies");
+        await fixture.PrepareMatchingAsync(caller);
+        await fixture.PrepareMatchingAsync(candidate);
+        await fixture.LocationAsync(caller).UpdateSelfAsync(6.9m, 79.9m, consent: true);
+        await fixture.LocationAsync(candidate).UpdateSelfAsync(7.0m, 79.9m, consent: true);
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() => fixture.LocationAsync(unauthorized).UpdateSelfAsync(7.0m, 79.9m, consent: true));
+
+        var first = Assert.Single(await fixture.DiscoveryAsync(caller));
+        await fixture.SetDiscoveryAsync(candidate, false);
+        Assert.Empty(await fixture.DiscoveryAsync(caller));
+        await fixture.SetDiscoveryAsync(candidate, true);
+        var later = Assert.Single(await fixture.DiscoveryAsync(caller));
+        Assert.False(SocialMatchingEvidenceInvalidationPolicy.EvaluateCurrency(first.CachedRevision, later.CommittedRevision).IsCurrent);
+
+        await fixture.SetAdultAsync(candidate, false);
+        Assert.Empty(await fixture.DiscoveryAsync(caller));
+        await fixture.SetAdultAsync(candidate, true);
+        await fixture.GrantModerationAsync(caller);
+        await fixture.Safety(caller).SetRestrictionAsync(candidate.Profile, true);
+        Assert.Empty(await fixture.DiscoveryAsync(caller));
+        await fixture.Safety(caller).SetRestrictionAsync(candidate.Profile, false);
+        await fixture.Safety(candidate).SetBlockAsync(caller.Profile, true);
+        Assert.Empty(await fixture.DiscoveryAsync(caller));
+        Assert.Empty(await fixture.DiscoveryAsync(candidate));
+        await fixture.Safety(candidate).SetBlockAsync(caller.Profile, false);
+        Assert.Single(await fixture.DiscoveryAsync(caller));
+        await fixture.DeactivateAsync(candidate, CancellationToken.None);
+        Assert.Empty(await fixture.DiscoveryAsync(caller));
+    }
+
+    [LocalPostgresFact]
+    public async Task CommittedRevisionsSuppressContradictoryRowsAndExpiredDistances()
+    {
+        await using var fixture = await RelationshipDatabase.CreateAsync();
+        var caller = await fixture.SeedAsync();
+        var candidate = await fixture.SeedAsync();
+        await fixture.PrepareMatchingAsync(caller);
+        await fixture.PrepareMatchingAsync(candidate);
+        await fixture.LocationAsync(caller).UpdateSelfAsync(6.9m, 79.9m, consent: true);
+        await fixture.LocationAsync(candidate).UpdateSelfAsync(7.0m, 79.9m, consent: true);
+        var original = Assert.Single(await fixture.DiscoveryAsync(caller));
+        await fixture.LocationAsync(candidate).UpdateSelfAsync(7.1m, 79.9m, consent: true);
+        var current = Assert.Single(await fixture.DiscoveryAsync(caller));
+        var owner = await fixture.DiscoveryCallerAsync(caller);
+        Assert.NotNull(owner);
+        Assert.NotEqual(original.CommittedRevision, current.CommittedRevision);
+        var clean = SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(owner.Evidence, owner.CachedRevision,
+            owner.CommittedRevision, [current]);
+        Assert.Equal(candidate.Profile, Assert.Single(clean).CandidateProfileId);
+        Assert.Equal("{}", System.Text.Json.JsonSerializer.Serialize(Assert.Single(clean)));
+        Assert.Empty(SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(owner.Evidence, owner.CachedRevision,
+            owner.CommittedRevision, [original, current]));
+
+        await fixture.ExpireLocationAsync(candidate);
+        var expired = Assert.Single(await fixture.DiscoveryAsync(caller));
+        Assert.Null(expired.ApproximateDistanceKm);
+        Assert.Empty(SocialRankedDiscoveryService.DiscoverAuthoritativeRankedCards(owner.Evidence, owner.CachedRevision,
+            owner.CommittedRevision, [expired]));
+    }
+
     private sealed class IntentionalFailure : Exception;
 
     private sealed record Actor(Guid Account, Guid Profile, Guid Subject) : ICurrentUser, Andril.Common.Accounts.Onboarding.IOnboardingIdentity
@@ -393,6 +542,69 @@ public sealed class PostgresSocialRelationshipTransactionRepositoryTests
 
             public Task<PrivateProfileDto> GetAsync(string module, CancellationToken cancellationToken = default) => throw new NotSupportedException();
             public Task<PrivateProfileDto> CreateAsync(string module, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        }
+
+        public async Task WaitForAdvisoryWaiterAsync(CancellationToken token)
+        {
+            await using var context = fixture.Open();
+            while (!await context.Database.SqlQueryRaw<bool>("""
+                SELECT EXISTS (SELECT FROM pg_locks WHERE locktype = 'advisory' AND NOT granted
+                    AND database = (SELECT oid FROM pg_database WHERE datname = current_database())) AS "Value"
+                """).SingleAsync(token)) await Task.Delay(25, token);
+        }
+
+        public async Task<long> ActiveMatchesAsync()
+        {
+            await using var context = fixture.Open();
+            return await context.Database.SqlQueryRaw<long>("SELECT count(*) AS \"Value\" FROM andril_social.social_matches WHERE state = 'active'").SingleAsync();
+        }
+
+        public async Task DeactivateAsync(Actor actor, CancellationToken token)
+        {
+            await using var context = fixture.OpenAccounts();
+            await context.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE andril_identity.account_module_lifecycles SET state = 'inactive', revision = revision + 1,
+                    state_changed_at_utc = CURRENT_TIMESTAMP WHERE account_id = {actor.Account} AND module = 'social'
+                """, token);
+        }
+
+        public async Task SetDiscoveryAsync(Actor actor, bool discoverable)
+        {
+            await using var db = fixture.Open();
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE andril_social.social_matching_preferences SET discoverable = {discoverable}, revision = revision + 1
+                WHERE profile_id = {actor.Profile}
+                """);
+        }
+
+        public async Task SetAdultAsync(Actor actor, bool adult)
+        {
+            await using var db = fixture.OpenAccounts();
+            var birth = adult ? new DateOnly(1990, 1, 1) : new DateOnly(2015, 1, 1);
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE andril_identity.account_demographics SET date_of_birth = {birth}, updated_at_utc = CURRENT_TIMESTAMP
+                WHERE account_id = {actor.Account}
+                """);
+        }
+
+        public async Task<Andril.API.Authorization.Social.SocialDiscoveryCallerBundle?> DiscoveryCallerAsync(Actor actor)
+        {
+            await using var accounts = fixture.OpenAccounts();
+            var owner = new OwnerProfileService(new PrivateProfileRepository(accounts), actor.Account);
+            var scope = new PostgresSocialQuestionnaireLifecycleRepository(accounts,
+                new DbContextOptionsBuilder<SocialDbContext>().UseNpgsql(fixture.ConnectionString).Options, actor, role);
+            var evidence = new Andril.API.Authorization.Social.PostgresSocialMatchingEvidenceProvider(
+                new PostgresSocialMatchingEvidenceReader(scope), LocationSettings, TimeProvider.System);
+            return await owner.WithAuthorizedProfileAsync("social", profile => evidence.GetCallerBundleAsync(profile.ProfileId), CancellationToken.None);
+        }
+
+        public async Task ExpireLocationAsync(Actor actor)
+        {
+            await using var db = fixture.Open();
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE andril_social.social_location_evidence SET observed_at_utc = CURRENT_TIMESTAMP - interval '1 day',
+                    revision = revision + 1 WHERE profile_id = {actor.Profile}
+                """);
         }
 
         public async Task<bool> CheckRoleAsync()
