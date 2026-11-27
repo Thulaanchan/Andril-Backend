@@ -39,7 +39,13 @@ Every question uses the same five-point Likert scale:
 | 4 | Agree |
 | 5 | Strongly Agree |
 
-All twelve questions have `isRequired: true` for a completed submission. **Questionnaire participation itself remains optional.** A skipped submission contains no answers; incomplete answers do not constitute a completed questionnaire. The definition API does not submit or persist answers. Render server-provided IDs, labels and version rather than fabricated questions or alternative option identifiers. Keep loading, authentication failure, forbidden/unavailable and retry states distinct. A missing canonical definition is a server configuration failure, not an approved empty-catalog response.
+All twelve questions have `isRequired: true` for a completed submission.
+**Questionnaire participation itself remains optional.**
+A skipped submission contains no answers; incomplete answers do not constitute a completed questionnaire.
+The definition API does not submit or persist answers.
+Render server-provided IDs, labels and version rather than fabricated questions or alternative option identifiers.
+Keep loading, authentication failure, forbidden/unavailable and retry states distinct.
+A missing canonical definition is a server configuration failure, not an approved empty-catalog response.
 
 ## Dormant HTTP surfaces
 
