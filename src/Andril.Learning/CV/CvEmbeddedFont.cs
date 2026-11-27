@@ -20,13 +20,20 @@ internal sealed class CvEmbeddedFont
     private uint U32(int at)=>BinaryPrimitives.ReadUInt32BigEndian(Bytes.AsSpan(at,4));
     private int Scaled(int value)=>(int)Math.Round(value*1000.0/units,MidpointRounding.AwayFromZero);
 
-    internal CvEmbeddedFont(CvTemplate template)
+    internal CvEmbeddedFont(CvTemplate template) : this(template, null) { }
+    internal CvEmbeddedFont(CvTemplate template, string? script)
     {
-        var spec=template switch
+        var spec=script switch
+        {
+            "Sinhala" => ("NotoSansSinhala-Regular","A966549310B2D3046BA25BBEEF11985428FF9356FA656FD6118BC90FB82DF031"),
+            "Tamil" => ("NotoSansTamil-Regular","6532DB33B8B264ABE3A098A40619FEB489B5DDF5AB1D2B46E72B51EEB548001B"),
+            null => template switch
         {
             CvTemplate.Professional => ("NotoSerif-Regular","C8F669CEB2C9C60CCF55198B305E08A997FFCA79A38CC7EEB551E643CBE66505"),
             CvTemplate.Creative => ("NotoSansMono-Regular","D9E2B23D19F8230BE7146F409A52B1D23117E635E28F2E2892CF91B7382F325B"),
             _ => ("NotoSans-Regular","B85C38ECEA8A7CFB39C24E395A4007474FA5A4FC864F6EE33309EB4948D232D5")
+        },
+            _ => throw new NotSupportedException("Unapproved CV font.")
         };
         Name=spec.Item1;
         using var stream=typeof(CvEmbeddedFont).Assembly.GetManifestResourceStream("Andril.Learning.CV.Fonts."+Name+".ttf")??throw new InvalidOperationException("Verified CV font is unavailable.");

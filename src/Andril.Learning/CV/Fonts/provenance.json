@@ -30,5 +30,21 @@
     "GitBlob": "c82d72e422e2d08c5ab439b6bac7c2177ea0c565",
     "Bytes": 4377,
     "Sha256": "0DAB92D0544F7B233403F14B84A663BDBFA746982EDA629E7F4F9FFE1B036FEB"
+  },
+  {
+    "File": "NotoSansSinhala-Regular.ttf",
+    "SourcePath": "hinted/ttf/NotoSansSinhala/NotoSansSinhala-Regular.ttf",
+    "Commit": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+    "GitBlob": "c00949bda80793674c5996a9e40d44f8762bbd03",
+    "Bytes": 310232,
+    "Sha256": "A966549310B2D3046BA25BBEEF11985428FF9356FA656FD6118BC90FB82DF031"
+  },
+  {
+    "File": "NotoSansTamil-Regular.ttf",
+    "SourcePath": "hinted/ttf/NotoSansTamil/NotoSansTamil-Regular.ttf",
+    "Commit": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+    "GitBlob": "e64d13fe042ce2705eba95658c481552044f3476",
+    "Bytes": 74248,
+    "Sha256": "6532DB33B8B264ABE3A098A40619FEB489B5DDF5AB1D2B46E72B51EEB548001B"
   }
 ]

@@ -13,6 +13,33 @@ namespace Andril.IntegrationTests.Database;
 public sealed class LearningBatch5PostgresTests
 {
     [LocalPostgresFact]
+    public async Task PersistedComplexScriptCvPreservesContentConsentAndCurrentOwnerAcrossTemplates()
+    {
+        const string title="தமிழ் கல்வி සිංහල අධ්‍යාපනය Cafe\u0301";
+        await using var f=await LearningGroupCPostgresFixture.Create();
+        foreach(var template in Enum.GetValues<CvTemplate>())
+        {
+            var cv=(await f.Cv.Service.CreateAsync(template)).Cv!;var section=cv.GetSection(CvSectionCategory.Projects);
+            var entry=Guid.NewGuid();
+            Assert.Equal(CvOperationState.Available,(await f.Cv.Service.SaveSectionAsync(cv.Id,section.Id,section.Category,[new(entry,section.Id,"WITHHELD_LEGACY")])).State);
+            Assert.Equal(CvOperationState.Available,(await f.Cv.Repository().SaveAsync(cv.Id,CvSaveChange.ReviewedFields(section.Category,[CvStructuredFields.ReviewedEntry(entry,section.Id,section.Category,new Dictionary<string,string>{{"ProjectTitle",title},{"Description",string.Join('\n',Enumerable.Repeat(title,65))}})]))).State);
+            var personal=cv.GetSection(CvSectionCategory.PersonalInformation);
+            await f.Cv.Repository().SaveAsync(cv.Id,CvSaveChange.ReviewedFields(personal.Category,[CvStructuredFields.ReviewedEntry(Guid.NewGuid(),personal.Id,personal.Category,new Dictionary<string,string>{{"Email","private@example.test"}})]));
+            var reopened=(await f.Cv.Service.ReopenAsync(cv.Id)).Cv!;var stored=Assert.Single(reopened.GetSection(section.Category).Entries);
+            Assert.Equal(entry,stored.Id);Assert.Equal("WITHHELD_LEGACY",stored.Text);Assert.Equal(title,stored.Fields["ProjectTitle"]);
+            var result=await f.Cv.Service.ExportPdfAsync(cv.Id);Assert.Equal(CvOperationState.Available,result.State);
+            var pdf=Encoding.Latin1.GetString(result.Document!.Bytes);
+            Assert.Contains("NotoSansTamil-Regular",pdf);Assert.Contains("NotoSansSinhala-Regular",pdf);Assert.Contains("/ActualText",pdf);
+            var contact=Convert.ToHexString(Encoding.BigEndianUnicode.GetBytes("private@example.test"));
+            Assert.DoesNotContain(contact,pdf);Assert.DoesNotContain(Convert.ToHexString(Encoding.BigEndianUnicode.GetBytes("WITHHELD_LEGACY")),pdf);
+            await f.Cv.Service.SetContactConsentAsync(cv.Id,true);
+            Assert.Contains(contact,Encoding.Latin1.GetString((await f.Cv.Service.ExportPdfAsync(cv.Id)).Document!.Bytes));
+            await f.Cv.Service.SetContactConsentAsync(cv.Id,false);
+            Assert.DoesNotContain(contact,Encoding.Latin1.GetString((await f.Cv.Service.ExportPdfAsync(cv.Id)).Document!.Bytes));
+            f.Cv.Owner.Denied=true;Assert.Equal(CvOperationState.Denied,(await f.Cv.Service.ExportPdfAsync(cv.Id)).State);f.Cv.Owner.Denied=false;
+        }
+    }
+    [LocalPostgresFact]
     public async Task SharedOwnerUsesActualAccountRowAndRechecksLifecycleForPrivateActivities()
     {
         await using var f=await LearningGroupBPostgresFixture.Create();

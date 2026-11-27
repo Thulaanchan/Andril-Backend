@@ -22,6 +22,20 @@ namespace Andril.IntegrationTests.Database;
 public sealed class LearningGroupCHttpPostgresTests
 {
     [LocalPostgresFact]
+    public async Task ComplexScriptPdfHttpPreservesPrivateProjectionAndDeniesRevokedOwner()
+    {
+        await using var f=await LearningGroupCPostgresFixture.Create();var cv=(await f.Cv.Service.CreateAsync(CvTemplate.Creative)).Cv!;
+        var section=cv.GetSection(CvSectionCategory.Projects);
+        await f.Cv.Repository().SaveAsync(cv.Id,CvSaveChange.ReviewedFields(section.Category,[CvStructuredFields.ReviewedEntry(Guid.NewGuid(),section.Id,section.Category,new Dictionary<string,string>{{"ProjectTitle","தமிழ் கல்வி සිංහල අධ්‍යාපනය"}})]));
+        await using var app=await Start(f);using var client=Client(app);
+        var response=await client.GetAsync($"/api/learning/cvs/{cv.Id}/pdf");Assert.Equal(HttpStatusCode.OK,response.StatusCode);
+        Assert.Equal("application/pdf",response.Content.Headers.ContentType!.MediaType);
+        var pdf=Encoding.Latin1.GetString(await response.Content.ReadAsByteArrayAsync());
+        Assert.Contains("/ActualText",pdf);Assert.Contains("NotoSansTamil-Regular",pdf);Assert.Contains("NotoSansSinhala-Regular",pdf);
+        Assert.DoesNotContain("/URI",pdf);Assert.DoesNotContain("/Annots",pdf);
+        f.Cv.Owner.Denied=true;Assert.Equal(HttpStatusCode.Forbidden,(await client.GetAsync($"/api/learning/cvs/{cv.Id}/pdf")).StatusCode);
+    }
+    [LocalPostgresFact]
     public async Task UnicodePdfHttpUsesEmbeddedFontAndStillRequiresCurrentOwner()
     {
         await using var f=await LearningGroupCPostgresFixture.Create();var cv=(await f.Cv.Service.CreateAsync(CvTemplate.Professional)).Cv!;

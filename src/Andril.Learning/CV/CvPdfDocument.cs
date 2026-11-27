@@ -4,10 +4,10 @@ using System.Text.Json.Serialization;
 
 namespace Andril.Learning.CV;
 
-/// <summary>In-memory private PDF snapshot of approved printable-ASCII structured fields.
+/// <summary>In-memory private PDF snapshot of approved structured fields.
 /// Not an authorization grant. Uses the same allowlist as preview; unclassified text is never embedded,
 /// including in metadata, annotations or hidden streams. No files, fonts, URLs or resources
-/// are fetched. Future approved Unicode field rendering needs a separate font/layout contract.</summary>
+/// are fetched. Embedded fonts support only explicitly implemented and tested scripts.</summary>
 public sealed class CvPdfDocument
 {
     private readonly byte[] content;
@@ -20,8 +20,8 @@ public sealed class CvPdfDocument
     {
         cancellationToken.ThrowIfCancellationRequested();
         var projection = CvOutputProjection.From(cv);
-        if(projection.Content.Values.SelectMany(x=>x).Any(x=>x.Any(c=>c>'~')))
-            return new(CvUnicodePdfRenderer.Render(projection,cancellationToken));
+        if(CvShapedPdfRenderer.IsRequired(projection))
+            return new(CvShapedPdfRenderer.Render(projection,cancellationToken));
         if(projection.Content.Values.SelectMany(x=>x).Any(x=>x.Any(c=>c>'~')))
             return new(CvUnicodePdfRenderer.Render(projection,cancellationToken));
         var font = projection.Template switch
