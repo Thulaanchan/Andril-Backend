@@ -15,8 +15,11 @@ public sealed class AccountsDbContext(DbContextOptions<AccountsDbContext> option
     public DbSet<AccountDemographics> Demographics => Set<AccountDemographics>();
     public DbSet<Andril.Common.Accounts.Policies.AccountPolicyRecord> PolicyRecords => Set<Andril.Common.Accounts.Policies.AccountPolicyRecord>();
     public DbSet<Andril.Common.Accounts.StarterModules.StarterMembership> StarterMemberships => Set<Andril.Common.Accounts.StarterModules.StarterMembership>();
+    public DbSet<Andril.Common.Accounts.Privacy.UserPrivacySettings> PrivacySettings => Set<Andril.Common.Accounts.Privacy.UserPrivacySettings>();
 
     public DbSet<PrivateProfilePhoto> PrivateProfilePhotos => Set<PrivateProfilePhoto>();
+    public DbSet<Andril.Common.Accounts.Profiles.ProfileLocationRecord> ProfileLocations => Set<Andril.Common.Accounts.Profiles.ProfileLocationRecord>();
+    public DbSet<Andril.Common.Accounts.Profiles.AdditionalProfilePhotoRecord> AdditionalPhotos => Set<Andril.Common.Accounts.Profiles.AdditionalProfilePhotoRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -27,6 +30,9 @@ public sealed class AccountsDbContext(DbContextOptions<AccountsDbContext> option
         modelBuilder.ApplyConfiguration(new StarterMembershipConfiguration());
         modelBuilder.ApplyConfiguration(new PrivateModuleProfileConfiguration());
         modelBuilder.ApplyConfiguration(new PrivateProfilePhotoConfiguration());
+        modelBuilder.ApplyConfiguration(new ProfileLocationConfiguration());
+        modelBuilder.ApplyConfiguration(new AdditionalProfilePhotoConfiguration());
+        modelBuilder.ApplyConfiguration(new UserPrivacySettingsConfiguration());
         modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleConfiguration());
         modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleReceiptConfiguration());
         modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleAuditConfiguration());
