@@ -182,7 +182,7 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
 
             return Ok(projection);
         }
-        catch (Exception error) when (error is DbException or DbUpdateException or TimeoutException)
+        catch (Exception error) when (IsStorageFailure(error))
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new ProblemDetails
             {
@@ -209,6 +209,9 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
             });
         }
     }
+
+    private static bool IsStorageFailure(Exception error) => error is DbException or DbUpdateException or TimeoutException
+        or InvalidOperationException { InnerException: DbException or TimeoutException };
 
     private static readonly HashSet<string> SafeValidationCodes = new(StringComparer.Ordinal)
     {
@@ -409,7 +412,7 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
                 result.ResponseId.Value,
                 result.Status.ToString()));
         }
-        catch (Exception error) when (error is DbException or DbUpdateException or TimeoutException)
+        catch (Exception error) when (IsStorageFailure(error))
         {
             return StatusCode(StatusCodes.Status503ServiceUnavailable, new ProblemDetails
             {
