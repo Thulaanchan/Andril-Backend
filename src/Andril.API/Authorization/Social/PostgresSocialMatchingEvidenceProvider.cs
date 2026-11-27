@@ -7,7 +7,7 @@ using Andril.Social.Personality;
 namespace Andril.API.Authorization.Social;
 
 public sealed class PostgresSocialMatchingEvidenceProvider(PostgresSocialMatchingEvidenceReader reader,
-    SocialLocationSettings locationSettings, TimeProvider clock) : ISocialDiscoveryEvidenceProvider, ISocialRelationshipEvidenceProvider
+    SocialLocationSettings? locationSettings, TimeProvider clock) : ISocialDiscoveryEvidenceProvider, ISocialRelationshipEvidenceProvider
 {
     public async Task<SocialDiscoveryCallerBundle?> GetCallerBundleAsync(Guid callerProfileId, CancellationToken cancellationToken = default)
     {
@@ -30,7 +30,7 @@ public sealed class PostgresSocialMatchingEvidenceProvider(PostgresSocialMatchin
         return candidates.Select(candidate =>
         {
             var revision = CreateRevision(candidate);
-            var distance = SocialApproximateDistance.Kilometres(caller.LatitudeCell, caller.LongitudeCell, caller.LocationObserved,
+            var distance = locationSettings is null ? null : SocialApproximateDistance.Kilometres(caller.LatitudeCell, caller.LongitudeCell, caller.LocationObserved,
                 candidate.LatitudeCell, candidate.LongitudeCell, candidate.LocationObserved, now, locationSettings.MaximumAge);
             return new SocialAuthoritativeCandidateItem(Scoring(candidate), revision, revision, candidate.ProfileName!, distance);
         }).ToArray();

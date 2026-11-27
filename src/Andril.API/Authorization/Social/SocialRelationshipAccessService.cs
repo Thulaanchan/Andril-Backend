@@ -82,9 +82,11 @@ public sealed class SocialRelationshipOperationResult
     public static SocialRelationshipOperationResult MatchEstablished(Guid matchId) =>
         new(success: true, matchCreated: true, matchId: matchId, visibleState: SocialRelationshipState.Matched);
 
-    /// <summary>
-    /// Creates a result representing a failed operation.
-    /// </summary>
+    /// <summary>Projects a previously committed mutual match for an idempotent affirmative request.</summary>
+    public static SocialRelationshipOperationResult ExistingMatch(Guid matchId) =>
+        new(success: true, matchCreated: false, matchId: matchId, visibleState: SocialRelationshipState.Matched);
+
+    /// <summary>Creates a result representing a failed operation.</summary>
     public static SocialRelationshipOperationResult Failed(SocialRelationshipState state = SocialRelationshipState.None) =>
         new(success: false, matchCreated: false, matchId: null, visibleState: state);
 
@@ -294,6 +296,12 @@ public sealed class SocialRelationshipAccessService : ISocialRelationshipAccessS
                 return SocialRelationshipOperationResult.MatchEstablished(txResult.Match.MatchId);
             }
 
+            if (isPositive && txResult.ResultingState == SocialRelationshipState.Matched &&
+                txResult.Match is { MatchId: var existingId } existing && existingId != Guid.Empty && pairKey.Equals(existing.PairKey))
+            {
+                return SocialRelationshipOperationResult.ExistingMatch(existingId);
+            }
+
             if (txResult.Match is not null || txResult.ResultingState == SocialRelationshipState.Matched)
             {
                 return SocialRelationshipOperationResult.Failed();
@@ -340,6 +348,14 @@ public sealed class SocialRelationshipAccessService : ISocialRelationshipAccessS
             if (snapshot.State == SocialRelationshipState.Matched && snapshot.ActiveMatch is not null)
             {
                 if (snapshot.ActiveMatch.MatchId == Guid.Empty || !pairKey.Equals(snapshot.ActiveMatch.PairKey))
+                {
+                    return SocialRelationshipStatusResult.NotMatched();
+                }
+
+                var actor = await _evidenceProvider.GetCallerEvidenceAsync(profile.ProfileId, cancellationToken);
+                var target = await _evidenceProvider.GetCandidateEvidenceAsync(targetProfileId, profile.ProfileId, cancellationToken);
+                if (actor?.CallerProfileId != profile.ProfileId || target?.CandidateProfileId != targetProfileId ||
+                    SocialDiscoveryEligibilityPreFilter.Evaluate(actor, target).Status != SocialDiscoveryEligibilityStatus.Eligible)
                 {
                     return SocialRelationshipStatusResult.NotMatched();
                 }
