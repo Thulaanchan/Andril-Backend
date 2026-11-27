@@ -29,11 +29,12 @@ public sealed class HobbiesMapMigrationTests
     {
         using var map = new HobbiesMapDbContextFactory().CreateDbContext([]);
         var ids = map.Database.GetMigrations().ToArray();
-        Assert.Equal(4, ids.Length);
+        Assert.Equal(5, ids.Length);
         Assert.Equal(InitialMap, ids[0]);
         Assert.Equal(UniqueSessionMigration, ids[1]);
         Assert.Equal(LifecycleMigration, ids[2]);
         Assert.Equal("20261126092843_AddMapPrivateMedia", ids[3]);
+        Assert.Equal("20261127014224_AddMapModeration", ids[4]);
         Assert.NotNull(map.GetService<IMigrationsAssembly>().ModelSnapshot);
         Assert.False(map.Database.HasPendingModelChanges());
 

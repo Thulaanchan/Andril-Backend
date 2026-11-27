@@ -71,6 +71,8 @@ public sealed class HobbiesMapDbContext : DbContext
         modelBuilder.ApplyConfiguration(new MapAttractionLifecycleReceiptConfiguration());
         modelBuilder.ApplyConfiguration(new MapAttractionLifecycleAuditConfiguration());
         modelBuilder.ApplyConfiguration(new MapPrivateMediaConfiguration());
+        modelBuilder.ApplyConfiguration(new MapModerationReceiptConfiguration());
+        modelBuilder.ApplyConfiguration(new MapModerationAuditConfiguration());
     }
 
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
