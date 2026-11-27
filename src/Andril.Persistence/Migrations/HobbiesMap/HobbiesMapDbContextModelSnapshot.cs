@@ -241,6 +241,85 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         });
                 });
 
+            modelBuilder.Entity("Andril.Persistence.Configurations.MapModerationAudit", b =>
+                {
+                    b.Property<Guid>("DecisionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decision_id");
+
+                    b.HasKey("DecisionId")
+                        .HasName("pk_map_moderation_audit");
+
+                    b.ToTable("map_moderation_audit", "andril_hobbies");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Configurations.MapModerationReceipt", b =>
+                {
+                    b.Property<Guid>("DecisionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("decision_id");
+
+                    b.Property<int>("Action")
+                        .HasColumnType("integer")
+                        .HasColumnName("action");
+
+                    b.Property<Guid>("AttractionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("attraction_id");
+
+                    b.Property<Guid>("ContributionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("contribution_id");
+
+                    b.Property<DateTimeOffset>("DecidedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("decided_at");
+
+                    b.Property<long>("ExpectedRevision")
+                        .HasColumnType("bigint")
+                        .HasColumnName("expected_revision");
+
+                    b.Property<Guid?>("MediaId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("media_id");
+
+                    b.Property<Guid>("ProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("profile_id");
+
+                    b.Property<Guid>("ReviewerSubject")
+                        .HasColumnType("uuid")
+                        .HasColumnName("reviewer_subject");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.HasKey("DecisionId")
+                        .HasName("pk_map_moderation_receipts");
+
+                    b.HasIndex("ContributionId")
+                        .IsUnique()
+                        .HasDatabaseName("ux_map_moderation_contribution");
+
+                    b.HasIndex("MediaId");
+
+                    b.HasIndex("ContributionId", "AttractionId", "ProfileId", "SessionId");
+
+                    b.ToTable("map_moderation_receipts", "andril_hobbies", t =>
+                        {
+                            t.HasCheckConstraint("ck_map_moderation_action", "(action = 1 AND media_id IS NOT NULL) OR (action = 2 AND media_id IS NULL)");
+
+                            t.HasCheckConstraint("ck_map_moderation_identity", "decision_id <> '00000000-0000-0000-0000-000000000000' AND reviewer_subject <> '00000000-0000-0000-0000-000000000000'");
+
+                            t.HasCheckConstraint("ck_map_moderation_revision", "expected_revision = 0 AND revision = 1");
+                        });
+                });
+
             modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleAuditRow", b =>
                 {
                     b.Property<Guid>("ReceiptId")
@@ -530,6 +609,33 @@ namespace Andril.Persistence.Migrations.HobbiesMap
                         .OnDelete(DeleteBehavior.NoAction)
                         .IsRequired()
                         .HasConstraintName("fk_map_contributions_capture_session_scope");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Configurations.MapModerationAudit", b =>
+                {
+                    b.HasOne("Andril.Persistence.Configurations.MapModerationReceipt", null)
+                        .WithOne()
+                        .HasForeignKey("Andril.Persistence.Configurations.MapModerationAudit", "DecisionId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_moderation_audit_receipt");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Configurations.MapModerationReceipt", b =>
+                {
+                    b.HasOne("Andril.Persistence.Repositories.Hobbies.MapPrivateMediaRow", null)
+                        .WithMany()
+                        .HasForeignKey("MediaId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .HasConstraintName("fk_map_moderation_media");
+
+                    b.HasOne("Andril.Hobbies.Map.Contributions.MapContribution", null)
+                        .WithMany()
+                        .HasForeignKey("ContributionId", "AttractionId", "ProfileId", "SessionId")
+                        .HasPrincipalKey("ContributionId", "AttractionId", "OwnerHobbiesModuleProfileId", "CaptureSessionId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired()
+                        .HasConstraintName("fk_map_moderation_scope");
                 });
 
             modelBuilder.Entity("Andril.Persistence.Repositories.Hobbies.MapAttractionLifecycleAuditRow", b =>
