@@ -20,6 +20,10 @@ public sealed class CvPdfDocument
     {
         cancellationToken.ThrowIfCancellationRequested();
         var projection = CvOutputProjection.From(cv);
+        if(projection.Content.Values.SelectMany(x=>x).Any(x=>x.Any(c=>c>'~')))
+            return new(CvUnicodePdfRenderer.Render(projection,cancellationToken));
+        if(projection.Content.Values.SelectMany(x=>x).Any(x=>x.Any(c=>c>'~')))
+            return new(CvUnicodePdfRenderer.Render(projection,cancellationToken));
         var font = projection.Template switch
         {
             CvTemplate.Professional => "Times-Roman",
