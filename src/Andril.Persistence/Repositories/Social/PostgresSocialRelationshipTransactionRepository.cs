@@ -177,9 +177,16 @@ public sealed class PostgresSocialRelationshipTransactionRepository(
             if (!await db.Database.SqlQuery<bool>($"SELECT andril_social.questionnaire_owner_visible({actor}) AS \"Value\"").SingleAsync(token))
                 throw new ProfileAccessDeniedException();
 
+            var target = pair.GetOtherProfileId(actor);
+            await db.Database.ExecuteSqlRawAsync("SELECT andril_social.social_safety_lock()", token);
+            var standing = await db.Database.SqlQuery<string>($"""
+                SELECT decision AS "Value" FROM andril_social.social_safety_decision({actor}, {target})
+                """).SingleAsync(token);
+            if (standing != "allowed") throw new ProfileAccessDeniedException();
+
             var pairIdentity = $"social-relationship:{pair.FirstProfileId:D}:{pair.SecondProfileId:D}";
             await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({pairIdentity}, 0))", token);
-            var result = await action(db, pair.GetOtherProfileId(actor), token);
+            var result = await action(db, target, token);
             await db.Database.ExecuteSqlInterpolatedAsync($"""
                 SELECT set_config('role', {previous.Role}, true), set_config('andril.subject', {previous.Subject}, true),
                     set_config('andril.account', {previous.Account}, true), set_config('andril.module', {previous.Module}, true)
