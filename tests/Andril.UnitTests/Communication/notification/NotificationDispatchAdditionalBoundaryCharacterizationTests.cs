@@ -108,21 +108,39 @@ public sealed class NotificationDispatchAdditionalBoundaryCharacterizationTests
         Assert.Equal(1, f.Sender.Calls);
     }
 
-    // KNOWN GAP: cancellation occurs during device
-    // validation. The fake sender deliberately ignores
-    // cancellation, exposing the lack of a final check.
+    // Cancellation during successful device validation must prevent
+    // invocation even when the fake sender ignores cancellation.
     [Fact]
-    [Trait("KnownSecurityGap", "D15-A06")]
-    public async Task KnownGap_CancelledBeforeSender_StillMayInvokeSender()
+    public async Task CancellationDuringDeviceAuthorization_PreventsSenderInvocation()
     {
         var f = new Fixture();
         using var cancellation = new CancellationTokenSource();
 
         f.Devices.AfterDecision = cancellation.Cancel;
 
-        await f.ExecuteAsync(cancellation.Token);
+        var exception = await Assert.ThrowsAsync<OperationCanceledException>(
+            () => f.ExecuteAsync(cancellation.Token));
 
         Assert.True(cancellation.IsCancellationRequested);
+        Assert.Equal(cancellation.Token, exception.CancellationToken);
+        Assert.True(f.Devices.Allowed);
+        Assert.Equal(1, f.Devices.Calls);
+        Assert.Equal(0, f.Sender.Calls);
+    }
+
+    [Fact]
+    public async Task UncancelledAuthorizedDispatch_InvokesSenderOnce()
+    {
+        var f = new Fixture();
+        using var cancellation = new CancellationTokenSource();
+
+        var result = await f.ExecuteAsync(cancellation.Token);
+
+        Assert.False(cancellation.IsCancellationRequested);
+        Assert.Equal(NotificationPushOutcome.NotSent, result.Outcome);
+        Assert.Equal(1, f.Access.Calls);
+        Assert.Equal(1, f.Repository.FindCalls);
+        Assert.Equal(1, f.Prefs.Calls);
         Assert.Equal(1, f.Devices.Calls);
         Assert.Equal(1, f.Sender.Calls);
     }
