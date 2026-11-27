@@ -96,6 +96,7 @@ public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
         {
             if (applySocialMigrations)
             {
+                await database.ApplyAccountsMigrationsAsync();
                 await database.ApplySocialMigrationsAsync();
             }
 

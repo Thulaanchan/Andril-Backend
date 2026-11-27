@@ -67,6 +67,22 @@ public sealed class SocialDbContext : DbContext
                 .UsePropertyAccessMode(PropertyAccessMode.Field);
         });
 
+        modelBuilder.Entity<SocialQuestionnaireCurrentResponse>(b =>
+        {
+            b.ToTable("social_questionnaire_current_responses", Schema, table =>
+                table.HasCheckConstraint("ck_social_questionnaire_current_module", "module = 'social'"));
+            b.HasKey(row => row.ProfileId).HasName("pk_social_questionnaire_current_responses");
+            b.Property(row => row.ProfileId).HasColumnName("profile_id").ValueGeneratedNever();
+            b.Property(row => row.ResponseId).HasColumnName("response_id");
+            b.Property(row => row.Module).HasColumnName("module").HasMaxLength(16).IsRequired();
+            b.Property<uint>("RowVersion").HasColumnName("xmin").IsRowVersion();
+            b.HasOne<QuestionnaireResponseEntity>().WithMany()
+                .HasPrincipalKey(response => new { response.ProfileId, response.Id })
+                .HasForeignKey(row => new { row.ProfileId, row.ResponseId })
+                .OnDelete(DeleteBehavior.Restrict)
+                .HasConstraintName("fk_social_questionnaire_current_response");
+        });
+
         modelBuilder.Entity<QuestionnaireAnswerEntity>(b =>
         {
             b.ToTable("social_questionnaire_answers", Schema, t =>
@@ -86,4 +102,12 @@ public sealed class SocialDbContext : DbContext
             b.HasIndex(x => x.ResponseId).HasDatabaseName("ix_social_questionnaire_answers_response");
         });
     }
+}
+
+// A separate pointer keeps immutable response snapshots independent of the current response.
+internal sealed class SocialQuestionnaireCurrentResponse(Guid profileId, Guid responseId)
+{
+    public Guid ProfileId { get; private set; } = profileId;
+    public Guid ResponseId { get; private set; } = responseId;
+    public string Module { get; private set; } = "social";
 }
