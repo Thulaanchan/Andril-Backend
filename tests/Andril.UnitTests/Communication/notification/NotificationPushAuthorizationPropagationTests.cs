@@ -180,12 +180,104 @@ public sealed class NotificationPushAuthorizationPropagationTests
         Assert.Equal(0, sender.Calls);
     }
 
+    [Fact]
+    public async Task CanceledDeviceAuthorizationTask_WithActiveCallerToken_ShouldPropagateCancellationWithoutSending()
+    {
+        using var caller = new CancellationTokenSource();
+        using var deviceCancellation = new CancellationTokenSource();
+        deviceCancellation.Cancel();
+        var deviceTask = Task.FromCanceled<bool>(deviceCancellation.Token);
+        var accountId = Guid.Parse("35000000-0000-0000-0000-000000000001");
+        var notificationId = Guid.Parse("35000000-0000-0000-0000-000000000002");
+        var deviceId = Guid.Parse("35000000-0000-0000-0000-000000000003");
+        var scope = new NotificationModuleScope(
+            NotificationModule.Hobbies,
+            Guid.Parse("35000000-0000-0000-0000-000000000004"));
+        var access = new RecordingAccessReader(scope);
+        var repository = new RecordingRepository(
+            new NotificationEntry(notificationId, scope, "message",
+                "New Message", null, CreatedAtUtc));
+        var preferences = new RecordingPreferenceReader(
+            new NotificationChannelPreferences(scope,
+                inAppEnabled: true, pushEnabled: true, emailEnabled: false));
+        var devices = new RecordingDeviceReader(authorized: true)
+        {
+            AuthorizationTaskOverride = deviceTask
+        };
+        var sender = new RecordingPushSender(
+            new NotificationPushResult(NotificationPushOutcome.ProviderAccepted));
+        var service = new NotificationPushOrchestrationService(
+            access, repository, preferences, devices, sender);
+        var timeout = TimeSpan.FromSeconds(10);
+        Task<NotificationPushResult>? operation = null;
+
+        try
+        {
+            Assert.True(caller.Token.CanBeCanceled);
+            Assert.False(caller.IsCancellationRequested);
+            Assert.NotEqual(caller.Token, deviceCancellation.Token);
+            Assert.Equal(TaskStatus.Canceled, deviceTask.Status);
+
+            operation = service.TrySendAsync(accountId,
+                NotificationModule.Hobbies, notificationId, deviceId, caller.Token);
+            var exception = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => operation.WaitAsync(timeout));
+
+            Assert.Equal(TaskStatus.Canceled, operation.Status);
+            Assert.Equal(deviceCancellation.Token, exception.CancellationToken);
+            Assert.Equal(TaskStatus.Canceled, deviceTask.Status);
+            Assert.False(caller.IsCancellationRequested);
+            Assert.Equal(1, access.Calls);
+            Assert.Equal(accountId, access.LastAccountId);
+            Assert.Equal(NotificationModule.Hobbies, access.LastModule);
+            Assert.Equal(1, repository.Calls);
+            Assert.Equal(scope, repository.LastScope);
+            Assert.Equal(1, preferences.Calls);
+            Assert.Equal(scope, preferences.LastScope);
+            Assert.Equal(1, devices.Calls);
+            Assert.Equal(accountId, devices.LastAccountId);
+            Assert.NotNull(devices.LastRequest);
+            Assert.Equal(notificationId, devices.LastRequest.NotificationId);
+            Assert.Equal(deviceId, devices.LastRequest.DeviceRegistrationId);
+            Assert.Equal(scope, devices.LastRequest.RecipientScope);
+            Assert.Equal(caller.Token, devices.LastCancellationToken);
+            Assert.False(devices.LastCancellationToken.IsCancellationRequested);
+            Assert.Equal(0, sender.Calls);
+        }
+        finally
+        {
+            if (operation is not null)
+            {
+                try
+                {
+                    await operation.WaitAsync(timeout);
+                }
+                catch (TimeoutException)
+                {
+                    // Observe eventual faults without hiding the original failure.
+                    _ = operation.ContinueWith(
+                        static completed => { _ = completed.Exception; },
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted |
+                            TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+                catch
+                {
+                    // Observe cancellation/fault without replacing an assertion.
+                }
+            }
+        }
+    }
+
     private sealed class RecordingAccessReader(
         NotificationModuleScope? scope,
         CancellationTokenSource? cancellation = null,
         bool cancelWhenCalled = false)
         : INotificationRecipientAccessReader
     {
+        public int Calls { get; private set; }
+
         public Guid LastAccountId { get; private set; }
 
         public NotificationModule LastModule { get; private set; }
@@ -196,6 +288,7 @@ public sealed class NotificationPushAuthorizationPropagationTests
             CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            Calls++;
             LastAccountId = authenticatedAccountId;
             LastModule = module;
 
@@ -293,6 +386,10 @@ public sealed class NotificationPushAuthorizationPropagationTests
 
         public NotificationPushRequest? LastRequest { get; private set; }
 
+        public CancellationToken LastCancellationToken { get; private set; }
+
+        public Task<bool>? AuthorizationTaskOverride { get; set; }
+
         public Task<bool> IsAuthorizedActiveRegistrationAsync(
             Guid authenticatedAccountId,
             NotificationPushRequest request,
@@ -302,7 +399,8 @@ public sealed class NotificationPushAuthorizationPropagationTests
             Calls++;
             LastAccountId = authenticatedAccountId;
             LastRequest = request;
-            return Task.FromResult(authorized);
+            LastCancellationToken = cancellationToken;
+            return AuthorizationTaskOverride ?? Task.FromResult(authorized);
         }
     }
 
