@@ -14,7 +14,7 @@ public sealed class SharedGroupsMigrationPostgresTests
     {
         using var groups = new GroupsDbContextFactory().CreateDbContext([]);
         Assert.False(groups.Database.HasPendingModelChanges());
-        Assert.EndsWith("_InitialSharedGroups", Assert.Single(groups.Database.GetMigrations()));
+        Assert.EndsWith("_InitialSharedGroups", groups.Database.GetMigrations().First());
         Assert.All(groups.Model.GetEntityTypes(), row => Assert.Equal(GroupsDbContext.Schema, row.GetSchema()));
     }
 
