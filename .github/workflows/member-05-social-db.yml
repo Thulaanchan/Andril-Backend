@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-      - name: Verify the Social acceptance manifest on PostgreSQL
+      - name: Verify questionnaire, relationship, matching and location on PostgreSQL
         shell: bash
         run: |
           set -euo pipefail

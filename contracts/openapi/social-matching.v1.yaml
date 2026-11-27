@@ -1,0 +1,243 @@
+openapi: 3.0.3
+info:
+  title: ANDRIL Social matching and relationships
+  version: 1.0.0
+  description: Social requests require a bearer token and confirmed identity. Responses use no-store. Location and Explore require the separate distance-discovery opt-in.
+security:
+  - supabaseBearer: []
+paths:
+  /api/v1/social/explore:
+    get:
+      operationId: getSocialExplore
+      parameters:
+        - name: rotationOffset
+          in: query
+          schema: { type: integer, format: int32, minimum: 0, default: 0 }
+        - name: limit
+          in: query
+          description: The server caps values above 100. Rotation applies within the bounded ranked batch.
+          schema: { type: integer, format: int32, minimum: 1, default: 20 }
+      responses:
+        '200':
+          description: Eligible, ranked Social cards. An empty array means no eligible cards are available.
+          content:
+            application/json:
+              schema: { type: array, maxItems: 100, items: { $ref: '#/components/schemas/ExploreCard' } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/social/relationships/interest:
+    post:
+      operationId: setSocialInterest
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InterestRequest' }
+      responses:
+        '200':
+          description: Caller-visible operation outcome. A match ID is available only for an authorized mutual match.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/InterestResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415': { $ref: '#/components/responses/UnsupportedMedia' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/social/relationships/{targetProfileId}/status:
+    parameters:
+      - $ref: '#/components/parameters/TargetProfile'
+    get:
+      operationId: getSocialRelationshipStatus
+      responses:
+        '200':
+          description: Current authorized mutual-match status. Unilateral interest is confidential.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RelationshipStatus' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/social/relationships/{targetProfileId}/revoke:
+    parameters:
+      - $ref: '#/components/parameters/TargetProfile'
+    post:
+      operationId: revokeSocialMatch
+      responses:
+        '200': { $ref: '#/components/responses/Revocation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/social/relationships/{targetProfileId}:
+    parameters:
+      - $ref: '#/components/parameters/TargetProfile'
+    delete:
+      operationId: deleteSocialMatch
+      responses:
+        '200': { $ref: '#/components/responses/Revocation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/social/matching/preferences:
+    put:
+      operationId: setSocialMatchingPreferences
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/MatchingPreferences' }
+      responses:
+        '204': { description: Explicit owner preferences committed. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415': { $ref: '#/components/responses/UnsupportedMedia' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/social/location:
+    put:
+      operationId: updateSocialLocation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LocationUpdate' }
+      responses:
+        '204': { description: Consented coarse evidence committed. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415': { $ref: '#/components/responses/UnsupportedMedia' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      operationId: withdrawSocialLocation
+      responses:
+        '204': { description: Location evidence withdrawn. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/social/safety/blocks/{targetProfileId}:
+    parameters:
+      - $ref: '#/components/parameters/TargetProfile'
+    put:
+      operationId: blockSocialProfile
+      responses:
+        '204': { description: Caller block committed. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+    delete:
+      operationId: unblockSocialProfile
+      responses:
+        '204': { description: The caller's directional block is absent after commit. }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/social/safety/restrictions/{targetProfileId}:
+    parameters:
+      - $ref: '#/components/parameters/TargetProfile'
+    put:
+      operationId: setSocialRestriction
+      description: Requires an active Social moderation grant for the confirmed operator.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RestrictionRequest' }
+      responses:
+        '204': { description: Authorized restriction decision committed. }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '415': { $ref: '#/components/responses/UnsupportedMedia' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+components:
+  securitySchemes:
+    supabaseBearer: { type: http, scheme: bearer, bearerFormat: JWT }
+  parameters:
+    TargetProfile:
+      name: targetProfileId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    BadRequest: { description: Invalid JSON, missing data, or invalid technical bounds. }
+    Unauthorized: { description: A verified authenticated bearer identity is required. }
+    Forbidden: { description: Identity confirmation, current profile access, or moderation authority denied. }
+    UnsupportedMedia: { description: A JSON request body is required. }
+    Unavailable: { description: Identity verification or database storage is unavailable. }
+    Revocation:
+      description: Committed revocation outcome. Repeating an authorized action is safe.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/RevocationResult' }
+  schemas:
+    ExploreCard:
+      type: object
+      required: [candidateProfileId, displayName, age, approximateDistanceKm, sharedLanguages, sharedConnectionGoals]
+      properties:
+        candidateProfileId: { type: string, format: uuid }
+        displayName: { type: string }
+        age: { type: integer, minimum: 18 }
+        approximateDistanceKm: { type: integer, minimum: 0, nullable: true }
+        sharedLanguages: { type: array, items: { type: string } }
+        sharedConnectionGoals: { type: array, items: { type: string } }
+    InterestRequest:
+      type: object
+      additionalProperties: false
+      required: [targetProfileId, isPositive]
+      properties:
+        targetProfileId: { type: string, format: uuid }
+        isPositive: { type: boolean }
+    InterestResult:
+      type: object
+      required: [success, matchCreated, matchId, visibleState]
+      properties:
+        success: { type: boolean }
+        matchCreated: { type: boolean }
+        matchId: { type: string, format: uuid, nullable: true }
+        visibleState: { type: string, enum: [None, PendingUnilateral, Matched, Passed] }
+    RelationshipStatus:
+      type: object
+      required: [hasActiveMatch, matchId, matchedAtUtc]
+      properties:
+        hasActiveMatch: { type: boolean }
+        matchId: { type: string, format: uuid, nullable: true }
+        matchedAtUtc: { type: string, format: date-time, nullable: true }
+    RevocationResult:
+      type: object
+      required: [success, matchRevoked]
+      properties:
+        success: { type: boolean }
+        matchRevoked: { type: boolean }
+    MatchingPreferences:
+      type: object
+      additionalProperties: false
+      required: [discoverable, showMe, minAge, maxAge, minDistanceKm, maxDistanceKm, languages, connectionGoals]
+      properties:
+        discoverable: { type: boolean }
+        showMe: { type: string, enum: [All, Men, Women] }
+        minAge: { type: integer, minimum: 18, maximum: 99 }
+        maxAge: { type: integer, minimum: 18, maximum: 99 }
+        minDistanceKm: { type: integer, minimum: 0, maximum: 999 }
+        maxDistanceKm: { type: integer, minimum: 0, maximum: 999 }
+        languages: { type: array, items: { type: string } }
+        connectionGoals: { type: array, items: { type: string } }
+    LocationUpdate:
+      type: object
+      additionalProperties: false
+      required: [latitude, longitude, consent]
+      properties:
+        latitude: { type: number, minimum: -90, maximum: 90 }
+        longitude: { type: number, minimum: -180, maximum: 180 }
+        consent: { type: boolean, enum: [true] }
+    RestrictionRequest:
+      type: object
+      additionalProperties: false
+      required: [restricted]
+      properties:
+        restricted: { type: boolean }
