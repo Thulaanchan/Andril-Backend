@@ -11,6 +11,15 @@ namespace Andril.Persistence.Repositories.Common;
 
 public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivateProfileRepository
 {
+    public async Task<T> WithProfileSetupAsync<T>(Guid accountId, string module, ProfileEdit edit,
+        Action<StarterModuleState> validate, TimeProvider clock, Func<PrivateModuleProfile, Task<T>> action,
+        CancellationToken cancellationToken)
+    {
+        T result = default!;
+        await Execute(accountId, module, validate, clock, cancellationToken, DisplayNames.Validate(edit),
+            async profile => { result = await action(profile); }, setup: true);
+        return result;
+    }
     public async Task<T> WithSerializableLearningProfileAsync<T>(Guid accountId, Action<StarterModuleState> validate,
         Func<PrivateModuleProfile, Task<T>> action, CancellationToken cancellationToken)
     {
@@ -41,7 +50,7 @@ public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivatePro
 
     private async Task<PrivateModuleProfile?> Execute(Guid accountId, string module, Action<StarterModuleState> validate,
         TimeProvider? clock, CancellationToken ct, ProfileEdit? edit = null, Func<PrivateModuleProfile, Task>? authorizedAction = null,
-        bool serializableLearning = false)
+        bool serializableLearning = false, bool setup = false)
     {
         if (accountId == Guid.Empty || !StarterModules.IsValid(module)) throw new ProfileValidationException();
         try
@@ -60,12 +69,12 @@ public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivatePro
                 ? await db.Demographics.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId, ct)
                 : await db.Demographics.FromSqlInterpolated($"SELECT * FROM andril_identity.account_demographics WHERE account_id = {accountId} FOR UPDATE")
                     .AsNoTracking().SingleOrDefaultAsync(ct);
-            var membership = serializableLearning
+            var membership = lockAccount
                 ? await db.StarterMemberships.FromSqlInterpolated($"SELECT * FROM andril_identity.account_starter_memberships WHERE account_id={accountId} FOR SHARE").AsNoTracking().SingleOrDefaultAsync(ct)
                 : await db.StarterMemberships.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId, ct);
             // Enforce membership here too, independently of the service callback.
             if (membership?.Module != module) throw new ProfileAccessDeniedException();
-            var policies = serializableLearning
+            var policies = lockAccount
                 ? await db.PolicyRecords.FromSqlInterpolated($"SELECT * FROM andril_identity.account_policy_records WHERE account_id={accountId} ORDER BY action,version FOR SHARE").AsNoTracking().ToArrayAsync(ct)
                 : await db.PolicyRecords.AsNoTracking().Where(x => x.AccountId == accountId).ToArrayAsync(ct);
             validate(new(demographics, policies, membership));
@@ -83,7 +92,17 @@ public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivatePro
                     SELECT * FROM andril_identity.private_module_profiles
                     WHERE account_id = {accountId} AND module = {module} FOR NO KEY UPDATE
                     """).AsNoTracking().SingleOrDefaultAsync(ct);
-            if (authorizedAction is not null)
+            if (profile is null && setup)
+            {
+                var candidate = PrivateModuleProfile.Create(accountId, module, clock!.GetUtcNow());
+                await db.Database.ExecuteSqlInterpolatedAsync($"""
+                    INSERT INTO andril_identity.private_module_profiles (id, account_id, module, created_at_utc)
+                    VALUES ({candidate.Id}, {accountId}, {module}, {candidate.CreatedAtUtc})
+                    ON CONFLICT (account_id, module) DO NOTHING
+                    """, ct);
+                profile = await db.PrivateProfiles.AsNoTracking().SingleAsync(x => x.AccountId == accountId && x.Module == module, ct);
+            }
+            if (authorizedAction is not null && !setup)
                 await authorizedAction(profile ?? throw new ProfileMissingException());
             if (edit is not null)
             {
@@ -107,6 +126,7 @@ public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivatePro
                     """, ct);
                 profile = await db.PrivateProfiles.AsNoTracking().SingleAsync(x => x.AccountId == accountId && x.Module == module, ct);
             }
+            if (setup) await authorizedAction!(profile ?? throw new ProfileMissingException());
             await tx.CommitAsync(ct);
             return profile;
         }

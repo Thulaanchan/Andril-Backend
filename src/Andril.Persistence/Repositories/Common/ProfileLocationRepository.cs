@@ -42,7 +42,9 @@ public sealed class ProfileLocationRepository(AccountsDbContext db) : IProfileLo
 
         try
         {
-            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+            // A profile submission owns the surrounding transaction; standalone writes own theirs.
+            await using var tx = db.Database.CurrentTransaction is null
+                ? await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken) : null;
 
             await db.Database.ExecuteSqlInterpolatedAsync($"""
                 INSERT INTO andril_identity.account_profile_locations (
@@ -56,12 +58,15 @@ public sealed class ProfileLocationRepository(AccountsDbContext db) : IProfileLo
                     city = EXCLUDED.city,
                     region = EXCLUDED.region,
                     updated_at_utc = GREATEST(account_profile_locations.updated_at_utc, EXCLUDED.updated_at_utc)
+                WHERE account_profile_locations.account_id = EXCLUDED.account_id
+                    AND account_profile_locations.module = EXCLUDED.module
                 """, cancellationToken);
 
             var result = await db.Set<ProfileLocationRecord>().AsNoTracking()
-                .SingleAsync(x => x.ProfileId == record.ProfileId, cancellationToken);
+                .SingleOrDefaultAsync(x => x.ProfileId == record.ProfileId && x.AccountId == record.AccountId
+                    && x.Module == record.Module, cancellationToken) ?? throw new ProfileAccessDeniedException();
 
-            await tx.CommitAsync(cancellationToken);
+            if (tx is not null) await tx.CommitAsync(cancellationToken);
             return result;
         }
         catch (Exception ex) when (ex is DbException or TimeoutException)
