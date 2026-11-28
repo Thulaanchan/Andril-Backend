@@ -203,4 +203,11 @@ public sealed class LiveKitDevelopmentAdapterTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => h.Adapter.IssueCredentialAsync(Room,
             Room.CallerIdentity, CallType.Audio, TimeSpan.FromMinutes(1), default));
     }
+    [Theory]
+    [InlineData("")] [InlineData("Bearer ")] [InlineData("Basic invalid")] [InlineData("not-a-token")]
+    public async Task D13MissingOrMalformedAuthorizationFailsClosed(string authorization)
+    {
+        using var h = new Harness();
+        Assert.Null(await h.Adapter.VerifyAsync(Body("participant_joined"), authorization, default));
+    }
 }
