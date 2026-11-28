@@ -81,6 +81,7 @@ public sealed class CvShapedPdfTests
                 var bytes=CvPdfDocument.CreateOffline(document).Bytes;
                 Assert.StartsWith("%PDF-1.7",Encoding.ASCII.GetString(bytes,0,8));
                 Assert.Contains("%%EOF",Encoding.ASCII.GetString(bytes[^40..]));
+                Assert.Contains(Convert.ToHexString(Encoding.BigEndianUnicode.GetBytes("தமிழ் கல்வி")),Encoding.Latin1.GetString(bytes));
             }
         }
         finally{stop.Cancel();await collector;}
