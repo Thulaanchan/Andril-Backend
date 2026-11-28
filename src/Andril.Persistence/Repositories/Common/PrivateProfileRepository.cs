@@ -69,12 +69,15 @@ public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivatePro
                 ? await db.Demographics.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId, ct)
                 : await db.Demographics.FromSqlInterpolated($"SELECT * FROM andril_identity.account_demographics WHERE account_id = {accountId} FOR UPDATE")
                     .AsNoTracking().SingleOrDefaultAsync(ct);
-            var membership = lockAccount
+            // Preserve the existing photo runtime's SELECT-only prerequisite grants.
+            // Starter selection shares the account writer fence; policy receipts are append-only.
+            // The explicitly serializable Learning contract alone requires these extra row locks.
+            var membership = serializableLearning
                 ? await db.StarterMemberships.FromSqlInterpolated($"SELECT * FROM andril_identity.account_starter_memberships WHERE account_id={accountId} FOR SHARE").AsNoTracking().SingleOrDefaultAsync(ct)
                 : await db.StarterMemberships.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId, ct);
             // Enforce membership here too, independently of the service callback.
             if (membership?.Module != module) throw new ProfileAccessDeniedException();
-            var policies = lockAccount
+            var policies = serializableLearning
                 ? await db.PolicyRecords.FromSqlInterpolated($"SELECT * FROM andril_identity.account_policy_records WHERE account_id={accountId} ORDER BY action,version FOR SHARE").AsNoTracking().ToArrayAsync(ct)
                 : await db.PolicyRecords.AsNoTracking().Where(x => x.AccountId == accountId).ToArrayAsync(ct);
             validate(new(demographics, policies, membership));
