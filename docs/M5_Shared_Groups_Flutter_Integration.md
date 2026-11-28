@@ -47,14 +47,14 @@ For discovery and host lists, `maximum` defaults to 25 and accepts 1–100. Sear
 | `403` | Hide or dismiss the unauthorized view. Confirmation and current module access are required. |
 | `404` on the Groups prefix | Groups can be disabled for the deployment. |
 | `409 creation_quota` | Show the current creation quota and keep the form contents. |
-| `409 club_capacity` | Keep the pending request visible to the host and refresh current admissions. |
+| `409 group_capacity` or the existing Club code `club_capacity` | Keep the pending request visible to the host and refresh current admissions. |
 | `409 revision_conflict` | Reload Group details and reconcile configuration edits against the latest revision. |
 | `409 participation_conflict` | Refresh participation and any authorized pending list before retrying. |
 | `503` | Show a retryable unavailable state. Treat the current permission or database result as unverified. |
 
 New Groups are private unless the creator explicitly selects public visibility. Discovery requires explicit discoverability and current eligibility. Classroom creation requires verified educator capability. Zones require an active, opted-in Social profile age 18 or older. A request requires current host approval in each module. An owner retains ownership while ordinary members may leave voluntarily. Group membership grants no communication or AI access.
 
-Free Club creators can have at most five active Clubs. Premium Club creators have no creation quota. Club capacity includes every active member, including the owner. Free capacity is 50 and Premium capacity is 100. Expiry retains existing members and blocks new admission at or above the current capacity. The server resolves the creator's Account and current M2 entitlement on each qualifying write.
+For each module independently, Free creators can have up to five active Groups and Premium creators have unlimited creation. Capacity is 50 for Free and 100 for Premium, including the owner and every other active role. Expiry or revocation retains existing Groups and members. After a downgrade the server denies creation at five or more active Groups in the same module and admission at 50 or more active members. The server resolves the creator's current canonical M2 entitlement for each qualifying write.
 
 ## Examples
 
@@ -94,7 +94,7 @@ After approval, the caller can receive their own current membership state.
 
 ## Deployment configuration
 
-Provision the Accounts migrations and the `GroupsDbContext` migrations on the same PostgreSQL database. Groups uses its own migration history in `andril_groups`. Social Zone activation also requires the canonical Social safety schema and its authorization functions. Club activation requires the authoritative M2 entitlement relation `andril_economy.premium_entitlements` created and maintained by the approved M2 deployment. Groups does not provision subscriptions. Keep Hobbies activation disabled in deployments where that prerequisite is unavailable.
+Provision the Accounts migrations and the `GroupsDbContext` migrations on the same PostgreSQL database. Groups uses its own migration history in `andril_groups`. Social Zone activation also requires the canonical Social safety schema and its authorization functions. Every Shared Groups module requires the authoritative M2 entitlement relation `andril_economy.premium_entitlements` created and maintained by the approved M2 deployment. Groups does not provision subscriptions. Keep Shared Groups activation disabled in deployments where that prerequisite is unavailable.
 
 Set `SharedGroups__EnablePersistence` and enable each selected scope with `SharedGroups__EnableLearning`, `SharedGroups__EnableHobbies`, or `SharedGroups__EnableSocial`. Supply `SharedGroups__RuntimeRole` and the deployment's secure `ConnectionStrings__AndrilAccounts` configuration. The runtime role must use the verified Group functions with no direct Group, identity, entitlement or safety table privileges. The migration authority needs the permissions to create the Group schema and coordinated identity triggers. Human moderation grants are provisioned by an authorized server administrator. The application verifies the selected modules and role at startup.
 
