@@ -6,6 +6,8 @@ using Andril.Common.Accounts.Profiles;
 using Andril.Learning.Entities;
 using Andril.Learning.Activities;
 using Andril.Learning.Progress;
+using Andril.Learning.Discovery;
+using Andril.Learning.Services;
 using Andril.Learning.Portfolio;
 using Andril.Common.Diary;
 using Andril.Learning.CV;
@@ -173,7 +175,9 @@ public sealed class LearningFoundationBoundaryTests
             typeof(LearningPortfolio),typeof(PortfolioPreview),typeof(ILearningActivitiesRepository),typeof(LearningActivityKind),
             typeof(LearningActivityAction),typeof(LearningActivityResult),typeof(LearningActivityView),typeof(LearningActivityOutcome),
             typeof(CreateLearningActivityRequest),typeof(ChangeLearningActivityRequest),typeof(ILearningXpRepository),
-            typeof(LearningXpResult),typeof(LearningXpOutcome),typeof(LearningXpEntry),typeof(LearningXpProgress) }.Contains(type);
+            typeof(LearningXpResult),typeof(LearningXpOutcome),typeof(LearningXpEntry),typeof(LearningXpProgress),
+            typeof(ILearningPublicationRepository),typeof(LearningPublicationKind),typeof(LearningPublicationOutcome),typeof(LearningPublicationView),typeof(LearningPublicationResult),
+            typeof(LearningDisclosureChange),typeof(LearningOfferPublicationChange),typeof(LearningPeopleDiscoveryService),typeof(LearningPeopleResult),typeof(LearningPeopleOutcome),typeof(LearningPersonCard) }.Contains(type);
 
     [Theory]
     [InlineData(false,false)]
@@ -297,7 +301,7 @@ public sealed class LearningFoundationBoundaryTests
         }
     }
 
-    private static bool IsLearningBoundaryType(Type type) => type.Assembly == Learning || type == typeof(LearningDbContext) || type == typeof(LearningPrivateActivitiesDbContext) || type == typeof(LearningXpReadDbContext) || type == typeof(LearningPeerActivitiesDbContext) ||
+    private static bool IsLearningBoundaryType(Type type) => type.Assembly == Learning || type == typeof(LearningDbContext) || type == typeof(LearningPrivateActivitiesDbContext) || type == typeof(LearningXpReadDbContext) || type == typeof(LearningPeerActivitiesDbContext) || type == typeof(LearningPublicationsDbContext) ||
         (type.HasElementType && IsLearningBoundaryType(type.GetElementType()!)) ||
         (type.IsGenericType && type.GetGenericArguments().Any(IsLearningBoundaryType));
 
@@ -344,6 +348,17 @@ public sealed class LearningFoundationBoundaryTests
         Assert.DoesNotContain(services,s=>s.ServiceType==typeof(ILearningActivityAuthority)||s.ServiceType==typeof(DbContextOptions<LearningPeerActivitiesDbContext>));
         var builder=WebApplication.CreateBuilder(new WebApplicationOptions{EnvironmentName="Production"});builder.Services.AddAuthorization();builder.Services.AddVerifiedLearningOwnerActivities(configuration);
         await using var app=builder.Build();app.MapVerifiedLearningOwnerActivities();var endpoints=((IEndpointRouteBuilder)app).DataSources.SelectMany(s=>s.Endpoints).OfType<RouteEndpoint>().ToArray();Assert.Equal(owners||peers?4:0,endpoints.Length);
+        Assert.All(endpoints,e=>{Assert.NotEmpty(e.Metadata.GetOrderedMetadata<IAuthorizeData>());Assert.Null(e.Metadata.GetMetadata<IAllowAnonymous>());});
+    }
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public async Task PublicationCompositionIsExplicitPrivateAndDoesNotGrantAiOrCleanupAuthority(bool enabled)
+    {
+        var config=new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>{["Learning:Publications:Enabled"]=enabled.ToString(),["Learning:Publications:RuntimeRole"]="metadata_publication"}).Build();
+        var services=ProductionServices(config);Assert.Equal(enabled?1:0,services.Count(s=>s.ServiceType==typeof(ILearningPublicationRepository)));Assert.Equal(enabled?1:0,services.Count(s=>s.ServiceType==typeof(LearningPeopleDiscoveryService)));
+        Assert.DoesNotContain(services,s=>s.ServiceType==typeof(DbContextOptions<LearningPublicationsDbContext>)||s.ServiceType==typeof(Andril.Learning.Interfaces.ILearningSetupAuthorityReader));
+        var builder=WebApplication.CreateBuilder(new WebApplicationOptions{EnvironmentName="Production"});builder.Services.AddAuthorization();builder.Services.AddVerifiedLearningPublications(config);
+        await using var app=builder.Build();app.MapVerifiedLearningPublications();var endpoints=((IEndpointRouteBuilder)app).DataSources.SelectMany(s=>s.Endpoints).OfType<RouteEndpoint>().ToArray();Assert.Equal(enabled?5:0,endpoints.Length);
         Assert.All(endpoints,e=>{Assert.NotEmpty(e.Metadata.GetOrderedMetadata<IAuthorizeData>());Assert.Null(e.Metadata.GetMetadata<IAllowAnonymous>());});
     }
 

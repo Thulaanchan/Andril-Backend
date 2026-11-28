@@ -15,6 +15,7 @@ namespace Andril.Persistence.Repositories.Learning;
 /// <summary>P11 explicit peer intent only. No discovery disclosure, publication, communication or Circle grants.</summary>
 public static class LearningPeerActivityPersistence
 {
+    internal static ILearningDocumentBoundary WithAuthorityFence(AccountsDbContext accounts,ILearningDocumentBoundary inner)=>new PeerBoundary(accounts,inner,null);
     public static ILearningActivitiesRepository Create(AccountsDbContext accounts,ICurrentUser user,IPrivateProfileService profiles,IPolicyCatalogProvider policies,string role)
     {
         var scope=new PeerScope(accounts,user,policies);
@@ -71,7 +72,7 @@ public static class LearningPeerActivityPersistence
             return visible?new(LearningActivityPermissionOutcome.Allowed,participants.AsReadOnly()):new(LearningActivityPermissionOutcome.Denied,[]);
         }
     }
-    private sealed class PeerBoundary(AccountsDbContext accounts,ILearningDocumentBoundary inner,PeerScope scope):ILearningDocumentBoundary
+    private sealed class PeerBoundary(AccountsDbContext accounts,ILearningDocumentBoundary inner,PeerScope? scope):ILearningDocumentBoundary
     {
         public async Task<T> Run<T>(Func<LearningDbContext,Owner,CancellationToken,Task<T>> action,Func<LearningDocumentFailure,T> failure,CancellationToken ct,
             bool write=false,Func<string,CancellationToken,Task>? checkpoint=null,Func<Exception,bool>? additionalConflict=null)
@@ -85,13 +86,13 @@ public static class LearningPeerActivityPersistence
                 timeout=await accounts.Database.SqlQueryRaw<string>("SELECT current_setting('lock_timeout') AS \"Value\"").SingleAsync(ct);
                 // Never wait in reverse order behind an M2/M5 writer holding an account row.
                 await accounts.Database.ExecuteSqlRawAsync("SELECT set_config('lock_timeout','250ms',false)",ct);
-                return await inner.Run(async(db,owner,token)=>{await scope.Enter(owner,token);return await action(db,owner,token);},failure,ct,write,checkpoint,additionalConflict);
+                return await inner.Run(async(db,owner,token)=>{if(scope is not null)await scope.Enter(owner,token);return await action(db,owner,token);},failure,ct,write,checkpoint,additionalConflict);
             }
             catch(OperationCanceledException) when(ct.IsCancellationRequested){throw;}
             catch(NpgsqlException){return failure(LearningDocumentFailure.Unavailable);}
             finally
             {
-                scope.Clear();
+                scope?.Clear();
                 if(connection.State==ConnectionState.Open)
                 {
                     try
