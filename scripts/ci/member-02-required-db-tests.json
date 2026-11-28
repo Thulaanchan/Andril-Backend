@@ -435,6 +435,7 @@
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.LogicalDelete_PostgresPreservesCoverAndRollsBackOnRevocation",
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.UploadStore_PostgresUpgradePreservesLegacyAndRollbackDropsReceipts",
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.UploadStore_PostgresScopesConcurrentReservationAndCompletion",
-    "Andril.IntegrationTests.Database.GalleryPersistenceTests.UploadStore_PostgresRollsBackOnRevokeAndReplaysAfterLostCommitReply"
+    "Andril.IntegrationTests.Database.GalleryPersistenceTests.UploadStore_PostgresRollsBackOnRevokeAndReplaysAfterLostCommitReply",
+    "Andril.IntegrationTests.Database.GalleryPersistenceTests.RecoveryEvidence_PostgresRequiresOwnedPrivateTombstoneAndExactCompletedGeneration"
   ]
 }
