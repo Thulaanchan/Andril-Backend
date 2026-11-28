@@ -1,8 +1,31 @@
 namespace Andril.Hobbies.Interfaces;
 
-internal sealed record GalleryUploadIntent(Guid OperationId, Guid OwnerProfileId, string Sha256);
-internal sealed record GalleryUploadBinding(GalleryUploadIntent Intent, GalleryPrivateObjectEvidence Object);
-internal sealed record GalleryUploadObject(GalleryUploadBinding Binding, string Version);
+internal enum GalleryMutationKind { Upload }
+
+internal readonly record struct GalleryOperationKey(
+    Guid OwnerProfileId, string Module, GalleryMutationKind Kind, Guid OperationId);
+
+internal sealed record GalleryUploadIntent(Guid OperationId, Guid OwnerProfileId, string Sha256)
+{
+    internal GalleryOperationKey Key => new(OwnerProfileId, "Hobbies", GalleryMutationKind.Upload, OperationId);
+
+    internal bool IsValid => OperationId != Guid.Empty && OwnerProfileId != Guid.Empty &&
+        Sha256 is { Length: 64 } && Sha256.All(character => character is >= '0' and <= '9' or >= 'A' and <= 'F');
+}
+
+internal sealed record GalleryUploadBinding(GalleryUploadIntent Intent, GalleryPrivateObjectEvidence Object)
+{
+    internal bool Matches(GalleryUploadIntent expected) =>
+        expected.IsValid && Intent == expected && Object.OwnerModuleProfileId == expected.Key.OwnerProfileId &&
+        Object.Module == expected.Key.Module && Object.MediaId != Guid.Empty &&
+        !string.IsNullOrWhiteSpace(Object.StorageObjectKey);
+}
+
+internal sealed record GalleryUploadObject(GalleryUploadBinding Binding, string Version)
+{
+    internal bool Matches(GalleryUploadBinding expected) =>
+        Binding == expected && !string.IsNullOrWhiteSpace(Version);
+}
 
 internal enum GalleryUploadReservationState
 {

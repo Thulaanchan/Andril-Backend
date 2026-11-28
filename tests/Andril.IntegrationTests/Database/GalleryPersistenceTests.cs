@@ -40,8 +40,11 @@ public sealed partial class GalleryPersistenceTests
     public void Migration_IsDiscoveredOnlyForGalleryAndMatchesTheCurrentModelOffline()
     {
         using var gallery = CreateContext(interceptor: new RejectConnectionOpen());
-        var migrationId = Assert.Single(gallery.Database.GetMigrations());
+        var galleryMigrations = gallery.Database.GetMigrations().ToArray();
+        Assert.Equal(2, galleryMigrations.Length);
+        var migrationId = galleryMigrations[0];
         Assert.EndsWith("_InitialHobbiesGallery", migrationId);
+        Assert.EndsWith("_AddGalleryUploadOperations", galleryMigrations[1]);
         var assembly = gallery.GetService<IMigrationsAssembly>();
         Assert.NotNull(assembly.ModelSnapshot);
         Assert.False(gallery.Database.HasPendingModelChanges());
@@ -62,7 +65,7 @@ public sealed partial class GalleryPersistenceTests
     {
         using var context = CreateContext(interceptor: new RejectConnectionOpen());
         var assembly = context.GetService<IMigrationsAssembly>();
-        var mapping = Assert.Single(assembly.Migrations);
+        var mapping = assembly.Migrations.Single(pair => pair.Key.EndsWith("_InitialHobbiesGallery", StringComparison.Ordinal));
         var migration = assembly.CreateMigration(mapping.Value, context.Database.ProviderName!);
         Assert.Collection(migration.UpOperations,
             operation => Assert.Equal("andril_hobbies", Assert.IsType<EnsureSchemaOperation>(operation).Name),
@@ -77,11 +80,9 @@ public sealed partial class GalleryPersistenceTests
         var up = migrator.GenerateScript(Migration.InitialDatabase, mapping.Key);
         var idempotent = migrator.GenerateScript(Migration.InitialDatabase, mapping.Key, MigrationsSqlGenerationOptions.Idempotent);
         var down = migrator.GenerateScript(mapping.Key, Migration.InitialDatabase);
-        var modelSql = context.Database.GenerateCreateScript();
-        var modelStatements = modelSql[modelSql.IndexOf("CREATE TABLE", StringComparison.Ordinal)..]
-            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        Assert.Equal(3, modelStatements.Length);
-        Assert.All(modelStatements, statement => Assert.Contains(statement + ";", up));
+        Assert.Contains("CREATE TABLE andril_hobbies.\"GalleryMedia\"", up);
+        Assert.Contains("CREATE TABLE andril_hobbies.\"GalleryPreferences\"", up);
+        Assert.DoesNotContain("GalleryUploadOperations", up);
         Assert.DoesNotContain("DROP ", up);
         const string history = "andril_hobbies.\"__EFMigrationsHistory_Gallery\"";
         Assert.Contains($"INSERT INTO {history}", up);
@@ -100,12 +101,16 @@ public sealed partial class GalleryPersistenceTests
         WithDatabaseAsync(async connection =>
         {
             await using var context = CreateContext(connection);
-            var migrationId = Assert.Single(context.Database.GetMigrations());
+            var migrationId = context.Database.GetMigrations().First();
             await context.Database.ExecuteSqlRawAsync("CREATE TABLE migration_isolation_probe (id integer PRIMARY KEY)");
             await context.Database.ExecuteSqlRawAsync("INSERT INTO migration_isolation_probe VALUES (1)");
             await context.Database.MigrateAsync(migrationId);
             Assert.Equal(migrationId, Assert.Single(await context.Database.GetAppliedMigrationsAsync()));
-            context.GalleryMedia.Add(Media(Older, Owner, CreatedAt));
+            await context.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO andril_hobbies."GalleryMedia"
+                ("Id","OwnerModuleProfileId","Module","Title","Category","MediaType","StorageObjectKey","IsPrivate","IsDeleted","CreatedAtUtc")
+                VALUES ({Older},{Owner},'Hobbies','Original title','Synthetic','Photo','original.jpg',true,false,{CreatedAt})
+                """);
             context.GalleryPreferences.Add(new GalleryPreferences { OwnerModuleProfileId = Owner, CoverMediaId = Older });
             await context.SaveChangesAsync();
             Assert.Equal(1, await context.GalleryMedia.CountAsync());
@@ -131,7 +136,7 @@ public sealed partial class GalleryPersistenceTests
         Assert.Equal("GalleryMedia", media.GetTableName());
         Assert.Equal("andril_hobbies", media.GetSchema());
         Assert.Equal(nameof(GalleryMedia.Id), Assert.Single(media.FindPrimaryKey()!.Properties).Name);
-        Assert.Equal(11, media.GetProperties().Count());
+        Assert.Equal(12, media.GetProperties().Count());
         Assert.Null(media.FindProperty("PublicUrl"));
         foreach (var (property, type, nullable) in new[]
         {
@@ -143,6 +148,7 @@ public sealed partial class GalleryPersistenceTests
             (nameof(GalleryMedia.Category), "text", false),
             (nameof(GalleryMedia.MediaType), "text", false),
             (nameof(GalleryMedia.StorageObjectKey), "text", false),
+            (nameof(GalleryMedia.ProviderGeneration), "text", true),
             (nameof(GalleryMedia.IsPrivate), "boolean", false),
             (nameof(GalleryMedia.IsDeleted), "boolean", false),
             (nameof(GalleryMedia.CreatedAtUtc), "timestamp with time zone", false)

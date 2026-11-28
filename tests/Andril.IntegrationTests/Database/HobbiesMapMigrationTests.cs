@@ -39,7 +39,7 @@ public sealed class HobbiesMapMigrationTests
         Assert.False(map.Database.HasPendingModelChanges());
 
         using var gallery = new HobbiesGalleryDbContextFactory().CreateDbContext([]);
-        var galleryId = Assert.Single(gallery.Database.GetMigrations());
+        var galleryId = gallery.Database.GetMigrations().First();
         Assert.EndsWith("_InitialHobbiesGallery", galleryId);
         using var accounts = new AccountsDbContext(
             new DbContextOptionsBuilder<AccountsDbContext>().UseNpgsql(OfflineConnection).Options);

@@ -185,7 +185,7 @@ public sealed class GalleryService : IGalleryService
             string.IsNullOrWhiteSpace(media.StorageObjectKey))
             return null;
 
-        return new GalleryPrivateObjectEvidence(mediaId, ownerId, HobbiesModule, media.StorageObjectKey);
+        return new GalleryPrivateObjectEvidence(mediaId, ownerId, HobbiesModule, media.StorageObjectKey, media.ProviderGeneration);
     }
 
     public async Task<bool> UpdateTitleAsync(
