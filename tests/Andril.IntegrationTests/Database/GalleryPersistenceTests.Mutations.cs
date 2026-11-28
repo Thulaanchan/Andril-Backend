@@ -165,43 +165,94 @@ public sealed partial class GalleryPersistenceTests
         return jpeg;
     }
 
+    [Fact]
+    public async Task UploadReceipt_ConcurrentRetryInspectsAndLostCommitReplyReplaysConfirmedReceipt()
+    {
+        var authority = new TestGalleryAuthorization();
+        var repository = new TestGalleryReadRepository();
+        var validator = new GalleryJpegUploadValidator(1024, 16, 768);
+        var operationId = Guid.NewGuid();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var store = new ControlledUpload
+        {
+            LoseCommitAcknowledgment = true,
+            BeforeCreate = async token =>
+            {
+                entered.SetResult();
+                await release.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
+            }
+        };
+        async Task<GalleryMetadataResult<GalleryMutationReceipt>> SendAsync(byte[] bytes)
+        {
+            using var stream = new MemoryStream(bytes);
+            return await authority.CreateBoundary(repository, repository).UploadPrivateMediaAsync(
+                operationId, stream, "image/jpeg", validator, store, store);
+        }
+
+        var jpeg = MutationJpeg();
+        var first = SendAsync(jpeg);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(GalleryMetadataStatus.MutationPending, (await SendAsync(jpeg)).Status);
+            Assert.Equal(GalleryMetadataStatus.MutationConflict,
+                (await SendAsync([.. jpeg[..2], 255, 254, 0, 3, 65, .. jpeg[2..]])).Status);
+            Assert.Equal(1, store.Creates);
+            Assert.Equal(1, store.Inspections);
+            Assert.Equal(0, store.Commits);
+        }
+        finally
+        {
+            release.TrySetResult();
+        }
+
+        Assert.Equal(GalleryMetadataStatus.MutationPending, (await first).Status);
+        Assert.Equal(Newer, (await SendAsync(jpeg)).Value?.MediaId);
+        Assert.Equal(1, store.Creates);
+        Assert.Equal(1, store.Commits);
+    }
+
     private sealed class ControlledUpload : IGalleryUploadOperations, IGalleryPrivateObjectMutations
     {
-        private GalleryUploadBinding? binding;
+        private readonly object gate = new();
         private GalleryUploadObject? providerEvidence;
-        private GalleryUploadObject? receipt;
+        private GalleryUploadReceipt? receipt;
         public int Creates { get; private set; }
         public int Inspections { get; private set; }
         public int Commits { get; private set; }
         public bool LoseCreateAcknowledgment { get; init; }
+        public bool LoseCommitAcknowledgment { get; init; }
         public bool Substitute { get; set; }
         public bool FailCommit { get; set; }
         public Action? BeforeInspect { get; set; }
+        public Func<CancellationToken, Task>? BeforeCreate { get; init; }
 
         public Task<GalleryUploadReservation> ReserveAsync(GalleryUploadIntent intent, CancellationToken token)
         {
-            if (binding is null)
+            lock (gate)
             {
+                if (receipt is not null)
+                    return Task.FromResult(receipt.Replay(intent));
                 Assert.Equal(Owner, intent.OwnerProfileId);
-                binding = new(intent, new(Newer, Owner, "Hobbies", "synthetic-upload-object"));
+                var binding = new GalleryUploadBinding(intent, new(Newer, Owner, "Hobbies", "synthetic-upload-object"));
+                receipt = Assert.IsType<GalleryUploadReceipt>(GalleryUploadReceipt.Reserve(binding));
                 return Task.FromResult(new GalleryUploadReservation(GalleryUploadReservationState.Create, binding));
             }
-            return Task.FromResult<GalleryUploadReservation>(intent != binding.Intent
-                ? new(GalleryUploadReservationState.Conflict, null)
-                : receipt is null ? new(GalleryUploadReservationState.Inspect, binding)
-                : new(GalleryUploadReservationState.Completed, binding, receipt));
         }
 
-        public Task<GalleryUploadObject?> CreateOnlyAsync(GalleryUploadBinding expected, ReadOnlyMemory<byte> content,
+        public async Task<GalleryUploadObject?> CreateOnlyAsync(GalleryUploadBinding expected, ReadOnlyMemory<byte> content,
             CancellationToken token)
         {
             Assert.Null(providerEvidence);
             Assert.Equal(expected.Intent.Sha256, Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content.Span)));
             Creates++;
+            if (BeforeCreate is not null)
+                await BeforeCreate(token);
             providerEvidence = new(expected, "synthetic-generation");
             if (LoseCreateAcknowledgment)
                 throw new TimeoutException("synthetic provider diagnostic");
-            return Task.FromResult<GalleryUploadObject?>(providerEvidence);
+            return providerEvidence;
         }
 
         public Task<GalleryUploadObject?> InspectAsync(GalleryUploadBinding expected, CancellationToken token)
@@ -221,8 +272,16 @@ public sealed partial class GalleryPersistenceTests
             if (FailCommit)
                 throw new InvalidOperationException("synthetic store diagnostic");
             Assert.Equal(providerEvidence, evidence);
-            receipt = evidence;
-            Commits++;
+            lock (gate)
+            {
+                var current = Assert.IsType<GalleryUploadReceipt>(receipt);
+                var verified = Assert.IsType<GalleryUploadReceipt>(current.Verify(current.Revision, evidence));
+                receipt = Assert.IsType<GalleryUploadReceipt>(verified.Complete(verified.Revision, evidence));
+                if (!current.Completed)
+                    Commits++;
+            }
+            if (LoseCommitAcknowledgment)
+                throw new TimeoutException("synthetic commit acknowledgment");
             return true;
         }
     }

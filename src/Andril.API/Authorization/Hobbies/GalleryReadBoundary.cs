@@ -103,7 +103,8 @@ internal sealed partial class GalleryReadBoundary(
 
             var version = await objects.FindAuthorizedAsync(binding, token);
             token.ThrowIfCancellationRequested();
-            if (version is null || version.Binding != binding || string.IsNullOrWhiteSpace(version.Version))
+            if (version is null || version.Binding != binding || string.IsNullOrWhiteSpace(version.Version) ||
+                (binding.ProviderGeneration is not null && version.Version != binding.ProviderGeneration))
                 return new(GalleryMetadataStatus.MediaUnavailable);
             if (await ResolveAuthorizedScopeAsync(GalleryReadOperation.PrivateMediaDelivery, token) != scope)
                 return new(GalleryMetadataStatus.Denied);

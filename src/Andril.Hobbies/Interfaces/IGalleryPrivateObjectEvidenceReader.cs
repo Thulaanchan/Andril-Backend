@@ -8,4 +8,4 @@ internal interface IGalleryPrivateObjectEvidenceReader
 }
 
 internal sealed record GalleryPrivateObjectEvidence(
-    Guid MediaId, Guid OwnerModuleProfileId, string Module, string StorageObjectKey);
+    Guid MediaId, Guid OwnerModuleProfileId, string Module, string StorageObjectKey, string? ProviderGeneration = null);

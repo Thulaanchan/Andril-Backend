@@ -18,6 +18,7 @@ public sealed class GalleryMedia
     public string MediaType { get; set; } = "Photo";
 
     public string StorageObjectKey { get; set; } = string.Empty;
+    public string? ProviderGeneration { get; set; }
 
     public bool IsPrivate { get; set; } = true;
 

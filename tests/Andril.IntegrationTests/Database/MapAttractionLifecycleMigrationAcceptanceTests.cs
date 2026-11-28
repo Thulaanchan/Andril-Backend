@@ -85,9 +85,10 @@ public sealed partial class MapAttractionLifecycleMigrationAcceptanceTests
             await using var gallery = new HobbiesGalleryDbContext(
                 new DbContextOptionsBuilder<HobbiesGalleryDbContext>()
                     .UseNpgsql(connectionString, HobbiesDatabaseOptions.ConfigureGalleryHistory).Options);
-            var galleryMigration = Assert.Single(gallery.Database.GetMigrations());
+            var galleryMigrations = gallery.Database.GetMigrations().ToArray();
+            Assert.Equal(2, galleryMigrations.Length);
             await gallery.Database.MigrateAsync();
-            Assert.Equal(galleryMigration, Assert.Single(await gallery.Database.GetAppliedMigrationsAsync()));
+            Assert.Equal(galleryMigrations, await gallery.Database.GetAppliedMigrationsAsync());
             Assert.Equal(new[] { InitialMap, UniqueSession, Lifecycle, PrivateMedia, Moderation },
                 await map.Database.GetAppliedMigrationsAsync());
         });

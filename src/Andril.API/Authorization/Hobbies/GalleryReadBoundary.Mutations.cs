@@ -49,9 +49,7 @@ internal sealed partial class GalleryReadBoundary
                 if (reservation.State == GalleryUploadReservationState.Conflict)
                     return new(GalleryMetadataStatus.MutationConflict);
                 var binding = reservation.Binding;
-                if (binding is null || binding.Intent != intent || binding.Object.OwnerModuleProfileId != intent.OwnerProfileId ||
-                    binding.Object.Module != "Hobbies" || binding.Object.MediaId == Guid.Empty ||
-                    string.IsNullOrWhiteSpace(binding.Object.StorageObjectKey))
+                if (binding is null || !binding.Matches(intent))
                     return new(GalleryMetadataStatus.MutationPending);
 
                 var evidence = reservation.State switch
@@ -64,7 +62,7 @@ internal sealed partial class GalleryReadBoundary
                 token.ThrowIfCancellationRequested();
                 if (!await StillAuthorized(token))
                     return new(GalleryMetadataStatus.Denied);
-                if (evidence is null || evidence.Binding != binding || string.IsNullOrWhiteSpace(evidence.Version))
+                if (evidence is null || !evidence.Matches(binding))
                     return new(GalleryMetadataStatus.MutationPending);
                 if (reservation.State != GalleryUploadReservationState.Completed &&
                     !await operations.CompleteAsync(evidence, StillAuthorized, token))
