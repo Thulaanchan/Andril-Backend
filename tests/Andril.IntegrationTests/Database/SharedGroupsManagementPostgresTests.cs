@@ -96,9 +96,10 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
         public bool IsConfirmedFor(Guid subject) => subject == Subject;
     }
 
-    internal static async Task<SharedGroupsDatabase> CreateAsync(bool withEntitlementSource = true)
+    internal static async Task<SharedGroupsDatabase> CreateAsync(bool withEntitlementSource = true,
+        LocalSocialQuestionnaireDatabase? sharedDatabase = null)
     {
-        var fixture = await LocalSocialQuestionnaireDatabase.CreateAsync();
+        var fixture = sharedDatabase ?? await LocalSocialQuestionnaireDatabase.CreateAsync();
         var store = new SharedGroupsDatabase(fixture, "groups_runtime_" + Guid.NewGuid().ToString("N"));
         try
         {
