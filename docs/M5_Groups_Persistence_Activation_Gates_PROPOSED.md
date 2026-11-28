@@ -1,4 +1,6 @@
 # ANDRIL M5 — SHARED GROUPS PRODUCTION PERSISTENCE ACTIVATION GATES (PROPOSED)
+
+The later Team Lead decision governs commercial Group limits. [CF-07 unified Group limits](M5_CF07_Unified_Group_Limits_Decision.md)
 ## Comprehensive Database Architecture, Capacity Concurrency & Cross-Member Integration Plan
 
 > **STATUS: PROPOSED ACTIVATION PLAN / NOT IMPLEMENTED**  
