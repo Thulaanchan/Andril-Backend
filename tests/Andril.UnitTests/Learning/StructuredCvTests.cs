@@ -7,6 +7,21 @@ namespace Andril.UnitTests.Learning;
 public sealed class StructuredCvTests
 {
     [Fact]
+    public void LongReviewedTokensRenderWhileEmbeddedContactAndPrivateContentRemainBlocked()
+    {
+        var cv=new LearningCv(Guid.NewGuid(),Guid.NewGuid(),CvTemplate.Modern);
+        var section=cv.GetSection(CvSectionCategory.Projects);var text=new string('a',32_768);
+        void Set(string value)=>cv.EditSection(section.Id,section.Category,[CvStructuredFields.ReviewedEntry(Guid.NewGuid(),section.Id,section.Category,new Dictionary<string,string>{{"Description",value}})]);
+        Set(text);Assert.Contains(text,CvPreview.CreateOffline(cv).Html);
+        cv.SetContactInclusionConsent(cv.Id,true);
+        Set(text+"@example.test");Assert.DoesNotContain(text,CvPreview.CreateOffline(cv).Html);
+        Assert.Throws<ArgumentException>(()=>Set(text+" password"));
+        Set(text+"@example.test");Assert.DoesNotContain(text,CvPreview.CreateOffline(cv).Html);
+        cv.SetContactInclusionConsent(cv.Id,true);Assert.DoesNotContain(text,CvPreview.CreateOffline(cv).Html);
+        Assert.Throws<ArgumentException>(()=>Set(text+" passport"));
+    }
+
+    [Fact]
     public void DateValidationIsCultureIndependentAndInternalIdsCannotBecomeRenderableContent()
     {
         var id=Guid.NewGuid();var section=Guid.NewGuid();

@@ -18,21 +18,41 @@ namespace Andril.IntegrationTests.Database;
 /// </summary>
 public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
 {
-    private static readonly AsyncLocal<string?> FixtureConnection=new();
-    internal static IDisposable UseFixtureConnection(string connection)
+    private sealed record FixtureScope(string CreationConnection, string CleanupConnection);
+
+    private static readonly AsyncLocal<FixtureScope?> FixtureConnection = new();
+
+    internal static IDisposable UseFixtureConnection(string connection, string cleanupConnection)
     {
-        ValidateSettings(new NpgsqlConnectionStringBuilder(connection));
-        var previous=FixtureConnection.Value;FixtureConnection.Value=connection;
+        var creation = new NpgsqlConnectionStringBuilder(connection);
+        var cleanup = new NpgsqlConnectionStringBuilder(cleanupConnection);
+        ValidateSettings(creation);
+        ValidateSettings(cleanup);
+        if (!string.Equals(creation.Host, cleanup.Host, StringComparison.OrdinalIgnoreCase) || creation.Port != cleanup.Port)
+            throw new InvalidOperationException("The fixture cleanup connection must target the same local server.");
+
+        cleanup.Pooling = false;
+        cleanup.IncludeErrorDetail = false;
+        var previous = FixtureConnection.Value;
+        FixtureConnection.Value = new FixtureScope(creation.ConnectionString, cleanup.ConnectionString);
         return new RestoreFixtureConnection(previous);
     }
-    private sealed class RestoreFixtureConnection(string? previous):IDisposable
+
+    private sealed class RestoreFixtureConnection(FixtureScope? previous) : IDisposable
     {
         private bool disposed;
-        public void Dispose(){if(!disposed){FixtureConnection.Value=previous;disposed=true;}}
+
+        public void Dispose()
+        {
+            if (disposed) return;
+            FixtureConnection.Value = previous;
+            disposed = true;
+        }
     }
+
     public const string DatabasePrefix = "andril_social_test_";
 
-    private readonly string _adminConnection;
+    private readonly string _cleanupConnection;
     private readonly string _connection;
     private readonly string _databaseName;
     private readonly bool _databaseCreated;
@@ -43,12 +63,12 @@ public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
     public bool IsCreated => _databaseCreated;
 
     private LocalSocialQuestionnaireDatabase(
-        string adminConnection,
+        string cleanupConnection,
         string connection,
         string databaseName,
         bool databaseCreated)
     {
-        _adminConnection = adminConnection;
+        _cleanupConnection = cleanupConnection;
         _connection = connection;
         _databaseName = databaseName;
         _databaseCreated = databaseCreated;
@@ -77,7 +97,8 @@ public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
     /// </summary>
     public static async Task<LocalSocialQuestionnaireDatabase> CreateAsync(bool applySocialMigrations = true)
     {
-        var rawConnection = FixtureConnection.Value ?? Environment.GetEnvironmentVariable("ANDRIL_M2_TEST_POSTGRES");
+        var scope = FixtureConnection.Value;
+        var rawConnection = scope?.CreationConnection ?? Environment.GetEnvironmentVariable("ANDRIL_M2_TEST_POSTGRES");
         if (string.IsNullOrWhiteSpace(rawConnection))
             throw new InvalidOperationException("ANDRIL_M2_TEST_POSTGRES environment variable is not configured.");
 
@@ -99,7 +120,7 @@ public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
 
         settings.Database = uniqueName;
         var database = new LocalSocialQuestionnaireDatabase(
-            admin,
+            scope?.CleanupConnection ?? admin,
             settings.ConnectionString,
             uniqueName,
             databaseCreated: true);
@@ -208,7 +229,7 @@ public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
                 $"Safety violation: Refusing to drop database with unsafe identifier '{_databaseName}'.");
         }
 
-        await using var adminDb = new NpgsqlConnection(_adminConnection);
+        await using var adminDb = new NpgsqlConnection(_cleanupConnection);
         await adminDb.OpenAsync();
         await using var dropCmd = new NpgsqlCommand($"DROP DATABASE \"{_databaseName}\" WITH (FORCE)", adminDb);
         await dropCmd.ExecuteNonQueryAsync();

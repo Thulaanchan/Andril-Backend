@@ -25,7 +25,7 @@ internal sealed class LearningEligibilityDatabase(SharedGroupsDatabase groups,st
         try
         {
             var isolated=new NpgsqlConnectionStringBuilder(settings.ConnectionString){Username=name,Password=password};
-            using var connectionScope=LocalSocialQuestionnaireDatabase.UseFixtureConnection(isolated.ConnectionString);
+            using var connectionScope=LocalSocialQuestionnaireDatabase.UseFixtureConnection(isolated.ConnectionString,settings.ConnectionString);
             return new(await SharedGroupsDatabase.CreateAsync(),settings.ConnectionString,name);
         }
         catch
