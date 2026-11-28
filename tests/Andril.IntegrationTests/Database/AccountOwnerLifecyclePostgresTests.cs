@@ -153,12 +153,23 @@ public sealed class AccountOwnerLifecyclePostgresTests
         var role = "owner_runtime_" + Guid.NewGuid().ToString("N");
         using var quote = new NpgsqlCommandBuilder();
         var quoted = quote.QuoteIdentifier(role);
+        using var prototype = f.Database.Open();
+        var poolSettings = new NpgsqlConnectionStringBuilder(prototype.Database.GetConnectionString())
+        {
+            Pooling = true, MaxPoolSize = 1, MinPoolSize = 0, NoResetOnClose = false,
+            ApplicationName = "owner_pool_" + Guid.NewGuid().ToString("N")
+        };
+        AccountsDbContext OpenPooled() => new(new DbContextOptionsBuilder<AccountsDbContext>()
+            .UseNpgsql(poolSettings.ConnectionString, postgres => postgres.MigrationsHistoryTable("__EFMigrationsHistory", "andril_identity")).Options);
+        int backendPid;
         try
         {
             await using (var setup = f.Database.Open())
                 await RoleSql(setup, $"CREATE ROLE {quoted} NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS; GRANT {quoted} TO CURRENT_USER; GRANT USAGE ON SCHEMA andril_identity TO {quoted}; GRANT SELECT ON andril_identity.accounts, andril_identity.account_owner_states, andril_identity.account_owner_receipts TO {quoted}; GRANT INSERT ON andril_identity.account_owner_audit TO {quoted}; CREATE POLICY {quoted} ON andril_identity.accounts FOR SELECT TO {quoted} USING (id = '{f.Account.Id}'::uuid AND supabase_user_id = '{f.User.UserId}'::uuid AND supabase_user_id = nullif(current_setting('andril.subject',true),'')::uuid)");
-            await using (var db = f.Database.Open())
+            await using (var db = OpenPooled())
             {
+                await db.Database.OpenConnectionAsync();
+                backendPid = await db.Database.SqlQuery<int>($"SELECT pg_backend_pid() AS \"Value\"").SingleAsync();
                 await using (var tx = await db.Database.BeginTransactionAsync())
                 {
                     await f.Bind(db);
@@ -168,15 +179,34 @@ public sealed class AccountOwnerLifecyclePostgresTests
                     Assert.Empty(await db.Set<AccountOwnerStateRow>().ToListAsync());
                     await tx.CommitAsync();
                 }
+                // Deliberately contaminate session scope before returning the physical
+                // connection to its dedicated one-connector pool. The next lease must
+                // clear it; a fresh unpooled connection would not prove that property.
+                await db.Database.ExecuteSqlInterpolatedAsync($"SELECT set_config('andril.subject',{f.User.UserId.ToString()},false),set_config('andril.account',{f.Account.Id.ToString()},false),set_config('role',{role},false)");
+            }
+            await using (var db = OpenPooled())
+            {
+                await db.Database.OpenConnectionAsync();
+                Assert.Equal(backendPid, await db.Database.SqlQuery<int>($"SELECT pg_backend_pid() AS \"Value\"").SingleAsync());
                 await using var second = await db.Database.BeginTransactionAsync();
                 await db.Database.ExecuteSqlInterpolatedAsync($"SELECT set_config('role',{role},true)");
                 Assert.Empty(await db.Set<AccountOwnerStateRow>().ToListAsync());
                 var error = await Assert.ThrowsAsync<PostgresException>(() => db.Database.ExecuteSqlRawAsync("DELETE FROM andril_identity.account_owner_audit"));
                 Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, error.SqlState);
             }
+            await using (var db = OpenPooled())
+            {
+                await db.Database.OpenConnectionAsync();
+                Assert.Equal(backendPid, await db.Database.SqlQuery<int>($"SELECT pg_backend_pid() AS \"Value\"").SingleAsync());
+                await using var afterRollback = await db.Database.BeginTransactionAsync();
+                await db.Database.ExecuteSqlInterpolatedAsync($"SELECT set_config('role',{role},true)");
+                Assert.Empty(await db.Set<AccountOwnerStateRow>().ToListAsync());
+            }
         }
         finally
         {
+            using var poolIdentity = new NpgsqlConnection(poolSettings.ConnectionString);
+            NpgsqlConnection.ClearPool(poolIdentity);
             await using var cleanup = f.Database.Open();
             await RoleSql(cleanup, $"DROP POLICY IF EXISTS {quoted} ON andril_identity.accounts; DROP OWNED BY {quoted}; DROP ROLE {quoted}");
         }
