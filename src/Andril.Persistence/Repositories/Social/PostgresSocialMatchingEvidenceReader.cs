@@ -1,11 +1,12 @@
 using System.Text.Json.Serialization;
 using Andril.Common.Accounts;
+using Andril.Social.Personality;
 using Microsoft.EntityFrameworkCore;
 
 namespace Andril.Persistence.Repositories.Social;
 
 /// <summary>Reads only the standing and evidence visible to the verified Social caller.</summary>
-public sealed class PostgresSocialMatchingEvidenceReader(PostgresSocialQuestionnaireLifecycleRepository scope, bool includeInterests = false)
+public sealed class PostgresSocialMatchingEvidenceReader(PostgresSocialQuestionnaireLifecycleRepository scope, bool includeInterests = false, bool includePersonality = false)
 {
     public Task<List<SocialMatchingEvidenceRecord>> ReadAsync(Guid caller, Guid? target, int maximum, CancellationToken token) =>
         scope.InAuthorizedTransactionAsync(caller, async (db, ct) =>
@@ -24,19 +25,45 @@ public sealed class PostgresSocialMatchingEvidenceReader(PostgresSocialQuestionn
                     lifecycle_revision AS "LifecycleRevision"
                 FROM andril_social.read_social_matching_evidence({caller}, {target}, {maximum})
                 """).ToListAsync(ct);
-            if (!includeInterests || rows.Count == 0) return rows;
-
-            var interests = await db.Database.SqlQuery<InterestEvidence>($"""
-                SELECT profile_id AS "ProfileId", interest_ids AS "InterestIds", revision AS "Revision"
-                FROM andril_social.read_social_matching_interests({caller}, {target}, {maximum})
-                """).ToDictionaryAsync(row => row.ProfileId, ct);
-            if (interests.Count != rows.Count || rows.Any(row => !interests.ContainsKey(row.ProfileId)))
-                throw new AccountStoreUnavailableException();
-            return rows.Select(row => row with { Interests = interests[row.ProfileId].InterestIds,
-                InterestsRevision = interests[row.ProfileId].Revision }).ToList();
+            if (rows.Count == 0) return rows;
+            if (includeInterests)
+            {
+                var interests = await db.Database.SqlQuery<InterestEvidence>($"""
+                    SELECT profile_id AS "ProfileId", interest_ids AS "InterestIds", revision AS "Revision"
+                    FROM andril_social.read_social_matching_interests({caller}, {target}, {maximum})
+                    """).ToDictionaryAsync(row => row.ProfileId, ct);
+                if (interests.Count != rows.Count || rows.Any(row => !interests.ContainsKey(row.ProfileId)))
+                    throw new AccountStoreUnavailableException();
+                rows = rows.Select(row => row with { Interests = interests[row.ProfileId].InterestIds,
+                    InterestsRevision = interests[row.ProfileId].Revision }).ToList();
+            }
+            if (includePersonality)
+            {
+                var personality = await db.Database.SqlQuery<PersonalityEvidence>($"""
+                    SELECT profile_id AS "ProfileId", social_choice AS "Social", communication_choice AS "Communication",
+                        planning_choice AS "Planning", revision AS "Revision"
+                    FROM andril_social.read_social_matching_personality({caller}, {target}, {maximum})
+                    """).ToDictionaryAsync(row => row.ProfileId, ct);
+                if (personality.Count != rows.Count || rows.Any(row => !personality.ContainsKey(row.ProfileId)))
+                    throw new AccountStoreUnavailableException();
+                rows = rows.Select(row => personality[row.ProfileId].Apply(row)).ToList();
+            }
+            return rows;
         }, token);
 
     private sealed record InterestEvidence(Guid ProfileId, Guid[]? InterestIds, long Revision);
+
+    private sealed record PersonalityEvidence(Guid ProfileId, int? Social, int? Communication, int? Planning, long Revision)
+    {
+        public SocialMatchingEvidenceRecord Apply(SocialMatchingEvidenceRecord row) => row with
+        {
+            Confirmation = row.ResponseId is { } source && (Social is not null || Communication is not null || Planning is not null)
+                ? new PersonalityArchetypeConfirmation(source.ToString("D"), (SocialEngagementTendency?)Social,
+                    (CommunicationTendency?)Communication, (PlanningTendency?)Planning)
+                : null,
+            ConfirmationRevision = Revision
+        };
+    }
 }
 
 public sealed record SocialMatchingEvidenceRecord(
@@ -70,5 +97,7 @@ public sealed record SocialMatchingEvidenceRecord(
 {
     [System.ComponentModel.DataAnnotations.Schema.NotMapped, JsonIgnore] public Guid[]? Interests { get; init; }
     [System.ComponentModel.DataAnnotations.Schema.NotMapped, JsonIgnore] public long InterestsRevision { get; init; }
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped, JsonIgnore] public PersonalityArchetypeConfirmation? Confirmation { get; init; }
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped, JsonIgnore] public long ConfirmationRevision { get; init; }
     public override string ToString() => "SocialMatchingEvidenceRecord [private]";
 }

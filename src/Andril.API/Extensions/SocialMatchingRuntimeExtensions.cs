@@ -50,8 +50,10 @@ public static class SocialMatchingRuntimeExtensions
         services.TryAddScoped<PostgresSocialProfileEvidenceRepository>();
         var interestSelections = configuration.GetValue<bool>("SocialMatching:EnableInterestSelections");
         if (interestSelections) services.TryAddScoped<PostgresSocialInterestRepository>();
+        var personality = configuration.GetValue<bool>("SocialMatching:EnablePersonality");
+        if (personality) services.TryAddScoped<PostgresSocialPersonalityRepository>();
         services.TryAddScoped(provider => new PostgresSocialMatchingEvidenceReader(
-            provider.GetRequiredService<PostgresSocialQuestionnaireLifecycleRepository>(), interestSelections));
+            provider.GetRequiredService<PostgresSocialQuestionnaireLifecycleRepository>(), interestSelections, personality));
         services.TryAddScoped(provider => new PostgresSocialMatchingEvidenceProvider(provider.GetRequiredService<PostgresSocialMatchingEvidenceReader>(),
             provider.GetService<SocialLocationSettings>(), provider.GetRequiredService<TimeProvider>()));
         services.TryAddScoped<ISocialDiscoveryEvidenceProvider>(provider => provider.GetRequiredService<PostgresSocialMatchingEvidenceProvider>());
@@ -63,12 +65,12 @@ public static class SocialMatchingRuntimeExtensions
             provider.GetRequiredService<ICurrentUser>(), provider.GetRequiredService<IOnboardingIdentity>(), runtimeRole));
         services.TryAddScoped<ISocialDiscoveryAccessService, SocialDiscoveryAccessService>();
         services.AddSocialRelationshipServices();
-        services.AddSingleton(new MatchingRuntime(runtimeRole, distances, interestSelections));
+        services.AddSingleton(new MatchingRuntime(runtimeRole, distances, interestSelections, personality));
         services.AddHostedService<MatchingStartupCheck>();
         return services;
     }
 
-    private sealed record MatchingRuntime(string Role, bool Distances, bool Interests);
+    private sealed record MatchingRuntime(string Role, bool Distances, bool Interests, bool Personality);
 
     private sealed class MatchingStartupCheck(IServiceScopeFactory serviceScopes, MatchingRuntime runtime) : IHostedService
     {
@@ -121,6 +123,15 @@ public static class SocialMatchingRuntimeExtensions
                                 WHERE r.oid IS NULL OR NOT row_security_active(r.oid) OR pg_has_role(current_user, r.relowner, 'MEMBER')
                                     OR has_any_column_privilege(r.oid, 'SELECT,INSERT,UPDATE,REFERENCES')
                                     OR has_table_privilege(r.oid, 'DELETE,TRUNCATE'))))
+                        AND (NOT {runtime.Personality} OR (
+                            NOT EXISTS (SELECT FROM unnest(ARRAY['andril_social.read_social_matching_personality(uuid,uuid,integer)',
+                                'andril_social.set_social_archetype_confirmation(uuid,uuid,integer,integer,integer)',
+                                'andril_social.set_social_personality_preferences(uuid,text,text,text)']) signature
+                                WHERE NOT coalesce(has_function_privilege(to_regprocedure(signature),'EXECUTE'), false))
+                            AND EXISTS (SELECT FROM pg_class r WHERE r.oid = to_regclass('andril_social.social_archetype_confirmations')
+                                AND row_security_active(r.oid) AND NOT pg_has_role(current_user, r.relowner, 'MEMBER')
+                                AND NOT has_any_column_privilege(r.oid, 'SELECT,INSERT,UPDATE,REFERENCES')
+                                AND NOT has_table_privilege(r.oid, 'DELETE,TRUNCATE'))))
                         AND has_table_privilege('andril_social.social_directional_interests', 'SELECT')
                         AND has_table_privilege('andril_social.social_directional_interests', 'INSERT')
                         AND has_column_privilege('andril_social.social_directional_interests', 'is_positive', 'UPDATE')

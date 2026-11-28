@@ -55,7 +55,8 @@ public sealed class PostgresSocialProfileEvidenceRepository(
             return Project(profile.ProfileId, facts, preferences, response);
         }, cancellationToken);
 
-    public Task SetSelfPreferencesAsync(SocialMatchingPreferences preferences, CancellationToken cancellationToken = default)
+    public Task SetSelfPreferencesAsync(SocialMatchingPreferences preferences, CancellationToken cancellationToken = default,
+        bool preservePartnerPreferences = false)
     {
         ArgumentNullException.ThrowIfNull(preferences);
         ArgumentNullException.ThrowIfNull(preferences.Ranges);
@@ -86,13 +87,17 @@ public sealed class PostgresSocialProfileEvidenceRepository(
                     ON CONFLICT (profile_id) DO UPDATE SET discoverable = EXCLUDED.discoverable, show_me = EXCLUDED.show_me,
                         min_age = EXCLUDED.min_age, max_age = EXCLUDED.max_age, min_distance_km = EXCLUDED.min_distance_km,
                         max_distance_km = EXCLUDED.max_distance_km, languages = EXCLUDED.languages, connection_goals = EXCLUDED.connection_goals,
-                        partner_social = EXCLUDED.partner_social, partner_communication = EXCLUDED.partner_communication,
-                        partner_planning = EXCLUDED.partner_planning, revision = saved.revision + 1
+                        partner_social = CASE WHEN {preservePartnerPreferences} THEN saved.partner_social ELSE EXCLUDED.partner_social END,
+                        partner_communication = CASE WHEN {preservePartnerPreferences} THEN saved.partner_communication ELSE EXCLUDED.partner_communication END,
+                        partner_planning = CASE WHEN {preservePartnerPreferences} THEN saved.partner_planning ELSE EXCLUDED.partner_planning END,
+                        revision = saved.revision + 1
                     WHERE (saved.discoverable, saved.show_me, saved.min_age, saved.max_age, saved.min_distance_km, saved.max_distance_km,
                         saved.languages, saved.connection_goals, saved.partner_social, saved.partner_communication, saved.partner_planning)
                         IS DISTINCT FROM (EXCLUDED.discoverable, EXCLUDED.show_me, EXCLUDED.min_age, EXCLUDED.max_age, EXCLUDED.min_distance_km,
-                            EXCLUDED.max_distance_km, EXCLUDED.languages, EXCLUDED.connection_goals, EXCLUDED.partner_social,
-                            EXCLUDED.partner_communication, EXCLUDED.partner_planning)
+                            EXCLUDED.max_distance_km, EXCLUDED.languages, EXCLUDED.connection_goals,
+                            CASE WHEN {preservePartnerPreferences} THEN saved.partner_social ELSE EXCLUDED.partner_social END,
+                            CASE WHEN {preservePartnerPreferences} THEN saved.partner_communication ELSE EXCLUDED.partner_communication END,
+                            CASE WHEN {preservePartnerPreferences} THEN saved.partner_planning ELSE EXCLUDED.partner_planning END)
                     """, token);
             }, cancellationToken);
         }, cancellationToken);
