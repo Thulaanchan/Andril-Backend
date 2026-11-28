@@ -1,4 +1,4 @@
-﻿using Andril.Communication.Calls.Development;
+using Andril.Communication.Calls.Development;
 using Andril.Communication.Chat;
 using Andril.Communication.Interfaces;
 using Andril.IntegrationTests.Communication.Chat.Realtime;
@@ -252,6 +252,7 @@ public sealed class CallDevelopmentTests
         using var f = await CallDevelopmentFixture.CreateAsync();
         await using var host = await ChatRealtimeTransportTests.DemoHost.StartAsync(f.Chat, configure: services => { services.AddSingleton(f.Calls); services.AddSingleton(f.Signals); });
         await using var a = await ChatRealtimeTransportTests.WireClient.ConnectAsync(host.Url, host.TokenA);
+        Assert.Equal((int)CallOutcome.Success, (await a.InvokeAsync("SubscribeCalls", f.Module, Conversation)).GetInt32());
         f.Chat.Time.Now = f.Chat.A.Expires;
         f.Chat.A.Expires = f.Chat.Time.Now.AddHours(1); f.Chat.B.Expires = f.Chat.Time.Now.AddHours(1);
         var denied = await a.InvokeAsync("InitiateCall", f.Module, Conversation, Key(900), CallType.Audio);
