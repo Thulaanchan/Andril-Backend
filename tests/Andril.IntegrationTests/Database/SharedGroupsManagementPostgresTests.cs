@@ -191,6 +191,24 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
         return await action(new GroupsPostgresScope(accounts, Options(), profiles, actor, Role));
     }
 
+    internal async Task SeedExistingClubMembersAsync(Guid club, int count)
+    {
+        await using var db = Open();
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            WITH accounts AS (
+                INSERT INTO andril_identity.accounts(id, supabase_user_id, created_at_utc, updated_at_utc)
+                    SELECT gen_random_uuid(), gen_random_uuid(), now(), now() FROM generate_series(1, {count})
+                RETURNING id
+            ), profiles AS (
+                INSERT INTO andril_identity.private_module_profiles(id, account_id, module, created_at_utc)
+                    SELECT gen_random_uuid(), id, 'hobbies', now() FROM accounts
+                RETURNING id
+            )
+            INSERT INTO andril_groups.memberships(group_id, module, profile_id, joined_at_utc)
+                SELECT {club}, 'hobbies', id, now() FROM profiles
+            """);
+    }
+
     internal async Task<long> CountAsync(string table)
     {
         if (table is not ("groups" or "memberships" or "capabilities" or "audit" or "join_requests")) throw new ArgumentException("Unknown fixture table.");

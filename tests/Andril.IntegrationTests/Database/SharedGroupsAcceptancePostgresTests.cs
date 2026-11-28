@@ -25,7 +25,7 @@ public sealed class SharedGroupsAcceptancePostgresTests
         var fourth = await fixture.SeedAsync("hobbies");
         var group = await fixture.CreateGroupAsync(host, Club, new("Capacity", null, true, "public"));
 
-        await AddExistingMembersAsync(48);
+        await fixture.SeedExistingClubMembersAsync(group.Id, 48);
         await SubmitAsync(first);
         await SubmitAsync(second);
         var free = await Task.WhenAll(ApproveAsync(first), ApproveAsync(second));
@@ -34,7 +34,7 @@ public sealed class SharedGroupsAcceptancePostgresTests
         Assert.Equal(50L, await fixture.CountAsync("memberships"));
 
         await fixture.SetPremiumAsync(host, DateTimeOffset.UtcNow.AddDays(1));
-        await AddExistingMembersAsync(49);
+        await fixture.SeedExistingClubMembersAsync(group.Id, 49);
         await SubmitAsync(third);
         await SubmitAsync(fourth);
         var premium = await Task.WhenAll(ApproveAsync(third), ApproveAsync(fourth));
@@ -53,24 +53,6 @@ public sealed class SharedGroupsAcceptancePostgresTests
         Task<GroupAdmissionTransactionResult> ApproveAsync(SharedGroupsDatabase.Actor applicant) =>
             fixture.WithScopeAsync(host, execution => new PostgresGroupMembershipTransactionRepository(execution)
                 .ProcessAdmissionAtomicAsync(group.Id, Club, applicant.Profile, true, host.Profile, DateTime.UtcNow));
-
-        async Task AddExistingMembersAsync(int count)
-        {
-            await using var db = fixture.Open();
-            await db.Database.ExecuteSqlInterpolatedAsync($"""
-                WITH accounts AS (
-                    INSERT INTO andril_identity.accounts(id, supabase_user_id, created_at_utc, updated_at_utc)
-                        SELECT gen_random_uuid(), gen_random_uuid(), now(), now() FROM generate_series(1, {count})
-                    RETURNING id
-                ), profiles AS (
-                    INSERT INTO andril_identity.private_module_profiles(id, account_id, module, created_at_utc)
-                        SELECT gen_random_uuid(), id, 'hobbies', now() FROM accounts
-                    RETURNING id
-                )
-                INSERT INTO andril_groups.memberships(group_id, module, profile_id, joined_at_utc)
-                    SELECT {group.Id}, 'hobbies', id, now() FROM profiles
-                """);
-        }
     }
 
     [LocalPostgresFact]

@@ -201,6 +201,38 @@ public sealed class SharedGroupsHttpPostgresTests
         }.Order(StringComparer.Ordinal), operations);
     }
 
+    [LocalPostgresFact]
+    public async Task ClubCreationQuotaAndAdmissionCapacityReturnDistinctConflicts()
+    {
+        await using var fixture = await SharedGroupsDatabase.CreateAsync();
+        var host = await fixture.SeedAsync("hobbies");
+        var applicant = await fixture.SeedAsync("hobbies");
+        var scope = new Andril.Groups.Entities.GroupModuleScope("hobbies", Andril.Groups.Policies.GroupKind.Club);
+        var group = await fixture.CreateGroupAsync(host, scope, new("Full Club", null, true, "public"));
+        for (var index = 0; index < 4; index++)
+            await fixture.CreateGroupAsync(host, scope, new("Other Club", null, false));
+        await fixture.SeedExistingClubMembersAsync(group.Id, 49);
+
+        using var server = new SharedGroupsHttpHost(fixture, hobbies: true);
+        using var owner = Client(server, host);
+        using var member = Client(server, applicant);
+        var quota = await Json(await owner.PostAsJsonAsync(Groups,
+            new { module = "hobbies", groupKind = 2, name = "Sixth Club", isDiscoverable = false }), HttpStatusCode.Conflict);
+        Assert.Equal("creation_quota", quota.GetProperty("code").GetString());
+        Assert.Equal(5L, await fixture.CountAsync("groups"));
+
+        var path = Groups + "/" + group.Id;
+        await Status(await member.PostAsJsonAsync(path + "/join-requests", Club), HttpStatusCode.OK);
+        var pending = Assert.Single((await Json(await owner.GetAsync(path + "/admissions" + ClubScope),
+            HttpStatusCode.OK)).EnumerateArray());
+        var capacity = await Json(await owner.PostAsJsonAsync(path + "/admissions",
+            new { module = "hobbies", groupKind = 2, requestId = pending.GetProperty("requestId").GetGuid(), approve = true }), HttpStatusCode.Conflict);
+        Assert.Equal("club_capacity", capacity.GetProperty("code").GetString());
+        Assert.Equal(2, (await Json(await member.GetAsync(path + "/participation/me" + ClubScope),
+            HttpStatusCode.OK)).GetProperty("state").GetInt32());
+        Assert.Equal(54L, await fixture.CountAsync("memberships"));
+    }
+
     private static HttpClient Client(SharedGroupsHttpHost server, SharedGroupsDatabase.Actor? actor = null, bool confirmed = true)
     {
         var client = server.CreateClient(new WebApplicationFactoryClientOptions { BaseAddress = new Uri("https://localhost") });
