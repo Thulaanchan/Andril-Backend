@@ -117,7 +117,8 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
                 GRANT USAGE ON SCHEMA andril_groups TO {store.Role};
                 GRANT EXECUTE ON FUNCTION andril_groups.owns_current_profile(uuid, text), andril_groups.read_group_details(uuid, text, uuid),
                     andril_groups.create_group(uuid, text, integer, uuid, text, text, text, boolean),
-                    andril_groups.update_group(uuid, text, uuid, text, text, text, boolean, bigint) TO {store.Role};
+                    andril_groups.update_group(uuid, text, uuid, text, text, text, boolean, bigint),
+                    andril_groups.mutate_membership(uuid, text, uuid, uuid, text, bigint) TO {store.Role};
                 """;
             await groups.Database.ExecuteSqlRawAsync(grants);
             await tx.CommitAsync();
