@@ -113,6 +113,28 @@ public sealed class LanguagePreferenceEndpointTests
         Assert.Empty(store.Preferences);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task ForeignAccountOrPreferenceResultReturnsSafeUnavailable(bool wrongAccount, bool patch)
+    {
+        var store = new Store { WrongAccount = wrongAccount, ForeignPreference = !wrongAccount };
+        using var auth = new AuthenticationFactory();
+        using var factory = auth.WithWebHostBuilder(b => b.ConfigureTestServices(s => Register(s, store)));
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", auth.Token());
+        using var response = patch ? await client.PatchAsJsonAsync(Path, new { language = "ta", mode = "settings" }) : await client.GetAsync(Path);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        var body = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain(store.ForeignAccount.Id.ToString(), body);
+        Assert.DoesNotContain(store.ForeignAccount.SupabaseUserId.ToString(), body);
+        Assert.DoesNotContain("Exception", body);
+        if (wrongAccount) Assert.Equal(0, store.PreferenceCalls);
+    }
+
     private static void Register(IServiceCollection services, Store store)
     {
         services.Replace(ServiceDescriptor.Singleton<IAccountRepository>(store));
@@ -124,19 +146,27 @@ public sealed class LanguagePreferenceEndpointTests
         internal readonly Account Account = Account.Create(AuthenticationFactory.Subject, DateTimeOffset.UtcNow);
         internal readonly Dictionary<Guid, AccountLanguagePreference> Preferences = new();
         internal bool AccountExists = true;
+        internal bool WrongAccount, ForeignPreference;
+        internal int PreferenceCalls;
+        internal readonly Account ForeignAccount = Account.Create(Guid.NewGuid(), DateTimeOffset.UtcNow);
         internal int Calls;
         public Task<Account?> FindBySubjectAsync(Guid subject, CancellationToken cancellationToken = default)
         {
             Calls++;
-            return Task.FromResult<Account?>(AccountExists && subject == AuthenticationFactory.Subject ? Account : null);
+            return Task.FromResult<Account?>(WrongAccount ? ForeignAccount : AccountExists && subject == AuthenticationFactory.Subject ? Account : null);
         }
         public Task<Account> GetOrCreateAsync(Guid subject, DateTimeOffset now, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("Unexpected account initialization.");
-        public Task<AccountLanguagePreference?> FindAsync(Guid accountId, CancellationToken cancellationToken = default) =>
-            Task.FromResult(Preferences.GetValueOrDefault(accountId));
+        public Task<AccountLanguagePreference?> FindAsync(Guid accountId, CancellationToken cancellationToken = default)
+        {
+            PreferenceCalls++;
+            return Task.FromResult(ForeignPreference ? AccountLanguagePreference.Create(ForeignAccount.Id, "si", DateTimeOffset.UtcNow) : Preferences.GetValueOrDefault(accountId));
+        }
         public Task<AccountLanguagePreference> WriteAsync(Guid accountId, string language, bool initializeOnly,
             DateTimeOffset now, CancellationToken cancellationToken = default)
         {
+            PreferenceCalls++;
+            if (ForeignPreference) return Task.FromResult(AccountLanguagePreference.Create(ForeignAccount.Id, "si", now));
             if (!Preferences.TryGetValue(accountId, out var existing) || (!initializeOnly && existing.Language != language))
                 Preferences[accountId] = AccountLanguagePreference.Create(accountId, language, now);
             return Task.FromResult(Preferences[accountId]);
