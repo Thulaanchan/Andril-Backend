@@ -1,3 +1,4 @@
+using Andril.Common.Accounts;
 using Andril.Common.Accounts.Profiles;
 using Andril.Persistence.DbContexts;
 using Andril.Shared.Authentication;
@@ -15,7 +16,7 @@ public sealed class PostgresSocialRelationshipTransactionRepository(
     AccountsDbContext accounts,
     DbContextOptions<SocialDbContext> socialOptions,
     ICurrentUser user,
-    string runtimeRole) : ISocialRelationshipTransactionRepository
+    string runtimeRole) : ISocialRelationshipTransactionRepository, ISocialRelationshipListRepository
 {
     private const string Savepoint = "andril_social_relationship";
 
@@ -135,11 +136,80 @@ public sealed class PostgresSocialRelationshipTransactionRepository(
     private static SocialRelationshipState OwnInterestState(bool isPositive) =>
         isPositive ? SocialRelationshipState.PendingUnilateral : SocialRelationshipState.Passed;
 
-    private async Task<T> ExecuteAsync<T>(SocialProfilePairKey pair, Guid actor,
+    public Task<IReadOnlyList<SocialRelationshipListEntry>> ListAsync(Guid ownerProfileId,
+        SocialRelationshipList list, SocialRelationshipListAnchor? before, int pageSize,
+        CancellationToken cancellationToken = default)
+    {
+        if (pageSize is < 1 or > ISocialRelationshipListRepository.MaximumPageSize)
+            throw new ArgumentOutOfRangeException(nameof(pageSize));
+        if (before is { } anchor && (anchor.RecordedAtUtc.Kind != DateTimeKind.Utc || anchor.PeerProfileId == Guid.Empty))
+            throw new ArgumentException("Invalid page cursor.", nameof(before));
+
+        return ExecuteAuthorizedAsync<IReadOnlyList<SocialRelationshipListEntry>>(ownerProfileId, async (db, token) =>
+        {
+            var ownerEligible = await db.Database.SqlQuery<bool>($"""
+                SELECT EXISTS (SELECT 1 FROM andril_social.read_social_matching_evidence({ownerProfileId}, {ownerProfileId}, 1)) AS "Value"
+                """).SingleAsync(token);
+            if (!ownerEligible) throw new ProfileAccessDeniedException();
+
+            var hasCursor = before.HasValue;
+            var time = before?.RecordedAtUtc ?? DateTime.UnixEpoch;
+            var peer = before?.PeerProfileId ?? Guid.Empty;
+            var limit = pageSize + 1;
+            FormattableString query = list switch
+            {
+                SocialRelationshipList.SentLikes => $"""
+                    SELECT interest.target_profile_id AS "PeerProfileId", evidence.profile_name AS "DisplayName",
+                        interest.recorded_at_utc AS "RecordedAtUtc", NULL::uuid AS "MatchId"
+                    FROM andril_social.social_directional_interests interest
+                    CROSS JOIN LATERAL andril_social.read_social_matching_evidence({ownerProfileId}, interest.target_profile_id, 1) evidence
+                    WHERE interest.actor_profile_id = {ownerProfileId} AND interest.module = 'social' AND interest.is_positive
+                        AND (NOT {hasCursor} OR (interest.recorded_at_utc, interest.target_profile_id) < ({time}, {peer}))
+                    ORDER BY interest.recorded_at_utc DESC, interest.target_profile_id DESC
+                    LIMIT {limit}
+                    """,
+                SocialRelationshipList.MutualConnections => $"""
+                    SELECT peer.profile_id AS "PeerProfileId", evidence.profile_name AS "DisplayName",
+                        matched.created_at_utc AS "RecordedAtUtc", matched.id AS "MatchId"
+                    FROM andril_social.social_matches matched
+                    CROSS JOIN LATERAL (SELECT CASE WHEN matched.first_profile_id = {ownerProfileId}
+                        THEN matched.second_profile_id ELSE matched.first_profile_id END AS profile_id) peer
+                    CROSS JOIN LATERAL andril_social.read_social_matching_evidence({ownerProfileId}, peer.profile_id, 1) evidence
+                    WHERE matched.module = 'social' AND matched.state = 'active' AND matched.revoked_at_utc IS NULL
+                        AND {ownerProfileId} IN (matched.first_profile_id, matched.second_profile_id)
+                        AND (NOT {hasCursor} OR (matched.created_at_utc, peer.profile_id) < ({time}, {peer}))
+                    ORDER BY matched.created_at_utc DESC, peer.profile_id DESC
+                    LIMIT {limit}
+                    """,
+                _ => throw new ArgumentOutOfRangeException(nameof(list))
+            };
+            return await db.Database.SqlQuery<SocialRelationshipListEntry>(query).ToArrayAsync(token);
+        }, cancellationToken);
+    }
+
+    private Task<T> ExecuteAsync<T>(SocialProfilePairKey pair, Guid actor,
         Func<SocialDbContext, Guid, CancellationToken, Task<T>> action, CancellationToken token)
     {
+        if (pair is null || !pair.Contains(actor)) throw new ProfileAccessDeniedException();
+        return ExecuteAuthorizedAsync(actor, async (db, ct) =>
+        {
+            var target = pair.GetOtherProfileId(actor);
+            var standing = await db.Database.SqlQuery<string>($"""
+                SELECT decision AS "Value" FROM andril_social.social_safety_decision({actor}, {target})
+                """).SingleAsync(ct);
+            if (standing != "allowed") throw new ProfileAccessDeniedException();
+
+            var pairIdentity = $"social-relationship:{pair.FirstProfileId:D}:{pair.SecondProfileId:D}";
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({pairIdentity}, 0))", ct);
+            return await action(db, target, ct);
+        }, token);
+    }
+
+    private async Task<T> ExecuteAuthorizedAsync<T>(Guid actor, Func<SocialDbContext, CancellationToken, Task<T>> action,
+        CancellationToken token)
+    {
         token.ThrowIfCancellationRequested();
-        if (pair is null || !pair.Contains(actor) || !user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty)
+        if (!user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty)
             throw new ProfileAccessDeniedException();
         if (string.IsNullOrWhiteSpace(runtimeRole)) throw new InvalidOperationException("The Social relationship database role is required.");
         if (accounts.Database.CurrentTransaction is not { SupportsSavepoints: true } transaction)
@@ -173,20 +243,12 @@ public sealed class PostgresSocialRelationshipTransactionRepository(
                             AND pg_has_role(current_user, relation.relowner, 'MEMBER'))) AS "Value"
                 FROM pg_roles WHERE rolname = current_user
                 """).SingleAsync(token);
-            if (!restricted) throw new InvalidOperationException("The Social relationship database role must be subject to row security.");
+            if (!restricted) throw new AccountStoreUnavailableException();
             if (!await db.Database.SqlQuery<bool>($"SELECT andril_social.questionnaire_owner_visible({actor}) AS \"Value\"").SingleAsync(token))
                 throw new ProfileAccessDeniedException();
 
-            var target = pair.GetOtherProfileId(actor);
             await db.Database.ExecuteSqlRawAsync("SELECT andril_social.social_safety_lock()", token);
-            var standing = await db.Database.SqlQuery<string>($"""
-                SELECT decision AS "Value" FROM andril_social.social_safety_decision({actor}, {target})
-                """).SingleAsync(token);
-            if (standing != "allowed") throw new ProfileAccessDeniedException();
-
-            var pairIdentity = $"social-relationship:{pair.FirstProfileId:D}:{pair.SecondProfileId:D}";
-            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({pairIdentity}, 0))", token);
-            var result = await action(db, target, token);
+            var result = await action(db, token);
             await db.Database.ExecuteSqlInterpolatedAsync($"""
                 SELECT set_config('role', {previous.Role}, true), set_config('andril.subject', {previous.Subject}, true),
                     set_config('andril.account', {previous.Account}, true), set_config('andril.module', {previous.Module}, true)

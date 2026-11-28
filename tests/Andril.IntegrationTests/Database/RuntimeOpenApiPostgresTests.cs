@@ -18,7 +18,7 @@ public sealed partial class SocialMatchingHttpPostgresTests
         var methods = new HashSet<string>(StringComparer.Ordinal) { "get", "post", "put", "patch", "delete" };
         var contracts = new[] { "social-questionnaire.v1.yaml", "social-matching.v1.yaml", "shared-groups.v1.yaml" };
         var published = contracts.SelectMany(ReadPublishedOperations).Order(StringComparer.Ordinal).ToArray();
-        Assert.Equal(35, published.Length);
+        Assert.Equal(37, published.Length);
 
         var paths = document.GetProperty("paths").EnumerateObject().ToArray();
         var enabled = paths.Where(path => path.Name.StartsWith("/api/v1/social/", StringComparison.Ordinal)
