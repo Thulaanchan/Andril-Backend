@@ -432,6 +432,9 @@
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.TrustedRead_UsesScopedPostgresRowsAndReauthorizesContinuation",
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.MetadataHttp_PostgresScopesDetailAndTraversesProtectedContinuation",
     "Andril.IntegrationTests.Database.GalleryPersistenceTests.PrivateDeliveryHttp_PostgresAdmitsOnlyOwnedLivePrivateBinding",
-    "Andril.IntegrationTests.Database.GalleryPersistenceTests.LogicalDelete_PostgresPreservesCoverAndRollsBackOnRevocation"
+    "Andril.IntegrationTests.Database.GalleryPersistenceTests.LogicalDelete_PostgresPreservesCoverAndRollsBackOnRevocation",
+    "Andril.IntegrationTests.Database.GalleryPersistenceTests.UploadStore_PostgresUpgradePreservesLegacyAndRollbackDropsReceipts",
+    "Andril.IntegrationTests.Database.GalleryPersistenceTests.UploadStore_PostgresScopesConcurrentReservationAndCompletion",
+    "Andril.IntegrationTests.Database.GalleryPersistenceTests.UploadStore_PostgresRollsBackOnRevokeAndReplaysAfterLostCommitReply"
   ]
 }
