@@ -11,16 +11,18 @@ public static class SocialMatchingEndpointExtensions
     {
         if (!configuration.GetValue<bool>("SocialMatching:EnablePersistence")) return mvc;
         mvc.Services.AddVerifiedSocialMatchingPersistence(configuration);
-        mvc.PartManager.FeatureProviders.Add(new MatchingControllers(configuration.GetValue<bool>("SocialMatching:EnableDistanceDiscovery")));
+        mvc.PartManager.FeatureProviders.Add(new MatchingControllers(configuration.GetValue<bool>("SocialMatching:EnableDistanceDiscovery"),
+            configuration.GetValue<bool>("SocialMatching:EnableInterestSelections")));
         return mvc;
     }
 
-    private sealed class MatchingControllers(bool distanceDiscovery) : IApplicationFeatureProvider<ControllerFeature>
+    private sealed class MatchingControllers(bool distanceDiscovery, bool interestSelections) : IApplicationFeatureProvider<ControllerFeature>
     {
         public void PopulateFeature(IEnumerable<ApplicationPart> parts, ControllerFeature feature)
         {
             Add(typeof(SocialRelationshipsController));
             Add(typeof(SocialMatchingSettingsController));
+            if (interestSelections) Add(typeof(SocialInterestSelectionsController));
             if (distanceDiscovery)
             {
                 Add(typeof(SocialExploreController));
