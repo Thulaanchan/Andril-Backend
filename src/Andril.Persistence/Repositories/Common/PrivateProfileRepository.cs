@@ -42,7 +42,8 @@ public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivatePro
                 lockAccount ? IsolationLevel.ReadCommitted : IsolationLevel.RepeatableRead, ct);
             if (lockAccount)
             {
-                var account = await db.Accounts.FromSqlInterpolated($"SELECT * FROM andril_identity.accounts WHERE id = {accountId} FOR UPDATE")
+                // Serialize account writers while allowing canonical entitlement foreign-key checks.
+                var account = await db.Accounts.FromSqlInterpolated($"SELECT * FROM andril_identity.accounts WHERE id = {accountId} FOR NO KEY UPDATE")
                     .AsNoTracking().SingleOrDefaultAsync(ct);
                 if (account is null) throw new StarterModuleAccountMissingException();
             }
