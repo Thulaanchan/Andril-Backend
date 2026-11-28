@@ -48,7 +48,10 @@ public static class SocialMatchingRuntimeExtensions
             provider.GetRequiredService<AccountsDbContext>(), provider.GetRequiredService<DbContextOptions<SocialDbContext>>(),
             provider.GetRequiredService<ICurrentUser>(), runtimeRole));
         services.TryAddScoped<PostgresSocialProfileEvidenceRepository>();
-        services.TryAddScoped<PostgresSocialMatchingEvidenceReader>();
+        var interestSelections = configuration.GetValue<bool>("SocialMatching:EnableInterestSelections");
+        if (interestSelections) services.TryAddScoped<PostgresSocialInterestRepository>();
+        services.TryAddScoped(provider => new PostgresSocialMatchingEvidenceReader(
+            provider.GetRequiredService<PostgresSocialQuestionnaireLifecycleRepository>(), interestSelections));
         services.TryAddScoped(provider => new PostgresSocialMatchingEvidenceProvider(provider.GetRequiredService<PostgresSocialMatchingEvidenceReader>(),
             provider.GetService<SocialLocationSettings>(), provider.GetRequiredService<TimeProvider>()));
         services.TryAddScoped<ISocialDiscoveryEvidenceProvider>(provider => provider.GetRequiredService<PostgresSocialMatchingEvidenceProvider>());
@@ -60,12 +63,12 @@ public static class SocialMatchingRuntimeExtensions
             provider.GetRequiredService<ICurrentUser>(), provider.GetRequiredService<IOnboardingIdentity>(), runtimeRole));
         services.TryAddScoped<ISocialDiscoveryAccessService, SocialDiscoveryAccessService>();
         services.AddSocialRelationshipServices();
-        services.AddSingleton(new MatchingRuntime(runtimeRole, distances));
+        services.AddSingleton(new MatchingRuntime(runtimeRole, distances, interestSelections));
         services.AddHostedService<MatchingStartupCheck>();
         return services;
     }
 
-    private sealed record MatchingRuntime(string Role, bool Distances);
+    private sealed record MatchingRuntime(string Role, bool Distances, bool Interests);
 
     private sealed class MatchingStartupCheck(IServiceScopeFactory serviceScopes, MatchingRuntime runtime) : IHostedService
     {
@@ -106,6 +109,18 @@ public static class SocialMatchingRuntimeExtensions
                             JOIN pg_class relation ON relation.relnamespace = schema.oid AND relation.relname = split_part(entry.name, '.', 2)
                             WHERE has_any_column_privilege(relation.oid, 'SELECT,INSERT,UPDATE,REFERENCES')
                                 OR has_table_privilege(relation.oid, 'DELETE,TRUNCATE'))
+                        AND (NOT {runtime.Interests} OR (
+                            NOT EXISTS (SELECT FROM unnest(ARRAY['andril_social.read_social_interest_catalogue(uuid)',
+                                'andril_social.read_own_social_interests(uuid)', 'andril_social.replace_own_social_interests(uuid,uuid[])',
+                                'andril_social.read_social_matching_interests(uuid,uuid,integer)']) signature
+                                WHERE NOT coalesce(has_function_privilege(to_regprocedure(signature),'EXECUTE'), false))
+                            AND NOT coalesce(has_function_privilege(to_regprocedure('andril_social.provision_social_interest(uuid,text,boolean)'), 'EXECUTE'), false)
+                            AND NOT EXISTS (SELECT FROM unnest(ARRAY['social_interest_catalogue',
+                                'social_interest_selection_state', 'social_interest_selections']) entry(table_name)
+                                LEFT JOIN pg_class r ON r.relnamespace = to_regnamespace('andril_social') AND r.relname = entry.table_name
+                                WHERE r.oid IS NULL OR NOT row_security_active(r.oid) OR pg_has_role(current_user, r.relowner, 'MEMBER')
+                                    OR has_any_column_privilege(r.oid, 'SELECT,INSERT,UPDATE,REFERENCES')
+                                    OR has_table_privilege(r.oid, 'DELETE,TRUNCATE'))))
                         AND has_table_privilege('andril_social.social_directional_interests', 'SELECT')
                         AND has_table_privilege('andril_social.social_directional_interests', 'INSERT')
                         AND has_column_privilege('andril_social.social_directional_interests', 'is_positive', 'UPDATE')

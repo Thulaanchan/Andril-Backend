@@ -1,17 +1,18 @@
 using System.Text.Json.Serialization;
+using Andril.Common.Accounts;
 using Microsoft.EntityFrameworkCore;
 
 namespace Andril.Persistence.Repositories.Social;
 
 /// <summary>Reads only the standing and evidence visible to the verified Social caller.</summary>
-public sealed class PostgresSocialMatchingEvidenceReader(PostgresSocialQuestionnaireLifecycleRepository scope)
+public sealed class PostgresSocialMatchingEvidenceReader(PostgresSocialQuestionnaireLifecycleRepository scope, bool includeInterests = false)
 {
     public Task<List<SocialMatchingEvidenceRecord>> ReadAsync(Guid caller, Guid? target, int maximum, CancellationToken token) =>
         scope.InAuthorizedTransactionAsync(caller, async (db, ct) =>
         {
             // Keep the evidence coherent through the enclosing Accounts authorization transaction and its result release.
             await db.Database.ExecuteSqlRawAsync("SELECT andril_social.social_safety_lock()", ct);
-            return await db.Database.SqlQuery<SocialMatchingEvidenceRecord>($"""
+            var rows = await db.Database.SqlQuery<SocialMatchingEvidenceRecord>($"""
                 SELECT profile_id AS "ProfileId", profile_name AS "ProfileName", date_of_birth AS "DateOfBirth", gender AS "Gender",
                     demographics_revision AS "DemographicsRevision", preferences_revision AS "PreferencesRevision", discoverable AS "Discoverable",
                     show_me AS "ShowMe", min_age AS "MinAge", max_age AS "MaxAge", min_distance AS "MinDistance", max_distance AS "MaxDistance",
@@ -23,7 +24,19 @@ public sealed class PostgresSocialMatchingEvidenceReader(PostgresSocialQuestionn
                     lifecycle_revision AS "LifecycleRevision"
                 FROM andril_social.read_social_matching_evidence({caller}, {target}, {maximum})
                 """).ToListAsync(ct);
+            if (!includeInterests || rows.Count == 0) return rows;
+
+            var interests = await db.Database.SqlQuery<InterestEvidence>($"""
+                SELECT profile_id AS "ProfileId", interest_ids AS "InterestIds", revision AS "Revision"
+                FROM andril_social.read_social_matching_interests({caller}, {target}, {maximum})
+                """).ToDictionaryAsync(row => row.ProfileId, ct);
+            if (interests.Count != rows.Count || rows.Any(row => !interests.ContainsKey(row.ProfileId)))
+                throw new AccountStoreUnavailableException();
+            return rows.Select(row => row with { Interests = interests[row.ProfileId].InterestIds,
+                InterestsRevision = interests[row.ProfileId].Revision }).ToList();
         }, token);
+
+    private sealed record InterestEvidence(Guid ProfileId, Guid[]? InterestIds, long Revision);
 }
 
 public sealed record SocialMatchingEvidenceRecord(
@@ -55,5 +68,7 @@ public sealed record SocialMatchingEvidenceRecord(
     [property: JsonIgnore] long SafetyRevision,
     [property: JsonIgnore] long LifecycleRevision)
 {
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped, JsonIgnore] public Guid[]? Interests { get; init; }
+    [System.ComponentModel.DataAnnotations.Schema.NotMapped, JsonIgnore] public long InterestsRevision { get; init; }
     public override string ToString() => "SocialMatchingEvidenceRecord [private]";
 }

@@ -22,7 +22,7 @@ using QuestionnaireHarness = Andril.IntegrationTests.Database.SocialQuestionnair
 
 namespace Andril.IntegrationTests.Database;
 
-public sealed class SocialMatchingHttpPostgresTests
+public sealed partial class SocialMatchingHttpPostgresTests
 {
     private const string Social = "/api/v1/social";
     private const string Explore = Social + "/explore";
@@ -306,13 +306,14 @@ public sealed class SocialMatchingHttpPostgresTests
         return client;
     }
 
-    private sealed class Host(SocialLifecycleDatabase database, bool enabled = true, PauseInterest? pause = null, bool questionnaire = false)
+    private sealed class Host(SocialLifecycleDatabase database, bool enabled = true, PauseInterest? pause = null, bool questionnaire = false, bool interestSelections = false)
         : WebApplicationFactory<Program>
     {
         protected override IHost CreateHost(IHostBuilder builder)
         {
             var settings = SocialMatchingRuntimeCompositionTests.Settings(database);
             settings["SocialMatching:EnablePersistence"] = enabled.ToString();
+            settings["SocialMatching:EnableInterestSelections"] = interestSelections.ToString();
             settings["SocialQuestionnaire:EnablePersistence"] = questionnaire.ToString();
             settings["SocialQuestionnaire:RuntimeRole"] = database.Role;
             foreach (var (name, version) in new[] { ("Terms", "fixture-terms-v1"), ("Privacy", "fixture-privacy-v1"), ("CommunityGuidelines", "fixture-community-v1") })

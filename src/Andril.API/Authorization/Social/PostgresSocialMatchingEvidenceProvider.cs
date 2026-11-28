@@ -70,7 +70,7 @@ public sealed class PostgresSocialMatchingEvidenceProvider(PostgresSocialMatchin
             Enum.Parse<PlanningPreference>(row.PartnerPlanning!));
         var answers = row.AnswersJson is null ? null : JsonSerializer.Deserialize<QuestionnaireAnswer[]>(row.AnswersJson);
         return SocialScoringProfileEvidence.CreateAuthoritativeDiscovery(row.ProfileId, Age(row), row.Gender, preferences,
-            isOptedIn: true, isActive: true, row.Discoverable, confirmedLanguages: row.Languages, confirmedConnectionGoals: row.Goals,
+            isOptedIn: true, isActive: true, row.Discoverable, confirmedLanguages: row.Languages, confirmedConnectionGoals: row.Goals, confirmedSocialInterestIds: row.Interests,
             questionnaireAnswers: answers, questionnaireVersion: row.QuestionnaireVersion,
             questionnaireRevision: row.ResponseId?.ToString("D"), partnerPreferences: partner);
     }
@@ -79,6 +79,6 @@ public sealed class PostgresSocialMatchingEvidenceProvider(PostgresSocialMatchin
         questionnaireRevision: row.QuestionnaireRevision, archetypeConfirmationRevision: 0,
         partnerPreferencesRevision: row.PreferencesRevision, demographicsRevision: row.DemographicsRevision,
         locationDistanceRevision: row.LocationRevision, languagesRevision: row.PreferencesRevision,
-        connectionGoalsRevision: row.PreferencesRevision, socialInterestsRevision: 0, blockingRevision: row.SafetyRevision,
+        connectionGoalsRevision: row.PreferencesRevision, socialInterestsRevision: row.InterestsRevision, blockingRevision: row.SafetyRevision,
         unmatchingRevision: row.LifecycleRevision, committedAtUtc: clock.GetUtcNow());
 }
