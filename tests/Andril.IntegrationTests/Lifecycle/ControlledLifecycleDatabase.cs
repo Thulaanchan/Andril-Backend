@@ -237,14 +237,16 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
         NpgsqlConnection.ClearAllPools();
         if (created)
         {
-            try
-            {
-                await Admin($"DROP DATABASE {name} WITH (FORCE)", true);
-            }
-            catch (PostgresException)
-            {
-                await Admin($"DROP DATABASE IF EXISTS {name} WITH (FORCE)");
-            }
+            // Pool closure can race with backend shutdown. The migration owner cannot
+            // signal another role's remaining connections. Use the already approved
+            // SET membership to close only this database's own runtime sessions;
+            // the positive timeout waits for termination before the owner drops it.
+            await Admin($"""
+                SELECT pg_terminate_backend(pid, 5000)
+                FROM pg_stat_activity
+                WHERE datname = '{name}' AND usename = '{runtimeRole}' AND pid <> pg_backend_pid()
+                """, asRuntime: true);
+            await Admin($"DROP DATABASE {name} WITH (FORCE)", asMigration: true);
             created = false;
         }
         await Admin($"DROP ROLE IF EXISTS {runtimeRole}");

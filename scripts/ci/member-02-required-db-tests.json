@@ -90,7 +90,8 @@
     "Andril.IntegrationTests.Lifecycle.Phase3BAcceptanceTests.HttpReactivationReturnsOnlyStateAndUnavailableAuthorityNeverFallsBack",
     "Andril.IntegrationTests.Database.CanonicalEntitlementDeploymentPostgresTests.IntegratedWriterResolvesTheSubjectAndRejectsUnprivilegedAndStaleTransitions",
     "Andril.IntegrationTests.Database.CanonicalEntitlementDeploymentPostgresTests.EconomyMigrationAndRollbackPreserveTheCanonicalEntitlementAuthority",
-    "Andril.IntegrationTests.Database.AccountPersistenceTests.AccountServicePreservesOwnedIdentityAcrossConcurrentInitializationAndFreshReads"
+    "Andril.IntegrationTests.Database.AccountPersistenceTests.AccountServicePreservesOwnedIdentityAcrossConcurrentInitializationAndFreshReads",
+    "Andril.IntegrationTests.Lifecycle.DeactivationPersistenceTests.FixtureCleanupTerminatesOnlyItsOwnRuntimeSessionsWithoutPrivilegeExpansion"
   ],
   "offlineOnlySkips": [
     "Andril.IntegrationTests.Communication.Calls.LiveKitSandboxTests.D12ActualSandboxRoomTokensInspectionAndCleanup",
