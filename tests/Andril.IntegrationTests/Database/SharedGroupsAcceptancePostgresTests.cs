@@ -121,6 +121,37 @@ public sealed class SharedGroupsAcceptancePostgresTests
     }
 
     [LocalPostgresFact]
+    public async Task TheVerifiedProvisionerOrdersConcurrentGroupCreationAgainstTheCommittedGrant()
+    {
+        await using var fixture = await SharedGroupsDatabase.CreateAsync();
+        var owner = await fixture.SeedAsync("hobbies");
+        for (var index = 0; index < 5; index++)
+            await fixture.CreateGroupAsync(owner, Club, new("Before authorized grant", null, false));
+
+        await using var writer = new Npgsql.NpgsqlConnection(fixture.ProvisioningConnection);
+        await writer.OpenAsync();
+        await using var transaction = await writer.BeginTransactionAsync();
+        await CanonicalEntitlementDeploymentPostgresTests.ApplyAsync(fixture, owner.Subject, Guid.NewGuid(), null,
+            1, DateTimeOffset.UtcNow.AddDays(1), transactionConnection: writer, existingTransaction: transaction);
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var creation = fixture.WithEntriesAsync(owner, entry =>
+            entry.CreateAsync(Club, new("After authorized grant", null, false), deadline.Token));
+        await using var observer = fixture.Open();
+        await observer.Database.OpenConnectionAsync(deadline.Token);
+        while (!await observer.Database.SqlQuery<bool>($"""
+            SELECT EXISTS (SELECT FROM pg_stat_activity active WHERE active.datname = current_database()
+                AND {writer.ProcessID} = ANY(pg_blocking_pids(active.pid))) AS "Value"
+            """).SingleAsync(deadline.Token))
+        {
+            if (creation.IsCompleted) throw new InvalidOperationException("Creation finished before the verified entitlement transition committed.");
+            await Task.Delay(20, deadline.Token);
+        }
+        await transaction.CommitAsync(deadline.Token);
+        Assert.Equal("After authorized grant", (await creation).Name);
+        Assert.Equal(6L, await fixture.CountAsync("groups"));
+    }
+
+    [LocalPostgresFact]
     public async Task ExistingSocialSafetyWriterSuppressesZoneDiscoveryAndPendingAdmission()
     {
         await using var fixture = await SharedGroupsDatabase.CreateAsync();

@@ -85,6 +85,7 @@ public static class SharedGroupsRuntimeExtensions
 
                 await using var transaction = await groups.Database.BeginTransactionAsync(token);
                 await VerifyAuthorityAsync(groups, token);
+                await VerifyEntitlementInstallationAsync(groups, token);
                 await groups.Database.ExecuteSqlInterpolatedAsync($"SELECT set_config('role', {runtime.Role}, true)", token);
                 await VerifyRuntimeAsync(groups, token);
                 await transaction.RollbackAsync(token);
@@ -136,11 +137,54 @@ public static class SharedGroupsRuntimeExtensions
             if (!ready) throw new InvalidOperationException("A selected Shared Groups module lacks its canonical database authority.");
         }
 
+        private static async Task VerifyEntitlementInstallationAsync(GroupsDbContext groups, CancellationToken token)
+        {
+            bool ready = await groups.Database.SqlQueryRaw<bool>("""
+                SELECT EXISTS (
+                    SELECT FROM pg_class entitlement
+                    JOIN pg_class journal ON journal.oid = to_regclass('andril_economy.premium_entitlement_transitions')
+                    JOIN pg_proc apply ON apply.oid = to_regprocedure('andril_economy.apply_subscription_transition(uuid,uuid,timestamptz,integer,timestamptz,text,text)')
+                    JOIN pg_proc revision ON revision.oid = to_regprocedure('andril_economy.subscription_transition_revision(uuid)')
+                    WHERE entitlement.oid = to_regclass('andril_economy.premium_entitlements')
+                        AND entitlement.relrowsecurity AND NOT entitlement.relforcerowsecurity
+                        AND journal.relkind = 'r' AND journal.relrowsecurity AND NOT journal.relforcerowsecurity
+                        AND apply.prosecdef AND revision.prosecdef AND apply.proowner = entitlement.relowner
+                        AND apply.proowner = journal.relowner AND revision.proowner = apply.proowner
+                        AND EXISTS (SELECT FROM pg_constraint constraint_record WHERE constraint_record.conrelid = entitlement.oid
+                            AND constraint_record.conname = 'ck_premium_entitlements_supported_state' AND constraint_record.convalidated)
+                        AND NOT EXISTS (SELECT FROM aclexplode(coalesce(apply.proacl, acldefault('f', apply.proowner)))
+                            WHERE grantee = 0 AND privilege_type = 'EXECUTE')
+                        AND NOT EXISTS (SELECT FROM aclexplode(coalesce(revision.proacl, acldefault('f', revision.proowner)))
+                            WHERE grantee = 0 AND privilege_type = 'EXECUTE')
+                        AND NOT EXISTS (SELECT FROM (VALUES (entitlement.relacl, entitlement.relowner), (journal.relacl, journal.relowner))
+                            AS protected(acl, owner) CROSS JOIN LATERAL aclexplode(coalesce(protected.acl, acldefault('r', protected.owner)))
+                            WHERE grantee <> protected.owner AND privilege_type IN ('INSERT', 'UPDATE', 'DELETE', 'TRUNCATE'))
+                        AND NOT EXISTS (SELECT FROM pg_attribute attribute CROSS JOIN LATERAL aclexplode(attribute.attacl) grant_entry
+                            WHERE attribute.attrelid IN (entitlement.oid, journal.oid) AND NOT attribute.attisdropped
+                                AND grant_entry.grantee <> entitlement.relowner AND grant_entry.privilege_type IN ('INSERT', 'UPDATE'))
+                        AND EXISTS (SELECT FROM aclexplode(apply.proacl) grant_entry JOIN pg_roles provisioner ON provisioner.oid = grant_entry.grantee
+                            WHERE grant_entry.privilege_type = 'EXECUTE' AND provisioner.rolcanlogin AND NOT provisioner.rolsuper
+                                AND NOT provisioner.rolbypassrls AND NOT provisioner.rolcreaterole AND NOT provisioner.rolcreatedb
+                                AND NOT pg_has_role(provisioner.oid, apply.proowner, 'MEMBER')
+                                AND has_schema_privilege(provisioner.oid, apply.pronamespace, 'USAGE')
+                                AND has_function_privilege(provisioner.oid, revision.oid, 'EXECUTE')
+                                AND NOT has_any_column_privilege(provisioner.oid, entitlement.oid, 'SELECT,INSERT,UPDATE,REFERENCES')
+                                AND NOT has_any_column_privilege(provisioner.oid, journal.oid, 'SELECT,INSERT,UPDATE,REFERENCES'))
+                ) AS "Value"
+                """).SingleAsync(token);
+            if (!ready) throw new InvalidOperationException("Shared Groups requires the restricted canonical entitlement installation.");
+        }
+
         private static async Task VerifyRuntimeAsync(GroupsDbContext groups, CancellationToken token)
         {
             bool ready = await groups.Database.SqlQueryRaw<bool>("""
                 SELECT (current_user <> session_user AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreatedb AND NOT rolcreaterole
                     AND has_schema_privilege('andril_groups', 'USAGE') AND NOT has_schema_privilege('andril_groups', 'CREATE')
+                    AND NOT EXISTS (SELECT FROM pg_namespace schema WHERE schema.nspname = 'andril_economy'
+                        AND (has_schema_privilege(schema.oid, 'CREATE') OR EXISTS (SELECT FROM pg_proc authority
+                            WHERE authority.pronamespace = schema.oid
+                                AND authority.proname IN ('apply_subscription_transition', 'subscription_transition_revision')
+                                AND has_function_privilege(authority.oid, 'EXECUTE'))))
                     AND NOT EXISTS (SELECT FROM unnest(ARRAY[
                         'andril_groups.owns_current_profile(uuid,text)', 'andril_groups.read_group_details(uuid,text,uuid)',
                         'andril_groups.create_group(uuid,text,integer,uuid,text,text,text,boolean)',
@@ -161,7 +205,7 @@ public static class SharedGroupsRuntimeExtensions
                             OR has_table_privilege(relation.oid, 'DELETE,TRUNCATE,TRIGGER'))
                     AND NOT EXISTS (SELECT FROM unnest(ARRAY[
                         'andril_identity.private_module_profiles', 'andril_identity.account_demographics', 'andril_identity.accounts',
-                        'andril_economy.premium_entitlements', 'andril_social.social_profile_blocks', 'andril_social.social_profile_restrictions'
+                        'andril_economy.premium_entitlements', 'andril_economy.premium_entitlement_transitions', 'andril_social.social_profile_blocks', 'andril_social.social_profile_restrictions'
                     ]) AS tables(name)
                         JOIN pg_namespace schema ON schema.nspname = split_part(tables.name, '.', 1)
                         JOIN pg_class relation ON relation.relnamespace = schema.oid AND relation.relname = split_part(tables.name, '.', 2)
