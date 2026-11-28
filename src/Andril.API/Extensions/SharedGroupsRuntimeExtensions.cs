@@ -101,7 +101,7 @@ public static class SharedGroupsRuntimeExtensions
             bool ready = await groups.Database.SqlQuery<bool>($"""
                 SELECT NOT EXISTS (
                     SELECT FROM (VALUES
-                        ('andril_groups.club_limit(uuid)', 'andril_economy.premium_entitlements', {runtime.Modules.Contains("hobbies")}),
+                        ('andril_groups.creator_entitlement(uuid,text)', 'andril_economy.premium_entitlements', true),
                         ('andril_groups.pair_is_blocked(uuid,uuid,text)', 'andril_social.social_profile_blocks', {runtime.Modules.Contains("social")}),
                         ('andril_groups.profile_is_restricted(uuid,text)', 'andril_social.social_profile_restrictions', {runtime.Modules.Contains("social")})
                     ) AS dependencies(signature, relation_name, required)
@@ -147,7 +147,7 @@ public static class SharedGroupsRuntimeExtensions
                         'andril_groups.update_group(uuid,text,uuid,text,text,text,boolean,bigint)',
                         'andril_groups.mutate_membership(uuid,text,uuid,uuid,text,bigint)', 'andril_groups.write_authority(text,uuid,text,boolean)',
                         'andril_groups.read_profile_evidence(uuid,text,uuid)', 'andril_groups.read_participation_evidence(uuid,text,uuid)',
-                        'andril_groups.read_club_capacity(uuid,uuid)', 'andril_groups.read_discovery(uuid,text,integer,text,integer)',
+                        'andril_groups.read_group_capacity(uuid,uuid)', 'andril_groups.read_discovery(uuid,text,integer,text,integer)',
                         'andril_groups.read_own_participation(uuid,text,uuid)', 'andril_groups.read_host_requests(uuid,text,uuid,uuid,integer)'
                     ]) AS functions(signature) WHERE NOT coalesce(has_function_privilege(to_regprocedure(signature), 'EXECUTE'), false))
                     AND NOT EXISTS (SELECT FROM unnest(ARRAY[

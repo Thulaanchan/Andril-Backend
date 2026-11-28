@@ -71,9 +71,15 @@ public sealed class SharedGroupsManagementPostgresTests
         var settings = new GroupSettings("Private group", null, false);
         await Assert.ThrowsAsync<GroupAuthorityUnavailableException>(() => fixture.CreateGroupAsync(hobbies,
             new GroupModuleScope("hobbies", GroupKind.Club), settings));
-        var zone = await fixture.CreateGroupAsync(social, new GroupModuleScope("social", GroupKind.Zone), settings);
+        var scope = new GroupModuleScope("social", GroupKind.Zone);
+        await Assert.ThrowsAsync<GroupAuthorityUnavailableException>(() => fixture.CreateGroupAsync(social, scope, settings));
+        Assert.Equal(0L, await fixture.CountAsync("groups"));
+
+        await using var configured = await SharedGroupsDatabase.CreateAsync();
+        var configuredSocial = await configured.SeedAsync("social");
+        var zone = await configured.CreateGroupAsync(configuredSocial, scope, settings);
         Assert.Equal("private", zone.Visibility);
-        Assert.Equal(1L, await fixture.CountAsync("groups"));
+        Assert.Equal(1L, await configured.CountAsync("groups"));
     }
 }
 
@@ -122,7 +128,7 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
                     andril_groups.update_group(uuid, text, uuid, text, text, text, boolean, bigint),
                     andril_groups.mutate_membership(uuid, text, uuid, uuid, text, bigint),
                     andril_groups.write_authority(text, uuid, text, boolean), andril_groups.read_profile_evidence(uuid, text, uuid),
-                    andril_groups.read_participation_evidence(uuid, text, uuid), andril_groups.read_club_capacity(uuid, uuid),
+                    andril_groups.read_participation_evidence(uuid, text, uuid), andril_groups.read_group_capacity(uuid, uuid),
                     andril_groups.read_discovery(uuid, text, integer, text, integer), andril_groups.read_own_participation(uuid, text, uuid),
                     andril_groups.read_host_requests(uuid, text, uuid, uuid, integer) TO {store.Role};
                 """;
