@@ -1,16 +1,14 @@
-using Andril.Shared.Authentication;
-
 namespace Andril.Economy.Wallet;
 
 public sealed class CoinWalletService(
-    ICurrentUser currentUser,
+    IWalletAccountResolver accountResolver,
     ICoinWalletRepository walletRepository,
     TimeProvider clock)
     : ICoinWalletService
 {
     public async Task<CoinWalletDto> GetMyWalletAsync(CancellationToken cancellationToken = default)
     {
-        var accountId = RequireAuthenticatedAccountId();
+        var accountId = await RequireAccountIdAsync(cancellationToken);
         var wallet = await walletRepository.GetByAccountIdAsync(accountId, cancellationToken);
         if (wallet is null)
         {
@@ -28,7 +26,7 @@ public sealed class CoinWalletService(
         string? referenceId = null,
         CancellationToken cancellationToken = default)
     {
-        var accountId = RequireAuthenticatedAccountId();
+        var accountId = await RequireAccountIdAsync(cancellationToken);
         ValidateTransactionParams(amount, idempotencyKey, reason);
 
         return await walletRepository.ExecuteCreditAsync(
@@ -43,7 +41,7 @@ public sealed class CoinWalletService(
         string? referenceId = null,
         CancellationToken cancellationToken = default)
     {
-        var accountId = RequireAuthenticatedAccountId();
+        var accountId = await RequireAccountIdAsync(cancellationToken);
         ValidateTransactionParams(amount, idempotencyKey, reason);
 
         return await walletRepository.ExecuteDebitAsync(
@@ -57,7 +55,7 @@ public sealed class CoinWalletService(
         string? note = null,
         CancellationToken cancellationToken = default)
     {
-        var senderAccountId = RequireAuthenticatedAccountId();
+        var senderAccountId = await RequireAccountIdAsync(cancellationToken);
         if (recipientAccountId == Guid.Empty)
             throw new InvalidCoinOperationException("Recipient account identifier cannot be empty.");
         if (senderAccountId == recipientAccountId)
@@ -74,7 +72,7 @@ public sealed class CoinWalletService(
         int offset = 0,
         CancellationToken cancellationToken = default)
     {
-        var accountId = RequireAuthenticatedAccountId();
+        var accountId = await RequireAccountIdAsync(cancellationToken);
         if (limit <= 0) limit = 20;
         if (limit > 100) limit = 100;
         if (offset < 0) offset = 0;
@@ -82,11 +80,14 @@ public sealed class CoinWalletService(
         return await walletRepository.GetHistoryAsync(accountId, limit, offset, cancellationToken);
     }
 
-    private Guid RequireAuthenticatedAccountId()
+    private async Task<Guid> RequireAccountIdAsync(CancellationToken cancellationToken)
     {
-        if (!currentUser.IsAuthenticated || currentUser.UserId is not Guid userId || userId == Guid.Empty)
-            throw new InvalidCoinOperationException("Authenticated user identity required.");
-        return userId;
+        cancellationToken.ThrowIfCancellationRequested();
+        var accountId = await accountResolver.ResolveAccountIdAsync(cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (accountId == Guid.Empty)
+            throw new InvalidCoinOperationException("An initialized wallet account is required.");
+        return accountId;
     }
 
     private static void ValidateTransactionParams(long amount, string idempotencyKey, string reason)
