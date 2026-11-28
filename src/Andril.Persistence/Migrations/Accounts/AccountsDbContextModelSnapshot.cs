@@ -701,6 +701,201 @@ namespace Andril.Persistence.Migrations.Accounts
                         .IsRequired()
                         .HasConstraintName("fk_account_module_lifecycles_accounts");
                 });
+
+            modelBuilder.Entity("Andril.Common.Accounts.Profiles.ProfileLocationRecord", b =>
+                {
+                    b.Property<Guid>("ProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("profile_id");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<string>("City")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("city");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("Module")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("module");
+
+                    b.Property<string>("Region")
+                        .HasMaxLength(100)
+                        .HasColumnType("character varying(100)")
+                        .HasColumnName("region");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.HasKey("ProfileId")
+                        .HasName("pk_account_profile_locations");
+
+                    b.HasIndex("AccountId", "Module")
+                        .IsUnique()
+                        .HasDatabaseName("uq_profile_locations_account_module");
+
+                    b.ToTable("account_profile_locations", "andril_identity", t =>
+                        {
+                            t.HasCheckConstraint("ck_profile_location_city_nonempty", "length(trim(city)) > 0");
+                            t.HasCheckConstraint("ck_profile_location_module", "module IN ('learning', 'hobbies', 'social')");
+                            t.HasCheckConstraint("ck_profile_location_profile_id", "profile_id <> '00000000-0000-0000-0000-000000000000'::uuid");
+                            t.HasCheckConstraint("ck_profile_location_timestamps", "updated_at_utc >= created_at_utc");
+                        });
+
+                    b.HasOne("Andril.Common.Accounts.Profiles.PrivateModuleProfile", null)
+                        .WithOne()
+                        .HasForeignKey("Andril.Common.Accounts.Profiles.ProfileLocationRecord", "ProfileId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_profile_locations_profiles");
+                });
+
+            modelBuilder.Entity("Andril.Common.Accounts.Profiles.AdditionalProfilePhotoRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<int>("FileSizeBytes")
+                        .HasColumnType("integer")
+                        .HasColumnName("file_size_bytes");
+
+                    b.Property<string>("MediaType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("media_type");
+
+                    b.Property<string>("Module")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("module");
+
+                    b.Property<string>("ObjectKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("character varying(128)")
+                        .HasColumnName("object_key");
+
+                    b.Property<string>("OriginalFileName")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)")
+                        .HasColumnName("original_file_name");
+
+                    b.Property<Guid>("ProfileId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("profile_id");
+
+                    b.Property<int>("SlotIndex")
+                        .HasColumnType("integer")
+                        .HasColumnName("slot_index");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.HasKey("Id")
+                        .HasName("pk_profile_additional_photos");
+
+                    b.HasIndex("ProfileId", "SlotIndex")
+                        .IsUnique()
+                        .HasDatabaseName("uq_additional_photos_profile_slot");
+
+                    b.HasIndex("AccountId", "Module", "SlotIndex")
+                        .HasDatabaseName("ix_additional_photos_account_module");
+
+                    b.ToTable("profile_additional_photos", "andril_identity", t =>
+                        {
+                            t.HasCheckConstraint("ck_additional_photo_id", "id <> '00000000-0000-0000-0000-000000000000'::uuid");
+                            t.HasCheckConstraint("ck_additional_photo_module", "module IN ('learning', 'hobbies', 'social')");
+                            t.HasCheckConstraint("ck_additional_photo_size", "file_size_bytes BETWEEN 1 AND 5242880");
+                            t.HasCheckConstraint("ck_additional_photo_slot", "slot_index BETWEEN 1 AND 3");
+                            t.HasCheckConstraint("ck_additional_photo_timestamps", "updated_at_utc >= created_at_utc");
+                        });
+
+                    b.HasOne("Andril.Common.Accounts.Profiles.PrivateModuleProfile", null)
+                        .WithMany()
+                        .HasForeignKey("ProfileId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_additional_photos_profiles");
+                });
+
+            modelBuilder.Entity("Andril.Common.Accounts.Privacy.UserPrivacySettings", b =>
+                {
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<bool>("AllowFriendRequests")
+                        .HasColumnType("boolean")
+                        .HasColumnName("allow_friend_requests");
+
+                    b.Property<DateTimeOffset>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at_utc");
+
+                    b.Property<string>("DirectMessagingPolicy")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("direct_messaging_policy");
+
+                    b.Property<bool>("GhostModeEnabled")
+                        .HasColumnType("boolean")
+                        .HasColumnName("ghost_mode_enabled");
+
+                    b.Property<string>("ProfileDiscoverability")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("character varying(32)")
+                        .HasColumnName("profile_discoverability");
+
+                    b.Property<bool>("ShowActiveModule")
+                        .HasColumnType("boolean")
+                        .HasColumnName("show_active_module");
+
+                    b.Property<DateTimeOffset>("UpdatedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("updated_at_utc");
+
+                    b.HasKey("AccountId")
+                        .HasName("pk_account_privacy_settings");
+
+                    b.ToTable("account_privacy_settings", "andril_identity", t =>
+                        {
+                            t.HasCheckConstraint("ck_privacy_account_id_nonempty", "account_id <> '00000000-0000-0000-0000-000000000000'::uuid");
+                            t.HasCheckConstraint("ck_privacy_discoverability", "profile_discoverability IN ('public', 'contacts_only', 'private')");
+                            t.HasCheckConstraint("ck_privacy_messaging", "direct_messaging_policy IN ('everyone', 'friends_only', 'disabled')");
+                            t.HasCheckConstraint("ck_privacy_timestamps", "updated_at_utc >= created_at_utc");
+                        });
+
+                    b.HasOne("Andril.Common.Accounts.Account", null)
+                        .WithOne()
+                        .HasForeignKey("Andril.Common.Accounts.Privacy.UserPrivacySettings", "AccountId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired()
+                        .HasConstraintName("fk_account_privacy_settings_accounts");
+                });
 #pragma warning restore 612, 618
         }
     }

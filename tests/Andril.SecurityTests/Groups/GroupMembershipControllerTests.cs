@@ -484,11 +484,11 @@ public sealed class GroupMembershipControllerTests
     [Fact]
     public async Task SubmitJoinRequest_WhenArgumentExceptionContainsSensitiveIdentifier_ConcealsExceptionDetails()
     {
-        const string secretMarker = "DIAGNOSTIC_MARKER_INVALID_ARG_3321";
+        const string diagnosticMarker = "DIAGNOSTIC_MARKER_INVALID_ARG_3321";
         var privateId = Guid.NewGuid();
         var service = new StubGroupMembershipOperationService
         {
-            ExceptionToThrow = new ArgumentException($"Invalid arguments with secret: {secretMarker} and profile {privateId}")
+            ExceptionToThrow = new ArgumentException($"Invalid arguments with secret: {diagnosticMarker} and profile {privateId}")
         };
         var controller = new GroupMembershipController(service);
         var request = new GroupJoinSubmissionRequest("learning", GroupKind.Classroom);
@@ -500,11 +500,11 @@ public sealed class GroupMembershipControllerTests
         Assert.Equal(StatusCodes.Status400BadRequest, details.Status);
         Assert.Equal("Invalid join request arguments.", details.Title);
         Assert.Equal("The join request operation could not be completed with the provided arguments.", details.Detail);
-        Assert.DoesNotContain(secretMarker, details.Detail);
+        Assert.DoesNotContain(diagnosticMarker, details.Detail);
         Assert.DoesNotContain(privateId.ToString(), details.Detail);
 
         var serialized = JsonSerializer.Serialize(details);
-        Assert.DoesNotContain(secretMarker, serialized);
+        Assert.DoesNotContain(diagnosticMarker, serialized);
         Assert.DoesNotContain(privateId.ToString(), serialized);
     }
 

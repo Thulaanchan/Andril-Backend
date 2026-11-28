@@ -211,6 +211,12 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
         await using var command = new NpgsqlCommand(sql, db);
         await command.ExecuteNonQueryAsync();
     }
+    private readonly List<string> trackedConnectionStrings = new();
+    internal void RegisterConnectionString(string connectionString)
+    {
+        if (!trackedConnectionStrings.Contains(connectionString))
+            trackedConnectionStrings.Add(connectionString);
+    }
     public async ValueTask DisposeAsync()
     {
         if (RuntimeConnection.Length > 0)
@@ -218,10 +224,27 @@ internal sealed class ControlledLifecycleDatabase : IAsyncDisposable
             using var pool = new NpgsqlConnection(RuntimeConnection);
             NpgsqlConnection.ClearPool(pool);
         }
+        if (MigrationConnection.Length > 0)
+        {
+            using var pool = new NpgsqlConnection(MigrationConnection);
+            NpgsqlConnection.ClearPool(pool);
+        }
+        foreach (var connStr in trackedConnectionStrings)
+        {
+            using var pool = new NpgsqlConnection(connStr);
+            NpgsqlConnection.ClearPool(pool);
+        }
+        NpgsqlConnection.ClearAllPools();
         if (created)
         {
-            await Admin($"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname='{name}' AND usename='{runtimeRole}' AND pid<>pg_backend_pid()", asRuntime: true);
-            await Admin($"DROP DATABASE {name} WITH (FORCE)", true);
+            try
+            {
+                await Admin($"DROP DATABASE {name} WITH (FORCE)", true);
+            }
+            catch (PostgresException)
+            {
+                await Admin($"DROP DATABASE IF EXISTS {name} WITH (FORCE)");
+            }
             created = false;
         }
         await Admin($"DROP ROLE IF EXISTS {runtimeRole}");

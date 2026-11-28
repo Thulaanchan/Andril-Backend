@@ -39,7 +39,13 @@ Every question uses the same five-point Likert scale:
 | 4 | Agree |
 | 5 | Strongly Agree |
 
-All twelve questions have `isRequired: true` for a completed submission. **Questionnaire participation itself remains optional.** A skipped submission contains no answers; incomplete answers do not constitute a completed questionnaire. The definition API does not submit or persist answers. Render server-provided IDs, labels and version rather than fabricated questions or alternative option identifiers. Keep loading, authentication failure, forbidden/unavailable and retry states distinct. A missing canonical definition is a server configuration failure, not an approved empty-catalog response.
+All twelve questions have `isRequired: true` for a completed submission.
+**Questionnaire participation itself remains optional.**
+A skipped submission contains no answers; incomplete answers do not constitute a completed questionnaire.
+The definition API does not submit or persist answers.
+Render server-provided IDs, labels and version rather than fabricated questions or alternative option identifiers.
+Distinguish loading and retry states from authentication and service failures.
+A missing canonical definition is a server configuration failure, not an approved empty-catalog response.
 
 ## Verified questionnaire request flow
 
@@ -109,7 +115,7 @@ The default MVC host leaves these surfaces inactive. Development OpenAPI and Swa
 
 ## Persistence already present and remaining gaps
 
-`SocialQuestionnairePersistenceRepository` implements `IQuestionnairePersistenceRepository` with `SocialDbContext` and a PostgreSQL read adapter. Questionnaire response/answer entities, EF mappings, snapshot persistence and owner-scoped orchestration already exist. Do not describe snapshot storage as wholly missing or authorize reimplementation from this document.
+`SocialQuestionnairePersistenceRepository` implements `IQuestionnairePersistenceRepository` with `SocialDbContext` and a PostgreSQL read adapter. Questionnaire response/answer entities, EF mappings, snapshot persistence and owner-scoped orchestration already exist. Do not describe snapshot storage as wholly missing or permit re-implementation from this document.
 
 The PostgreSQL lifecycle repository joins the authorized Accounts transaction and uses a restricted Social role to create one current response per profile. The server retains historical snapshots. Replacement and withdrawal require approved history policies. The checked-in opt-in activates only the questionnaire submission and self-retrieval routes.
 

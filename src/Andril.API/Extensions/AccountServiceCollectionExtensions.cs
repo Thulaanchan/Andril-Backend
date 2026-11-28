@@ -37,6 +37,12 @@ public static class AccountServiceCollectionExtensions
         services.AddScoped<Andril.Common.Accounts.Profiles.IPrivateProfileService, Andril.Common.Accounts.Profiles.PrivateProfileService>();
         services.AddScoped<Andril.Common.Accounts.Profiles.IPrivateProfileCompletionReader, Andril.Common.Accounts.Profiles.PrivateProfileCompletionReader>();
         services.AddScoped<Andril.Common.Accounts.Profiles.IPrivateModuleAccess, Andril.Common.Accounts.Profiles.PrivateModuleAccess>();
+        services.AddScoped<Andril.Common.Accounts.Profiles.IModuleWelcomeService, Andril.Common.Accounts.Profiles.ModuleWelcomeService>();
+        services.AddScoped<Andril.Common.Accounts.Profiles.IDisplayNameAvailabilityRepository, DisplayNameAvailabilityRepository>();
+        services.AddScoped<Andril.Common.Accounts.Profiles.IDisplayNameAvailabilityService, Andril.Common.Accounts.Profiles.DisplayNameAvailabilityService>();
+        services.AddScoped<Andril.Common.Accounts.Profiles.IProfileLocationRepository, ProfileLocationRepository>();
+        services.AddScoped<Andril.Common.Accounts.Profiles.IAdditionalProfilePhotoRepository, AdditionalProfilePhotoRepository>();
+        services.AddScoped<Andril.Common.Accounts.Profiles.IProfileSetupService, Andril.Common.Accounts.Profiles.ProfileSetupService>();
         services.AddExceptionHandler<PrivateProfileExceptionHandler>();
         services.AddScoped<Andril.Common.Accounts.Onboarding.IOnboardingIdentity, Andril.API.Authentication.OnboardingIdentity>();
         services.AddScoped<Andril.Common.Accounts.Onboarding.IOnboardingStatusService, Andril.Common.Accounts.Onboarding.OnboardingStatusService>();
@@ -53,6 +59,9 @@ public static class AccountServiceCollectionExtensions
         services.AddScoped<ILanguagePreferenceService, LanguagePreferenceService>();
         services.AddScoped<ILanguagePreferenceRepository, LanguagePreferenceRepository>();
         services.AddExceptionHandler<LanguagePreferenceExceptionHandler>();
+        services.AddScoped<Andril.Common.Accounts.Privacy.IUserPrivacySettingsService, Andril.Common.Accounts.Privacy.UserPrivacySettingsService>();
+        services.AddScoped<Andril.Common.Accounts.Privacy.IUserPrivacySettingsRepository, UserPrivacySettingsRepository>();
+        services.AddExceptionHandler<PrivacyExceptionHandler>();
         services.AddScoped<IAccountEligibilityService, AccountEligibilityService>();
         services.AddScoped<IAccountDemographicsRepository, AccountDemographicsRepository>();
         services.AddExceptionHandler<EligibilityExceptionHandler>();

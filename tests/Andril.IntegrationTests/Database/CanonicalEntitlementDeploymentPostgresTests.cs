@@ -1,5 +1,8 @@
 using System.Data;
+using Andril.Persistence.DbContexts;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql;
 using NpgsqlTypes;
 using Xunit;
@@ -57,6 +60,39 @@ public sealed class CanonicalEntitlementDeploymentPostgresTests
             try { return await ApplyAsync(fixture, owner.Subject, Guid.NewGuid(), revision, tier, end, fixture.Role); }
             catch (PostgresException error) when (error.SqlState == PostgresErrorCodes.SerializationFailure) { return null; }
         }
+    }
+
+    [LocalPostgresFact]
+    public async Task EconomyMigrationAndRollbackPreserveTheCanonicalEntitlementAuthority()
+    {
+        await using var fixture = await SharedGroupsDatabase.CreateAsync();
+        var owner = await fixture.SeedAsync("hobbies");
+        var eventId = Guid.NewGuid();
+        var expiry = DateTimeOffset.UtcNow.AddDays(1);
+        await using var provisioner = new NpgsqlConnection(fixture.ProvisioningConnection);
+        var revision = await ApplyAsync(fixture, owner.Subject, eventId, null, 1, expiry, transactionConnection: provisioner);
+        var options = new DbContextOptionsBuilder<EconomyDbContext>()
+            .UseNpgsql(fixture.Database.ConnectionString, postgres =>
+                postgres.MigrationsHistoryTable(EconomyDbContextFactory.MigrationsHistoryTableName, EconomyDbContextFactory.Schema))
+            .Options;
+        await using var economy = new EconomyDbContext(options);
+        await economy.Database.MigrateAsync();
+
+        Assert.True(await economy.Database.SqlQuery<bool>($"""
+            SELECT relrowsecurity AS "Value" FROM pg_catalog.pg_class
+            WHERE oid = 'andril_economy.coin_wallets'::regclass
+            """).SingleAsync());
+        Assert.Equal(revision, await ApplyAsync(fixture, owner.Subject, eventId, null, 1, expiry, transactionConnection: provisioner));
+        await economy.GetService<IMigrator>().MigrateAsync(Migration.InitialDatabase);
+
+        Assert.Null(await economy.Database.SqlQuery<string?>($"""
+            SELECT to_regclass('andril_economy.coin_wallets')::text AS "Value"
+            """).SingleAsync());
+        Assert.True(await economy.Database.SqlQuery<bool>($"""
+            SELECT relrowsecurity AS "Value" FROM pg_catalog.pg_class
+            WHERE oid = 'andril_economy.premium_entitlements'::regclass
+            """).SingleAsync());
+        Assert.Equal(revision, await ApplyAsync(fixture, owner.Subject, eventId, null, 1, expiry, transactionConnection: provisioner));
     }
 
     internal static async Task InstallAsync(SharedGroupsDatabase fixture)

@@ -10,6 +10,25 @@ namespace Andril.API.Controllers.Common;
 [Route("api/v1/account/profiles/{module}")]
 public sealed class PrivateProfilesController(IPrivateProfileService profiles) : ControllerBase
 {
+    [NonAction]
+    [HttpGet("setup-status")]
+    [ProducesResponseType<ProfileSetupStatusDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status401Unauthorized)]
+    public async Task<ActionResult<ProfileSetupStatusDto>> GetSetupStatus(
+        string module, [FromServices] IProfileSetupService setupService, CancellationToken cancellationToken) =>
+        Ok(await setupService.GetSetupStatusAsync(module, cancellationToken));
+
+    [NonAction]
+    [HttpPost("submit")]
+    [ProducesResponseType<ProfileSetupSubmissionResponse>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ProfileSetupSubmissionResponse>> Submit(
+        string module, [FromBody] ProfileSetupSubmissionRequest request, [FromServices] IProfileSetupService setupService, CancellationToken cancellationToken) =>
+        Ok(await setupService.SubmitProfileAsync(module, request, cancellationToken));
+
     [HttpPut]
     [RequestSizeLimit(16384)]
     public async Task<ActionResult<PrivateProfileDto>> Put(string module, [FromBody] JsonElement request, CancellationToken cancellationToken)
