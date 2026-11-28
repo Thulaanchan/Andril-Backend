@@ -33,6 +33,8 @@ namespace Andril.SecurityTests.AI;
 /// Never run Program, activate AI, query a database, or authenticate using client actor claims.</summary>
 public sealed class AiEndpointSecurityTests
 {
+    private const string SyntheticProviderDiagnostic = "synthetic provider diagnostic";
+
     private static Guid Id(int n) => Guid.Parse($"00000000-0000-0000-0000-{n:D12}");
     private static readonly DateTimeOffset Now = new(2026, 11, 19, 0, 0, 0, TimeSpan.Zero);
     private const string ConfidentialMarker = "T05-SYNTHETIC-CONFIDENTIAL-MARKER";
@@ -395,7 +397,7 @@ public sealed class AiEndpointSecurityTests
                     await context.Response.WriteAsync("Synthetic response started.");
                     await context.Response.Body.FlushAsync();
                     responseStarted = context.Response.HasStarted;
-                    throw new InvalidOperationException(Secret, new Exception("T05-INNER-PRIVATE-MARKER"));
+                    throw new InvalidOperationException(Secret, new Exception(SyntheticProviderDiagnostic));
                 });
             })).StartAsync();
         var server = host.GetTestServer();
@@ -430,7 +432,7 @@ public sealed class AiEndpointSecurityTests
             (Channel: "structured state", Text: entry.State),
             (Channel: "exception payload", Text: entry.ExceptionText)
         }.Where(payload => payload.Text.Contains(Secret, StringComparison.Ordinal) ||
-            payload.Text.Contains("T05-INNER-PRIVATE-MARKER", StringComparison.Ordinal))
+            payload.Text.Contains(SyntheticProviderDiagnostic, StringComparison.Ordinal))
             .Select(payload => entry.Category + " event " + entry.Event.Id + ": " + payload.Channel))
             .Distinct().ToArray();
         Assert.True(leaks.Length == 0,
@@ -442,7 +444,7 @@ public sealed class AiEndpointSecurityTests
     {
         using var capture = new T05LogCapture();
         var original = new InvalidOperationException(Secret,
-            new Exception("T05-INNER-PRIVATE-MARKER", new Exception("T05-NESTED-PRIVATE-MARKER")));
+            new Exception(SyntheticProviderDiagnostic, new Exception("T05-NESTED-PRIVATE-MARKER")));
         original.Data["T05-DATA-PRIVATE-KEY"] = "T05-DATA-PRIVATE-MARKER";
         original.InnerException!.Data["nested"] = "T05-NESTED-DATA-MARKER";
         using var host = await T05PrivacyHost(capture, async context =>
@@ -487,7 +489,7 @@ public sealed class AiEndpointSecurityTests
             "denied" => new UnauthorizedAccessException(Secret),
             "provider" => new InvalidOperationException(Secret),
             "cancel" => new OperationCanceledException(Secret),
-            _ => new Exception(Secret, new Exception("T05-INNER-PRIVATE-MARKER"))
+            _ => new Exception(Secret, new Exception(SyntheticProviderDiagnostic))
         };
         using var host = await T05PrivacyHost(capture, _ => Task.FromException(original));
         using var client = host.GetTestClient();
@@ -522,7 +524,7 @@ public sealed class AiEndpointSecurityTests
             }
             observedStarted = context.Response.HasStarted;
             context.RequestAborted = cancelled.Token;
-            if (ioFailure) throw new IOException(Secret, new Exception("T05-INNER-PRIVATE-MARKER"));
+            if (ioFailure) throw new IOException(Secret, new Exception(SyntheticProviderDiagnostic));
             throw new OperationCanceledException(Secret, cancelled.Token);
         });
         using var client = host.GetTestClient();
@@ -615,7 +617,7 @@ public sealed class AiEndpointSecurityTests
     private static void T05AssertPrivateDataAbsent(T05LogCapture capture, string extra = "")
     {
         var payloads = capture.Entries.SelectMany(entry => new[] { entry.Message, entry.State, entry.ExceptionText }).Append(extra);
-        foreach (var marker in new[] { Secret, "T05-INNER-PRIVATE-MARKER", "T05-NESTED-PRIVATE-MARKER",
+        foreach (var marker in new[] { Secret, SyntheticProviderDiagnostic, "T05-NESTED-PRIVATE-MARKER",
             "T05-DATA-PRIVATE-KEY", "T05-DATA-PRIVATE-MARKER", "T05-NESTED-DATA-MARKER" })
             Assert.DoesNotContain(payloads, payload => payload.Contains(marker, StringComparison.Ordinal));
     }

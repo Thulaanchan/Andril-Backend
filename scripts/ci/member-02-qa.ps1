@@ -14,6 +14,7 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 . "$PSScriptRoot/Verify-Member02TestResults.ps1"
 . "$PSScriptRoot/Member02RelationalQa.ps1"
+. "$PSScriptRoot/Member02GitleaksQa.ps1"
 
 $repo = (Resolve-Path "$PSScriptRoot/../..").Path
 $integration = 'tests/Andril.IntegrationTests/Andril.IntegrationTests.csproj'
@@ -330,6 +331,12 @@ function Invoke-GitleaksQa {
         $null = New-Item -ItemType Directory -Path $source
         & git checkout-index --all "--prefix=$source/"
         if ($LASTEXITCODE -ne 0) { throw 'Could not export the tracked checkout for scanning.' }
+        $dispositions = $null
+        try {
+            $dispositions = Read-QaHistoryDispositions "$PSScriptRoot/member-02-gitleaks-dispositions.json"
+        } catch {
+            Add-Detail '- Historical disposition evidence is missing or invalid.'
+        }
         $failed = $false
         foreach ($mode in 'git', 'dir') {
             $report = Join-Path $raw "$mode.json"
@@ -339,27 +346,15 @@ function Invoke-GitleaksQa {
             else { $arguments += $source }
             & $scanner @arguments *> $null
             $code = $LASTEXITCODE
-            $findings = @()
-            if (Test-Path -LiteralPath $report) {
-                $findings = @(Get-Content -LiteralPath $report -Raw | ConvertFrom-Json | Where-Object { $_ } |
-                    ForEach-Object {
-                        [ordered]@{
-                            rule = if ($_.RuleID -cmatch '^[a-z0-9-]+$') { $_.RuleID } else { 'unavailable' }
-                            commit = if ($_.Commit -cmatch '^[0-9a-f]{40}$') { $_.Commit } else { $null }
-                            line = [int]$_.StartLine
-                            pathSha256 = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData(
-                                [Text.Encoding]::UTF8.GetBytes([string]$_.File))).ToLowerInvariant()
-                        }
-                    })
-            }
-            $status = if ($code -eq 0 -and !$findings.Count) { 'passed' }
-                elseif ($code -eq 42 -and $findings.Count) { 'findings' }
-                else { 'scanner or report failure' }
-            [ordered]@{ mode = $mode; status = $status; count = $findings.Count; findings = $findings } |
-                ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $out "gitleaks-$mode.json") -Encoding utf8
-            Add-Detail "- Gitleaks $mode $status ($($findings.Count) redacted findings)."
-            $failed = $failed -or ($status -ne 'passed')
+            $result = Get-QaGitleaksResult $mode $code $report $dispositions
+            $result | ConvertTo-Json -Depth 5 |
+                Set-Content -LiteralPath (Join-Path $out "gitleaks-$mode.json") -Encoding utf8
+            Add-Detail ("- Gitleaks {0} {1}. Raw findings: {2}. Accepted history: {3}. Unresolved history: {4}. Missing dispositions: {5}. Current source: {6}." -f
+                $mode, $result.status, $result.count, $result.acceptedHistory, $result.unresolvedHistory,
+                $result.missingDispositions, $result.currentSource)
+            $failed = $failed -or ($result.status -ne 'passed')
         }
+        & "$PSScriptRoot/Test-Member02GitleaksQa.ps1"
         if ($failed) { throw 'Secret scanning failed. See the redacted reports.' }
     } catch {
         Add-Detail '- Gitleaks gate failed.'
