@@ -15,6 +15,10 @@ public sealed record PrivateProfileDto(Guid ProfileId, string Module, DateTimeOf
 
 public interface IPrivateProfileRepository
 {
+    // The callback and profile edit share one database transaction. No external storage writes.
+    Task<T> WithProfileSetupAsync<T>(Guid accountId, string module, ProfileEdit edit,
+        Action<StarterModuleState> validate, TimeProvider clock, Func<PrivateModuleProfile, Task<T>> action,
+        CancellationToken cancellationToken) => throw new ProfileContractPendingException();
     // Explicit opt-in for private Learning documents. Unsupported implementations deny;
     // existing callbacks retain their original isolation and authorization semantics.
     Task<T> WithSerializableLearningProfileAsync<T>(Guid accountId, Action<StarterModuleState> validate,

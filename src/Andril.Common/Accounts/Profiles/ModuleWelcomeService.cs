@@ -1,4 +1,5 @@
 using Andril.Common.Accounts.Eligibility;
+using Andril.Common.Accounts.Policies;
 using Andril.Common.Accounts.Onboarding;
 using Andril.Common.Accounts.StarterModules;
 using Andril.Shared.Authentication;
@@ -18,7 +19,8 @@ public sealed class ModuleWelcomeService(
     IAccountRepository accounts,
     IStarterModuleService starter,
     IPrivateProfileRepository profileRepository,
-    TimeProvider clock)
+    TimeProvider clock,
+    IPolicyCatalogProvider catalog)
     : IModuleWelcomeService
 {
     public async Task<ModuleWelcomeStatusDto> GetWelcomeStatusAsync(string module, CancellationToken cancellationToken = default)
@@ -34,13 +36,10 @@ public sealed class ModuleWelcomeService(
 
         // Check if user already has an existing profile
         PrivateModuleProfile? existingProfile = null;
-        try
+        if (state.Membership?.Module == normModule)
         {
-            existingProfile = await profileRepository.ReadAsync(account.Id, normModule, _ => { }, cancellationToken);
-        }
-        catch (Exception)
-        {
-            // Ignore access errors during read check
+            existingProfile = await profileRepository.ReadAsync(account.Id, normModule, Validate(account, normModule, cancellationToken), cancellationToken);
+            CheckProfile(existingProfile, account.Id, normModule);
         }
 
         bool hasProfile = existingProfile is not null;
@@ -131,22 +130,10 @@ public sealed class ModuleWelcomeService(
             await starter.SelectAsync(normModule, null, cancellationToken);
         }
 
-        // Check or get existing profile
-        PrivateModuleProfile? profile = null;
-        try
-        {
-            profile = await profileRepository.ReadAsync(account.Id, normModule, _ => { }, cancellationToken);
-        }
-        catch (Exception)
-        {
-            // No profile yet
-        }
-
-        if (profile is null)
-        {
-            // Get or create draft shell
-            profile = await profileRepository.GetOrCreateAsync(account.Id, normModule, _ => { }, clock, cancellationToken);
-        }
+        // Membership selection is a prerequisite; navigation itself grants no authority.
+        var profile = await profileRepository.GetOrCreateAsync(account.Id, normModule,
+            Validate(account, normModule, cancellationToken), clock, cancellationToken);
+        CheckProfile(profile, account.Id, normModule);
 
         bool isProfileComplete = !string.IsNullOrWhiteSpace(profile.DisplayName);
         string nextStep = isProfileComplete ? "preferences_handoff" : "profile_setup";
@@ -159,6 +146,20 @@ public sealed class ModuleWelcomeService(
             stage,
             isProfileComplete ? "Profile already initialized. Proceed to preferences." : "Module entry authorized. Proceed to profile setup."
         );
+    }
+
+    private Action<StarterModuleState> Validate(Account account, string module, CancellationToken ct) => state =>
+    {
+        ct.ThrowIfCancellationRequested();
+        if (!user.IsAuthenticated || user.UserId != account.SupabaseUserId || !identity.IsConfirmedFor(account.SupabaseUserId))
+            throw new ProfileAccessDeniedException();
+        PrivateProfileService.ValidatePrerequisites(account.Id, module, state, catalog, clock);
+    };
+
+    private static void CheckProfile(PrivateModuleProfile? profile, Guid accountId, string module)
+    {
+        if (profile is not null && (profile.AccountId != accountId || profile.Module != module || profile.Id == Guid.Empty))
+            throw new ProfileAccessDeniedException();
     }
 
     private async Task<(Account Account, StarterModuleStatus State)> AuthorizeCallerAndGetStateAsync(
@@ -183,6 +184,8 @@ public sealed class ModuleWelcomeService(
         if (!state.RequiredPoliciesComplete)
             throw new ModuleWelcomeIneligibleException("Terms and privacy policies must be accepted before accessing module welcome.");
 
+        cancellationToken.ThrowIfCancellationRequested();
+        if (account.Id == Guid.Empty || account.SupabaseUserId != subject) throw new AccountStoreUnavailableException();
         return (account, state);
     }
 }

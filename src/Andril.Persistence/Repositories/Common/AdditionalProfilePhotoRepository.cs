@@ -43,7 +43,8 @@ public sealed class AdditionalProfilePhotoRepository(AccountsDbContext db) : IAd
 
         try
         {
-            await using var tx = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+            await using var tx = db.Database.CurrentTransaction is null
+                ? await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken) : null;
 
             await db.Database.ExecuteSqlInterpolatedAsync($"""
                 INSERT INTO andril_identity.profile_additional_photos (
@@ -62,12 +63,16 @@ public sealed class AdditionalProfilePhotoRepository(AccountsDbContext db) : IAd
                     media_type = EXCLUDED.media_type,
                     file_size_bytes = EXCLUDED.file_size_bytes,
                     updated_at_utc = GREATEST(profile_additional_photos.updated_at_utc, EXCLUDED.updated_at_utc)
+                WHERE profile_additional_photos.account_id = EXCLUDED.account_id
+                    AND profile_additional_photos.module = EXCLUDED.module
                 """, cancellationToken);
 
             var result = await db.Set<AdditionalProfilePhotoRecord>().AsNoTracking()
-                .SingleAsync(x => x.ProfileId == record.ProfileId && x.SlotIndex == record.SlotIndex, cancellationToken);
+                .SingleOrDefaultAsync(x => x.ProfileId == record.ProfileId && x.SlotIndex == record.SlotIndex
+                    && x.AccountId == record.AccountId && x.Module == record.Module, cancellationToken)
+                ?? throw new ProfileAccessDeniedException();
 
-            await tx.CommitAsync(cancellationToken);
+            if (tx is not null) await tx.CommitAsync(cancellationToken);
             return result;
         }
         catch (Exception ex) when (ex is DbException or TimeoutException)

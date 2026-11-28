@@ -24,7 +24,8 @@ public sealed class ProfileLocationRecord
     {
         if (profileId == Guid.Empty) throw new ProfileValidationException();
         if (accountId == Guid.Empty) throw new ProfileValidationException();
-        if (string.IsNullOrWhiteSpace(city)) throw new ProfileValidationException();
+        if (!StarterModules.StarterModules.IsValid(module)) throw new ProfileValidationException();
+        Validate(city, region);
 
         var utc = now.ToUniversalTime();
         return new ProfileLocationRecord
@@ -41,10 +42,17 @@ public sealed class ProfileLocationRecord
 
     public void Update(string city, string? region, DateTimeOffset now)
     {
-        if (string.IsNullOrWhiteSpace(city)) throw new ProfileValidationException();
+        Validate(city, region);
         City = city.Trim();
         Region = region?.Trim();
         UpdatedAtUtc = now.ToUniversalTime();
+    }
+
+    private static void Validate(string city, string? region)
+    {
+        if (string.IsNullOrWhiteSpace(city) || city.Trim().Length > 100 || region?.Trim().Length > 100
+            || city.Any(char.IsControl) || region?.Any(char.IsControl) == true)
+            throw new ProfileValidationException();
     }
 }
 

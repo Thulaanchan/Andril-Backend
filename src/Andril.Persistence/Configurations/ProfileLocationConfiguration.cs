@@ -27,7 +27,9 @@ public sealed class ProfileLocationConfiguration : IEntityTypeConfiguration<Prof
         b.Property(x => x.UpdatedAtUtc).HasColumnName("updated_at_utc").HasColumnType("timestamp with time zone").IsRequired();
 
         b.HasIndex(x => new { x.AccountId, x.Module }).IsUnique().HasDatabaseName("uq_profile_locations_account_module");
-        b.HasOne<PrivateModuleProfile>().WithOne().HasForeignKey<ProfileLocationRecord>(x => x.ProfileId)
+        b.HasOne<PrivateModuleProfile>().WithOne()
+            .HasForeignKey<ProfileLocationRecord>(x => new { x.ProfileId, x.AccountId, x.Module })
+            .HasPrincipalKey<PrivateModuleProfile>(x => new { x.Id, x.AccountId, x.Module })
             .OnDelete(DeleteBehavior.Cascade).HasConstraintName("fk_profile_locations_profiles");
     }
 }

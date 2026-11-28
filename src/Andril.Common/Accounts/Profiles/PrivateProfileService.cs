@@ -41,27 +41,37 @@ public sealed class PrivateProfileService(ICurrentUser user, IOnboardingIdentity
         if (!identity.IsConfirmedFor(subject)) throw new OnboardingDependencyException();
         if (!ModuleNames.IsValid(module)) throw new ProfileValidationException();
         var account = await accounts.FindBySubjectAsync(subject, ct) ?? throw new StarterModuleAccountMissingException();
+        if (account.Id == Guid.Empty || account.SupabaseUserId != subject) throw new AccountStoreUnavailableException();
         void Validate(StarterModuleState state)
         {
-            if (state.Membership is not { } membership || membership.AccountId != account.Id || membership.Module != module
-                || (module == ModuleNames.Social && membership.SocialOptInAtUtc is null))
+            ct.ThrowIfCancellationRequested();
+            if (!user.IsAuthenticated || user.UserId != subject || !identity.IsConfirmedFor(subject))
                 throw new ProfileAccessDeniedException();
-            if (state.Demographics is not { } demographics || demographics.AccountId != account.Id)
-                throw new ProfileAccessDeniedException();
-            ModuleAgeEligibility age;
-            try
-            {
-                age = AgeEligibilityPolicy.Evaluate(demographics.DateOfBirth, DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime));
-            }
-            catch (EligibilityValidationException) { throw new ProfileAccessDeniedException(); }
-            if (!(module switch { ModuleNames.Learning => age.Learning, ModuleNames.Hobbies => age.Hobbies, _ => age.Social }))
-                throw new ProfileAccessDeniedException();
-            var current = catalog.GetCurrent();
-            if (!state.Policies.Any(x => x.AccountId == account.Id && x.Action == PolicyActions.TermsAgreed && x.Version == current.Terms.Version)
-                || !state.Policies.Any(x => x.AccountId == account.Id && x.Action == PolicyActions.PrivacyAcknowledged && x.Version == current.Privacy.Version))
-                throw new ProfileAccessDeniedException();
+            ValidatePrerequisites(account.Id, module, state, catalog, clock);
         }
         return (account.Id, Validate);
+    }
+
+    internal static void ValidatePrerequisites(Guid accountId, string module, StarterModuleState state,
+        IPolicyCatalogProvider catalog, TimeProvider clock)
+    {
+        if (state.Membership is not { } membership || membership.AccountId != accountId || membership.Module != module
+            || (module == ModuleNames.Social && membership.SocialOptInAtUtc is null))
+            throw new ProfileAccessDeniedException();
+        if (state.Demographics is not { } demographics || demographics.AccountId != accountId)
+            throw new ProfileAccessDeniedException();
+        ModuleAgeEligibility age;
+        try
+        {
+            age = AgeEligibilityPolicy.Evaluate(demographics.DateOfBirth, DateOnly.FromDateTime(clock.GetUtcNow().UtcDateTime));
+        }
+        catch (EligibilityValidationException) { throw new ProfileAccessDeniedException(); }
+        if (!(module switch { ModuleNames.Learning => age.Learning, ModuleNames.Hobbies => age.Hobbies, _ => age.Social }))
+            throw new ProfileAccessDeniedException();
+        var current = catalog.GetCurrent();
+        if (!state.Policies.Any(x => x.AccountId == accountId && x.Action == PolicyActions.TermsAgreed && x.Version == current.Terms.Version)
+            || !state.Policies.Any(x => x.AccountId == accountId && x.Action == PolicyActions.PrivacyAcknowledged && x.Version == current.Privacy.Version))
+            throw new ProfileAccessDeniedException();
     }
 
     private async Task<PrivateProfileDto> Execute(string module, bool create, CancellationToken ct, ProfileEdit? edit = null)

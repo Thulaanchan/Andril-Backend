@@ -1,4 +1,6 @@
 using Andril.Common.Accounts;
+using Andril.Common.Accounts.Policies;
+using Andril.Common.Accounts.Eligibility;
 using Andril.Common.Accounts.Onboarding;
 using Andril.Common.Accounts.Profiles;
 using Andril.Common.Accounts.StarterModules;
@@ -12,6 +14,46 @@ namespace Andril.UnitTests.Common;
 
 public sealed class ProfileSetupSubmissionTests
 {
+    [Fact]
+    public async Task InvalidLocationIsRejectedBeforeAnyProfileWrite()
+    {
+        var fixture = new TestFixture("learning", false);
+        await Assert.ThrowsAsync<ProfileValidationException>(() => fixture.Service.SubmitProfileAsync("learning", new("Learner", null, "UnapprovedCity", null)));
+        Assert.Equal(0, fixture.Profiles.SetupCalls);
+    }
+
+    [Fact]
+    public async Task OmittedLocationReturnsPreviouslyPersistedLocation()
+    {
+        var fixture = new TestFixture("learning", false);
+        await fixture.Service.SubmitProfileAsync("learning", new("Learner", null, "Colombo", "Western"));
+        var response = await fixture.Service.SubmitProfileAsync("learning", new("Learner", "updated", null, null));
+        Assert.Equal("Colombo", response.LocationCity);
+        Assert.Equal("Western", response.LocationRegion);
+        Assert.False(response.Handoff.IsPreferencesComplete);
+    }
+
+    [Theory]
+    [InlineData("policies")]
+    [InlineData("age")]
+    [InlineData("membership")]
+    [InlineData("social_opt_in")]
+    public async Task SubmissionRechecksPersistedPrerequisitesInsteadOfTrustingStarterSummary(string missing)
+    {
+        var fixture = new TestFixture(missing == "social_opt_in" ? "social" : "learning", true);
+        fixture.Profiles.Missing = missing;
+        await Assert.ThrowsAsync<ProfileAccessDeniedException>(() => fixture.Service.SubmitProfileAsync(
+            missing == "social_opt_in" ? "social" : "learning", new("Learner", null, null, null)));
+    }
+
+    [Fact]
+    public async Task SetupStatusPropagatesDependencyFailureInsteadOfClaimingNoProfile()
+    {
+        var fixture = new TestFixture("learning", false);
+        fixture.Profiles.FailRead = true;
+        await Assert.ThrowsAsync<AccountStoreUnavailableException>(() => fixture.Service.GetSetupStatusAsync("learning"));
+    }
+
     [Fact]
     public async Task PS_T07_LearningProfileCreation_SucceedsWithoutMainPhoto()
     {
@@ -71,6 +113,7 @@ public sealed class ProfileSetupSubmissionTests
     {
         public ProfileSetupService Service { get; }
         public Account Account { get; }
+        public FakeProfileRepo Profiles { get; }
 
         public TestFixture(string module, bool hasMainPhoto)
         {
@@ -80,13 +123,13 @@ public sealed class ProfileSetupSubmissionTests
             var identity = new FakeIdentity(true);
             var accounts = new FakeAccountRepo(Account);
             var starter = new FakeStarterService(module);
-            var profiles = new FakeProfileRepo(Account.Id, module);
+            var profiles = Profiles = new FakeProfileRepo(Account.Id, module);
             var photoStore = new FakePhotoStore(hasMainPhoto);
             var addPhotos = new FakeAdditionalPhotosRepo();
             var locations = new FakeLocationRepo();
 
             Service = new ProfileSetupService(
-                user, identity, accounts, starter, profiles, photoStore, addPhotos, locations, TimeProvider.System);
+                user, identity, accounts, starter, profiles, photoStore, addPhotos, locations, TimeProvider.System, new Catalog());
         }
     }
 
@@ -124,8 +167,30 @@ public sealed class ProfileSetupSubmissionTests
             GetAsync(cancellationToken);
     }
 
+    private sealed class Catalog : IPolicyCatalogProvider
+    {
+        public PolicyCatalog GetCurrent() => new(new("v1", "https://example.test/terms", "en"),
+            new("v1", "https://example.test/privacy", "en"), new("v1", "https://example.test/community", "en"));
+    }
+
     private sealed class FakeProfileRepo : IPrivateProfileRepository
     {
+        public async Task<T> WithProfileSetupAsync<T>(Guid accountId, string module, ProfileEdit edit,
+            Action<StarterModuleState> validate, TimeProvider clock, Func<PrivateModuleProfile, Task<T>> action,
+            CancellationToken cancellationToken)
+        {
+            SetupCalls++;
+            validate(new(AccountDemographics.Create(accountId, Missing == "age" ? new(2020, 1, 1) : new(2000, 1, 1), "other", clock.GetUtcNow()),
+                Missing == "policies" ? [] : [AccountPolicyRecord.Create(accountId, PolicyActions.TermsAgreed, "v1", clock.GetUtcNow()),
+                 AccountPolicyRecord.Create(accountId, PolicyActions.PrivacyAcknowledged, "v1", clock.GetUtcNow())],
+                Missing == "membership" ? null : StarterMembership.Create(accountId, Missing == "social_opt_in" ? "learning" : module, module == "social" && Missing != "social_opt_in", clock.GetUtcNow())));
+            _profile.SetDraftFields(edit);
+            return await action(_profile);
+        }
+
+        public int SetupCalls;
+        public string? Missing;
+        public bool FailRead;
         private readonly PrivateModuleProfile _profile;
 
         public FakeProfileRepo(Guid accountId, string module)
@@ -134,7 +199,7 @@ public sealed class ProfileSetupSubmissionTests
         }
 
         public Task<PrivateModuleProfile?> ReadAsync(Guid accountId, string module, Action<StarterModuleState> validate, CancellationToken cancellationToken = default) =>
-            Task.FromResult<PrivateModuleProfile?>(_profile);
+            FailRead ? Task.FromException<PrivateModuleProfile?>(new AccountStoreUnavailableException()) : Task.FromResult<PrivateModuleProfile?>(_profile);
 
         public Task<PrivateModuleProfile> GetOrCreateAsync(Guid accountId, string module, Action<StarterModuleState> validate, TimeProvider clock, CancellationToken cancellationToken = default) =>
             Task.FromResult(_profile);

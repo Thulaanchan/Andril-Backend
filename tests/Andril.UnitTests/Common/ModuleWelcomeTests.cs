@@ -1,4 +1,5 @@
 using Andril.Common.Accounts;
+using Andril.Common.Accounts.Policies;
 using Andril.Common.Accounts.Onboarding;
 using Andril.Common.Accounts.Profiles;
 using Andril.Common.Accounts.StarterModules;
@@ -85,7 +86,7 @@ public sealed class ModuleWelcomeTests
         var starter = new FakeStarterService(true, true);
         var profiles = new FakeProfileRepo();
 
-        var service = new ModuleWelcomeService(unauthUser, identity, accounts, starter, profiles, TimeProvider.System);
+        var service = new ModuleWelcomeService(unauthUser, identity, accounts, starter, profiles, TimeProvider.System, new Catalog());
 
         await Assert.ThrowsAsync<AccountAuthenticationRequiredException>(() =>
             service.GetWelcomeStatusAsync(ModuleNames.Learning));
@@ -101,8 +102,14 @@ public sealed class ModuleWelcomeTests
         var starter = new FakeStarterService(isSocialAgeEligible, isSocialOptIn);
         var profiles = new FakeProfileRepo();
 
-        var service = new ModuleWelcomeService(user, identity, accounts, starter, profiles, TimeProvider.System);
+        var service = new ModuleWelcomeService(user, identity, accounts, starter, profiles, TimeProvider.System, new Catalog());
         return (service, account);
+    }
+
+    private sealed class Catalog : IPolicyCatalogProvider
+    {
+        public PolicyCatalog GetCurrent() => new(new("v1", "https://example.test/terms", "en"),
+            new("v1", "https://example.test/privacy", "en"), new("v1", "https://example.test/community", "en"));
     }
 
     private sealed record FakeUser(Guid? UserId, bool IsAuthenticated) : ICurrentUser;

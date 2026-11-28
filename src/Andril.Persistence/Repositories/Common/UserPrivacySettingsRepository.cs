@@ -9,6 +9,29 @@ namespace Andril.Persistence.Repositories.Common;
 
 public sealed class UserPrivacySettingsRepository(AccountsDbContext db) : IUserPrivacySettingsRepository
 {
+    public async Task<UserPrivacySettings> GetOrCreateAsync(Guid accountId, DateTimeOffset now,
+        CancellationToken cancellationToken = default)
+    {
+        var defaults = UserPrivacySettings.CreateDefault(accountId, now);
+        try
+        {
+            await using var transaction = await db.Database.BeginTransactionAsync(IsolationLevel.ReadCommitted, cancellationToken);
+            // A racing GET must never overwrite settings committed by a PUT.
+            await db.Database.ExecuteSqlInterpolatedAsync($"""
+                INSERT INTO andril_identity.account_privacy_settings (
+                    account_id, profile_discoverability, ghost_mode_enabled, direct_messaging_policy,
+                    allow_friend_requests, show_active_module, created_at_utc, updated_at_utc)
+                VALUES ({accountId}, {defaults.ProfileDiscoverability}, {defaults.GhostModeEnabled},
+                    {defaults.DirectMessagingPolicy}, {defaults.AllowFriendRequests}, {defaults.ShowActiveModule},
+                    {defaults.CreatedAtUtc}, {defaults.UpdatedAtUtc})
+                ON CONFLICT (account_id) DO NOTHING
+                """, cancellationToken);
+            var result = await db.PrivacySettings.AsNoTracking().SingleAsync(x => x.AccountId == accountId, cancellationToken);
+            await transaction.CommitAsync(cancellationToken);
+            return result;
+        }
+        catch (Exception ex) when (ex is DbException or TimeoutException) { throw new AccountStoreUnavailableException(); }
+    }
     public async Task<UserPrivacySettings?> GetByAccountIdAsync(Guid accountId, CancellationToken cancellationToken = default)
     {
         if (accountId == Guid.Empty)

@@ -36,9 +36,9 @@ public sealed class AdditionalProfilePhotoRecord
             throw new ProfileValidationException();
         if (slotIndex is < MinSlotIndex or > MaxSlotIndex)
             throw new InvalidPhotoSlotException($"Slot index must be between {MinSlotIndex} and {MaxSlotIndex}. Received: {slotIndex}");
-        if (string.IsNullOrWhiteSpace(objectKey))
-            throw new ProfileValidationException();
+        ValidateMetadata(objectKey, originalFileName, mediaType, fileSizeBytes);
 
+        if (!StarterModules.StarterModules.IsValid(module)) throw new ProfileValidationException();
         var utc = now.ToUniversalTime();
         return new AdditionalProfilePhotoRecord
         {
@@ -58,8 +58,7 @@ public sealed class AdditionalProfilePhotoRecord
 
     public void Replace(string objectKey, string? originalFileName, string mediaType, int fileSizeBytes, DateTimeOffset now)
     {
-        if (string.IsNullOrWhiteSpace(objectKey))
-            throw new ProfileValidationException();
+        ValidateMetadata(objectKey, originalFileName, mediaType, fileSizeBytes);
 
         ObjectKey = objectKey.Trim();
         OriginalFileName = originalFileName?.Trim();
@@ -67,6 +66,14 @@ public sealed class AdditionalProfilePhotoRecord
         FileSizeBytes = fileSizeBytes;
         UpdatedAtUtc = now.ToUniversalTime();
     }
+    private static void ValidateMetadata(string objectKey, string? originalFileName, string mediaType, int fileSizeBytes)
+    {
+        if (string.IsNullOrWhiteSpace(objectKey) || objectKey.Trim().Length > 128 || objectKey.Any(char.IsControl)
+            || originalFileName?.Trim().Length > 256 || originalFileName?.Any(char.IsControl) == true
+            || mediaType is not ("image/jpeg" or "image/png") || fileSizeBytes is < 1 or > 5242880)
+            throw new ProfileValidationException();
+    }
+
 }
 
 public sealed record AdditionalPhotoSlotDto(

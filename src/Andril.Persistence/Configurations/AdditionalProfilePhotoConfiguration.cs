@@ -33,7 +33,9 @@ public sealed class AdditionalProfilePhotoConfiguration : IEntityTypeConfigurati
 
         b.HasIndex(x => new { x.ProfileId, x.SlotIndex }).IsUnique().HasDatabaseName("uq_additional_photos_profile_slot");
         b.HasIndex(x => new { x.AccountId, x.Module, x.SlotIndex }).HasDatabaseName("ix_additional_photos_account_module");
-        b.HasOne<PrivateModuleProfile>().WithMany().HasForeignKey(x => x.ProfileId)
+        b.HasOne<PrivateModuleProfile>().WithMany()
+            .HasForeignKey(x => new { x.ProfileId, x.AccountId, x.Module })
+            .HasPrincipalKey(x => new { x.Id, x.AccountId, x.Module })
             .OnDelete(DeleteBehavior.Cascade).HasConstraintName("fk_additional_photos_profiles");
     }
 }
