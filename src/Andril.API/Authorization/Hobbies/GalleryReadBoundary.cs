@@ -14,7 +14,8 @@ internal enum GalleryReadOperation
     PrivateMediaDelivery,
     UploadValidation,
     UploadMutation,
-    LogicalDeletion
+    LogicalDeletion,
+    RecoveryEvidence
 }
 
 // Explicit backend composition. The existing Gallery registration and HTTP route inventory do not use it.
