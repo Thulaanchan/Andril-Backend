@@ -1,6 +1,6 @@
 # M5 runtime API acceptance and Flutter handoff
 
-The configured Development host exposes 35 verified M5 operations. Shared Groups accounts for 15, Social matching and relationships for 17, and the Social questionnaire for three. HTTP acceptance runs against ASP.NET Core and disposable PostgreSQL using isolated bearer confirmation. It verifies the backend contracts for Flutter. A live Flutter build, hosted Supabase login, provider traffic, and production activation require their own environment evidence.
+The configured Development host exposes 37 verified M5 operations. Shared Groups accounts for 15, Social matching and relationships for 19, and the Social questionnaire for three. HTTP acceptance runs against ASP.NET Core and disposable PostgreSQL using isolated bearer confirmation. It verifies the backend contracts for Flutter. A live Flutter build, hosted Supabase login, provider traffic, and production activation require their own environment evidence.
 
 ## Prepare a secure development backend
 
@@ -47,6 +47,7 @@ dotnet build Andril.slnx -c Release
 | Discovery preferences, consented location and reciprocal filters | `PUT /api/v1/social/matching/preferences`, `PUT, DELETE /api/v1/social/location`, `GET /api/v1/social/explore` | Current evidence on both profiles, withdrawal, approximate distance only, no raw location in cards |
 | Private interest selections | `GET /api/v1/social/matching/interests/catalogue`, `GET, PUT /api/v1/social/matching/interests/me` | Approved catalogue, owner-only storage, retirement and ranked discovery |
 | Questionnaire-bound archetype | `GET /api/v1/social/matching/personality/me`, `PUT /api/v1/social/matching/personality/preferences`, `PUT /api/v1/social/matching/personality/confirmation` | Current completed response, explicit owner choices and privacy-safe ranking |
+| Social relationship lists | `GET /api/v1/social/relationships/sent-likes`, `GET /api/v1/social/relationships/mutual-connections` | Bounded authenticated pages, outgoing positives, active mutual matches and current safety authority |
 | Mutual relationship and revocation | `POST /api/v1/social/relationships/interest`, `GET /api/v1/social/relationships/{targetProfileId}/status`, `POST /api/v1/social/relationships/{targetProfileId}/revoke`, `DELETE /api/v1/social/relationships/{targetProfileId}` | Private unilateral intent, one committed reciprocal match under concurrent requests, independent revocation |
 | Social safety | `PUT, DELETE /api/v1/social/safety/blocks/{targetProfileId}`, `PUT /api/v1/social/safety/restrictions/{targetProfileId}` | Verified actor, no disclosure of blocker, restricted human authority, match and Zone discovery suppressed |
 | Classroom, Club and Zone creation and settings | `POST /api/v1/groups`, `GET /api/v1/groups/{groupId}`, `PUT /api/v1/groups/{groupId}/configuration`, `GET /api/v1/groups/discover` | Canonical Free/Premium transitions, capacities and downgrade, atomic creation, scope and host rights |

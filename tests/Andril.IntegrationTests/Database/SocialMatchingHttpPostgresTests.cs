@@ -208,6 +208,8 @@ public sealed partial class SocialMatchingHttpPostgresTests
         await disable.ExecuteNonQueryAsync();
         try
         {
+            foreach (var route in new[] { SentLikes, MutualConnections })
+                await Expect(await client.GetAsync(route), HttpStatusCode.ServiceUnavailable);
             using var response = await client.GetAsync(Explore);
             await Expect(response, HttpStatusCode.ServiceUnavailable);
             Assert.Equal("Social matching storage is unavailable.", (await response.Content.ReadFromJsonAsync<JsonElement>()).GetProperty("title").GetString());
@@ -306,7 +308,7 @@ public sealed partial class SocialMatchingHttpPostgresTests
         return client;
     }
 
-    private sealed class Host(SocialLifecycleDatabase database, bool enabled = true, PauseInterest? pause = null, bool questionnaire = false, bool interestSelections = false, bool personality = false, string? groupRole = null)
+    private sealed class Host(SocialLifecycleDatabase database, bool enabled = true, DbCommandInterceptor? pause = null, bool questionnaire = false, bool interestSelections = false, bool personality = false, string? groupRole = null)
         : WebApplicationFactory<Program>
     {
         protected override IHost CreateHost(IHostBuilder builder)
