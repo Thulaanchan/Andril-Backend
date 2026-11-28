@@ -46,7 +46,7 @@ public sealed class GroupPersonalParticipationAccessService : IGroupPersonalPart
 
             return GroupPersonalParticipationDto.FromAuthorizedResult(result, scope, groupId);
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+        catch (Exception exception) when (exception is not OperationCanceledException && !GroupAvailability.IsUnavailable(exception))
         {
             cancellationToken.ThrowIfCancellationRequested();
             return null;

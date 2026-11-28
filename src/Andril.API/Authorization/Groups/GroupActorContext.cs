@@ -78,7 +78,7 @@ public sealed class GroupActorContext : IGroupActorContext
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception error) when (!GroupAvailability.IsUnavailable(error))
         {
             // Fail closed on unauthenticated caller, access denial, or profile resolution failure
             return null;
@@ -109,7 +109,7 @@ public sealed class GroupActorContext : IGroupActorContext
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception error) when (!GroupAvailability.IsUnavailable(error))
         {
             // Fail closed on evidence provider failure
             return null;

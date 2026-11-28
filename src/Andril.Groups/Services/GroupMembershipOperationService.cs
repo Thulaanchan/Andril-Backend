@@ -33,6 +33,9 @@ public sealed class GroupJoinOperationResult
     [JsonIgnore]
     public bool EntityRemoved { get; }
 
+    [JsonIgnore]
+    public GroupMembershipTransactionStatus? TransactionStatus { get; private init; }
+
     public GroupJoinOperationResult(bool success, bool membershipCreated = false, bool entityRemoved = false)
     {
         Success = success;
@@ -57,6 +60,9 @@ public sealed class GroupJoinOperationResult
 
     public static GroupJoinOperationResult Failed() =>
         new(success: false, membershipCreated: false, entityRemoved: false);
+
+    public static GroupJoinOperationResult Failed(GroupMembershipTransactionStatus status) =>
+        new(success: false) { TransactionStatus = status };
 
     /// <inheritdoc />
     public override string ToString() => "GroupJoinOperationResult [private]";
@@ -453,7 +459,7 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
 
         if (!txResult.Success || txResult.Status != GroupMembershipTransactionStatus.Committed)
         {
-            return GroupJoinOperationResult.Failed();
+            return GroupJoinOperationResult.Failed(txResult.Status);
         }
 
         return GroupJoinOperationResult.RequestSubmitted();
@@ -588,7 +594,7 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
                 var currentCount = await evidenceProvider.GetCurrentMemberCountAsync(groupId, scope, cancellationToken);
                 if (currentCount >= capacity.Value)
                 {
-                    return GroupJoinOperationResult.Failed();
+                    return GroupJoinOperationResult.Failed(GroupMembershipTransactionStatus.CapacityExceeded);
                 }
             }
         }
@@ -608,7 +614,7 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
         // 4. Validate confirmed transaction results and verify returned repository entity scope
         if (!txResult.Success || txResult.Status != GroupMembershipTransactionStatus.Committed)
         {
-            return GroupJoinOperationResult.Failed();
+            return GroupJoinOperationResult.Failed(txResult.Status);
         }
 
         if (approve)

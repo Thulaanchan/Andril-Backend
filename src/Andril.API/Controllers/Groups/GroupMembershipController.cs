@@ -1,6 +1,10 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.Json.Serialization;
+using Andril.API.Authorization.Groups;
+using Andril.API.Controllers.Social;
+using Andril.Groups.Interfaces;
 using Andril.Groups.Entities;
 using Andril.Groups.Policies;
 using Andril.Groups.Services;
@@ -13,32 +17,36 @@ namespace Andril.API.Controllers.Groups;
 /// <summary>
 /// Request payload for submitting a group join request.
 /// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record GroupJoinSubmissionRequest(
-    string Module,
-    GroupKind GroupKind);
+    [property: JsonRequired] string Module,
+    [property: JsonRequired] GroupKind GroupKind);
 
 /// <summary>
 /// Request payload for cancelling a pending group join request.
 /// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record GroupCancelJoinRequest(
-    string Module,
-    GroupKind GroupKind);
+    [property: JsonRequired] string Module,
+    [property: JsonRequired] GroupKind GroupKind);
 
 /// <summary>
 /// Request payload for processing a pending group join request (approval or rejection).
 /// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record GroupProcessAdmissionRequest(
-    string Module,
-    GroupKind GroupKind,
+    [property: JsonRequired] string Module,
+    [property: JsonRequired] GroupKind GroupKind,
     Guid ApplicantProfileId,
-    bool Approve);
+    [property: JsonRequired] bool Approve, Guid? RequestId = null);
 
 /// <summary>
 /// Request payload for leaving a group.
 /// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record GroupDepartureRequest(
-    string Module,
-    GroupKind GroupKind);
+    [property: JsonRequired] string Module,
+    [property: JsonRequired] GroupKind GroupKind);
 
 /// <summary>
 /// Privacy-safe response projecting the outcome of an authorized group membership operation.
@@ -58,20 +66,26 @@ public sealed record GroupJoinOperationResponseDto(
 [ApiController]
 [Authorize]
 [NonController]
+[GroupErrors, SafeGroupModelState]
+[ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
+[ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
 [Route("api/v1/groups")]
 public sealed class GroupMembershipController : ControllerBase
 {
     private readonly IGroupMembershipOperationService _membershipOperationService;
+    private readonly GroupManagementService? _management;
 
-    public GroupMembershipController(IGroupMembershipOperationService membershipOperationService)
+    public GroupMembershipController(IGroupMembershipOperationService membershipOperationService, GroupManagementService? management = null)
     {
         _membershipOperationService = membershipOperationService ?? throw new ArgumentNullException(nameof(membershipOperationService));
+        _management = management;
     }
 
     /// <summary>
     /// Submits a join request to the specified group under strict caller authorization and scope validation.
     /// </summary>
     [HttpPost("{groupId:guid}/join-requests")]
+    [StrictJsonBody]
     [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     [ProducesResponseType<GroupJoinOperationResponseDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
@@ -130,7 +144,9 @@ public sealed class GroupMembershipController : ControllerBase
                 MembershipCreated: result.MembershipCreated,
                 EntityRemoved: result.EntityRemoved);
 
-            return Ok(dto);
+            return !result.Success && _management is not null
+                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? "club_capacity" : "participation_conflict")
+                : Ok(dto);
         }
         catch (UnauthorizedAccessException)
         {
@@ -141,7 +157,7 @@ public sealed class GroupMembershipController : ControllerBase
                 Detail = "Caller is not authorized to submit a join request for the specified group."
             });
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException error) when (!GroupAvailability.IsUnavailable(error))
         {
             return BadRequest(new ProblemDetails
             {
@@ -166,6 +182,7 @@ public sealed class GroupMembershipController : ControllerBase
     /// </summary>
     [HttpPost("{groupId:guid}/join-requests/cancel")]
     [HttpDelete("{groupId:guid}/join-requests")]
+    [StrictJsonBody]
     [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     [ProducesResponseType<GroupJoinOperationResponseDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
@@ -224,7 +241,9 @@ public sealed class GroupMembershipController : ControllerBase
                 MembershipCreated: result.MembershipCreated,
                 EntityRemoved: result.EntityRemoved);
 
-            return Ok(dto);
+            return !result.Success && _management is not null
+                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? "club_capacity" : "participation_conflict")
+                : Ok(dto);
         }
         catch (UnauthorizedAccessException)
         {
@@ -235,7 +254,7 @@ public sealed class GroupMembershipController : ControllerBase
                 Detail = "Caller is not authorized to cancel a join request for the specified group."
             });
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException error) when (!GroupAvailability.IsUnavailable(error))
         {
             return BadRequest(new ProblemDetails
             {
@@ -259,6 +278,7 @@ public sealed class GroupMembershipController : ControllerBase
     /// Processes a pending group join request (approval or rejection) using authoritative administrator/moderator role.
     /// </summary>
     [HttpPost("{groupId:guid}/admissions")]
+    [StrictJsonBody]
     [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     [ProducesResponseType<GroupJoinOperationResponseDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
@@ -290,7 +310,7 @@ public sealed class GroupMembershipController : ControllerBase
             });
         }
 
-        if (request.ApplicantProfileId == Guid.Empty)
+        if (request.RequestId == Guid.Empty || (request.RequestId.HasValue == (request.ApplicantProfileId != Guid.Empty)) || (request.RequestId.HasValue && _management is null))
         {
             return BadRequest(new ProblemDetails
             {
@@ -317,7 +337,9 @@ public sealed class GroupMembershipController : ControllerBase
 
         try
         {
-            var result = await _membershipOperationService.ProcessJoinRequestStrictAsync(
+            var result = request.RequestId is { } requestId
+                ? await _management!.DecideAsync(groupId, scope, requestId, request.Approve, cancellationToken)
+                : await _membershipOperationService.ProcessJoinRequestStrictAsync(
                 groupId,
                 scope,
                 request.ApplicantProfileId,
@@ -329,7 +351,9 @@ public sealed class GroupMembershipController : ControllerBase
                 MembershipCreated: result.MembershipCreated,
                 EntityRemoved: result.EntityRemoved);
 
-            return Ok(dto);
+            return !result.Success && _management is not null
+                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? "club_capacity" : "participation_conflict")
+                : Ok(dto);
         }
         catch (UnauthorizedAccessException)
         {
@@ -340,7 +364,7 @@ public sealed class GroupMembershipController : ControllerBase
                 Detail = "Caller is not authorized to process admissions for the specified group."
             });
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException error) when (!GroupAvailability.IsUnavailable(error))
         {
             return BadRequest(new ProblemDetails
             {
@@ -365,6 +389,7 @@ public sealed class GroupMembershipController : ControllerBase
     /// </summary>
     [HttpPost("{groupId:guid}/leave")]
     [HttpDelete("{groupId:guid}/members/me")]
+    [StrictJsonBody]
     [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     [ProducesResponseType<GroupJoinOperationResponseDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
@@ -423,7 +448,9 @@ public sealed class GroupMembershipController : ControllerBase
                 MembershipCreated: result.MembershipCreated,
                 EntityRemoved: result.EntityRemoved);
 
-            return Ok(dto);
+            return !result.Success && _management is not null
+                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? "club_capacity" : "participation_conflict")
+                : Ok(dto);
         }
         catch (UnauthorizedAccessException)
         {
@@ -434,7 +461,7 @@ public sealed class GroupMembershipController : ControllerBase
                 Detail = "Caller is not authorized to leave the specified group."
             });
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException error) when (!GroupAvailability.IsUnavailable(error))
         {
             return BadRequest(new ProblemDetails
             {
