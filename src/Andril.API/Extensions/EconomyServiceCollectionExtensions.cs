@@ -1,4 +1,5 @@
 using Andril.API.Middleware;
+using Andril.API.Authorization.Economy;
 using Andril.Common.Accounts;
 using Andril.Economy.VirtualGifts;
 using Andril.Economy.Wallet;
@@ -22,6 +23,7 @@ public static class EconomyServiceCollectionExtensions
         services.AddScoped<IVirtualGiftService, VirtualGiftService>();
 
         // Wallet & Ledger
+        services.AddScoped<IWalletAccountResolver, AccountBackedWalletAccountResolver>();
         services.AddScoped<ICoinWalletRepository, PostgresCoinWalletRepository>();
         services.AddScoped<ICoinWalletService, CoinWalletService>();
 
