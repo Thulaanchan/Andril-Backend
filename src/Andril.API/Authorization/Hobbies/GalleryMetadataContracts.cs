@@ -12,7 +12,9 @@ internal enum GalleryMetadataStatus
     InvalidMediaId,
     MediaUnavailable,
     DependencyUnavailable,
-    InvalidMediaContent
+    InvalidMediaContent,
+    MutationConflict,
+    MutationPending
 }
 
 internal sealed record GalleryMetadataResult<T>(GalleryMetadataStatus Status, T? Value = null) where T : class;
