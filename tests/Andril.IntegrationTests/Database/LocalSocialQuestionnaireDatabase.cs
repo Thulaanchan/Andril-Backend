@@ -18,6 +18,18 @@ namespace Andril.IntegrationTests.Database;
 /// </summary>
 public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
 {
+    private static readonly AsyncLocal<string?> FixtureConnection=new();
+    internal static IDisposable UseFixtureConnection(string connection)
+    {
+        ValidateSettings(new NpgsqlConnectionStringBuilder(connection));
+        var previous=FixtureConnection.Value;FixtureConnection.Value=connection;
+        return new RestoreFixtureConnection(previous);
+    }
+    private sealed class RestoreFixtureConnection(string? previous):IDisposable
+    {
+        private bool disposed;
+        public void Dispose(){if(!disposed){FixtureConnection.Value=previous;disposed=true;}}
+    }
     public const string DatabasePrefix = "andril_social_test_";
 
     private readonly string _adminConnection;
@@ -65,7 +77,7 @@ public sealed class LocalSocialQuestionnaireDatabase : IAsyncDisposable
     /// </summary>
     public static async Task<LocalSocialQuestionnaireDatabase> CreateAsync(bool applySocialMigrations = true)
     {
-        var rawConnection = Environment.GetEnvironmentVariable("ANDRIL_M2_TEST_POSTGRES");
+        var rawConnection = FixtureConnection.Value ?? Environment.GetEnvironmentVariable("ANDRIL_M2_TEST_POSTGRES");
         if (string.IsNullOrWhiteSpace(rawConnection))
             throw new InvalidOperationException("ANDRIL_M2_TEST_POSTGRES environment variable is not configured.");
 
