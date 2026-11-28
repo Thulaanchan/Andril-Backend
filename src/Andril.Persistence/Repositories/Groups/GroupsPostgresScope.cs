@@ -8,10 +8,11 @@ using Npgsql;
 namespace Andril.Persistence.Repositories.Groups;
 
 public sealed class GroupsPostgresScope(AccountsDbContext accounts, DbContextOptions<GroupsDbContext> options,
-    IPrivateProfileService profiles, ICurrentUser user, string runtimeRole)
+    IPrivateProfileService profiles, ICurrentUser user, string runtimeRole, IReadOnlySet<string>? enabledModules = null)
 {
     public Task<T> ExecuteAsync<T>(string module, Func<GroupsDbContext, Guid, CancellationToken, Task<T>> action, CancellationToken token) =>
-        profiles.WithAuthorizedProfileAsync(module, (profile) => ExecuteCoreAsync(module, profile, action, token), token);
+        enabledModules?.Contains(module) == false ? throw new ProfileAccessDeniedException() :
+            profiles.WithAuthorizedProfileAsync(module, (profile) => ExecuteCoreAsync(module, profile, action, token), token);
 
     internal async Task<T> ExecuteForActorAsync<T>(Guid actorId,
         Func<GroupsDbContext, string, CancellationToken, Task<T>> action, CancellationToken token)

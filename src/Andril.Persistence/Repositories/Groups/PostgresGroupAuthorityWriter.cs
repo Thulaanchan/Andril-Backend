@@ -8,7 +8,7 @@ using Npgsql;
 namespace Andril.Persistence.Repositories.Groups;
 
 public sealed class PostgresGroupAuthorityWriter(DbContextOptions<GroupsDbContext> options, ICurrentUser user,
-    IOnboardingIdentity identity, string runtimeRole)
+    IOnboardingIdentity identity, string runtimeRole, IReadOnlySet<string>? enabledModules = null)
 {
     public Task BlockAsync(string module, Guid target, bool enabled, CancellationToken token = default) =>
         WriteAsync(module, target, "block", enabled, token);
@@ -21,7 +21,7 @@ public sealed class PostgresGroupAuthorityWriter(DbContextOptions<GroupsDbContex
 
     private async Task WriteAsync(string module, Guid target, string operation, bool enabled, CancellationToken token)
     {
-        if (module is not ("learning" or "hobbies") || target == Guid.Empty || !user.IsAuthenticated || user.UserId is not Guid subject
+        if (module is not ("learning" or "hobbies") || enabledModules?.Contains(module) == false || target == Guid.Empty || !user.IsAuthenticated || user.UserId is not Guid subject
             || subject == Guid.Empty || !identity.IsConfirmedFor(subject)) throw new ProfileAccessDeniedException();
         await using var db = new GroupsDbContext(options);
         await using var tx = await db.Database.BeginTransactionAsync(token);

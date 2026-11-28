@@ -12,6 +12,7 @@ builder.Services.AddControllers()
 builder.Services.AddProblemDetails();
 builder.Services.AddSupabaseAuthentication(builder.Configuration);
 builder.Services.AddAccounts(builder.Configuration);
+builder.Services.AddVerifiedSharedGroupsPersistence(builder.Configuration);
 builder.Services.AddNotifications();
 builder.Services.AddSupabaseIdentityVerification(builder.Configuration);
 builder.Services.AddSocialQuestionnaireServices();
