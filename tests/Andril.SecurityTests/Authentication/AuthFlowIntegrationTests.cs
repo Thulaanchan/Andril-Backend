@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Claims;
 using Andril.Common.Accounts;
+using Andril.Common.Accounts.Preferences;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -156,6 +157,70 @@ public sealed class AuthFlowIntegrationTests
         client.DefaultRequestHeaders.Authorization = new("Bearer", auth.Token());
         Assert.Equal(HttpStatusCode.ServiceUnavailable, (await client.PostAsync("/api/v1/account/initialize", null)).StatusCode);
         Assert.Equal(0, handler.Calls);
+    }
+
+    [Fact]
+    public async Task SettingsAndAccountRoutesShareApprovedSubjectQuotaBeforeProviderLookup()
+    {
+        var handler = new UserHandler();
+        var store = new Accounts();
+        using var auth = new AuthenticationFactory(identityHandler: handler);
+        using var factory = auth.WithWebHostBuilder(b =>
+        {
+            b.ConfigureAppConfiguration((_, c) => c.AddInMemoryCollection(new Dictionary<string, string?>
+                { ["SupabaseIdentity:AccountRequestsPerMinute"] = "2" }));
+            b.ConfigureTestServices(s =>
+            {
+                s.Replace(ServiceDescriptor.Singleton<IAccountRepository>(store));
+                s.Replace(ServiceDescriptor.Singleton<ILanguagePreferenceRepository>(new UnusedLanguagePreferences()));
+            });
+        });
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", auth.Token());
+        using var account = await client.GetAsync("/api/v1/account/me");
+        using var settings = await client.GetAsync("/api/v1/account/preferences/language");
+        Assert.Equal(HttpStatusCode.NotFound, account.StatusCode);
+        Assert.Equal(HttpStatusCode.NotFound, settings.StatusCode);
+        using var denied = await client.PatchAsJsonAsync("/api/v1/account/preferences/language", new { language = "ta", mode = "settings" });
+        Assert.Equal(HttpStatusCode.TooManyRequests, denied.StatusCode);
+        Assert.True(denied.Headers.CacheControl?.NoStore);
+        Assert.NotNull(denied.Headers.RetryAfter);
+        Assert.Equal(2, handler.Calls);
+        Assert.Equal(2, store.Calls);
+        Assert.Empty(store.Rows);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task EarlierSettingsConfirmationCannotBypassLaterProviderRejection(bool patch)
+    {
+        var handler = new UserHandler();
+        var store = new Accounts();
+        using var auth = new AuthenticationFactory(identityHandler: handler);
+        using var factory = auth.WithWebHostBuilder(b => b.ConfigureTestServices(s =>
+        {
+            s.Replace(ServiceDescriptor.Singleton<IAccountRepository>(store));
+            s.Replace(ServiceDescriptor.Singleton<ILanguagePreferenceRepository>(new UnusedLanguagePreferences()));
+        }));
+        using var client = factory.CreateClient();
+        client.DefaultRequestHeaders.Authorization = new("Bearer", auth.Token());
+        using var initial = await client.GetAsync("/api/v1/account/preferences/language");
+        Assert.Equal(HttpStatusCode.NotFound, initial.StatusCode);
+        handler.Mode = "unauthorized";
+        using var response = patch ? await client.PatchAsJsonAsync("/api/v1/account/preferences/language", new { language = "ta", mode = "settings" })
+            : await client.GetAsync("/api/v1/account/preferences/language");
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        Assert.True(response.Headers.CacheControl?.NoStore);
+        Assert.Empty(await response.Content.ReadAsStringAsync());
+        Assert.Equal(1, store.Calls);
+        Assert.Equal(2, handler.Calls);
+    }
+
+    private sealed class UnusedLanguagePreferences : ILanguagePreferenceRepository
+    {
+        public Task<AccountLanguagePreference?> FindAsync(Guid accountId, CancellationToken cancellationToken = default) => throw new InvalidOperationException("Missing or denied accounts cannot read preferences.");
+        public Task<AccountLanguagePreference> WriteAsync(Guid accountId, string language, bool initializeOnly, DateTimeOffset now, CancellationToken cancellationToken = default) => throw new InvalidOperationException("Missing or denied accounts cannot write preferences.");
     }
 
     private sealed class Accounts : IAccountRepository
