@@ -23,7 +23,14 @@ internal sealed class IsolatedModuleDiaryRepository : IModuleDiaryRepository
     private readonly IPrivateModuleAccess access;
     private readonly IPrivateProfileService profiles;
     private readonly IsolatedDiaryEditingService editing;
+    private readonly LearningDiaryTransaction? production;
     internal Func<string, CancellationToken, Task>? TestCheckpoint { get; init; }
+
+    internal IsolatedModuleDiaryRepository(LearningDiaryTransaction production)
+    {
+        this.production=production;
+        options=null!;user=null!;access=null!;profiles=null!;editing=null!;
+    }
 
     internal IsolatedModuleDiaryRepository(DbContextOptions<DiaryDbContext> options, ICurrentUser user,
         IPrivateModuleAccess access, IPrivateProfileService profiles)
@@ -38,7 +45,7 @@ internal sealed class IsolatedModuleDiaryRepository : IModuleDiaryRepository
     }
 
     private DiaryDbContext Open() => new(options);
-    private sealed record Owner(Guid Subject, Guid Profile, string Module);
+    internal sealed record Owner(Guid Subject, Guid Profile, string Module);
 
     private async Task<Owner> Resolve(string module, CancellationToken ct)
     {
@@ -54,6 +61,7 @@ internal sealed class IsolatedModuleDiaryRepository : IModuleDiaryRepository
 
     private async Task Revalidate(Owner owner, CancellationToken ct)
     {
+        if(production is not null){production.Revalidate(owner,ct);return;}
         var fresh = await Resolve(owner.Module, ct);
         if (fresh != owner) throw new ProfileAccessDeniedException();
     }
@@ -61,6 +69,11 @@ internal sealed class IsolatedModuleDiaryRepository : IModuleDiaryRepository
     private async Task<T> Within<T>(string module, Func<DiaryDbContext, Owner, CancellationToken, Task<T>> operation,
         Func<Exception, T> expectedFailure, CancellationToken ct, Func<T>? commitUnknown = null)
     {
+        if(production is not null)return await production.Run(module,async(db,owner,token)=>
+        {
+            var result=await operation(db,owner,token);
+            await Checkpoint("release",token);await Revalidate(owner,token);return result;
+        },expectedFailure,ct,commitUnknown);
         try
         {
             var owner = await Resolve(module, ct);
@@ -90,6 +103,8 @@ internal sealed class IsolatedModuleDiaryRepository : IModuleDiaryRepository
     }
 
     private Task Checkpoint(string phase, CancellationToken ct) => TestCheckpoint?.Invoke(phase, ct) ?? Task.CompletedTask;
+    private Task<DiaryEntrySnapshot> Snapshot(ModuleDiaryEntry entry,CancellationToken ct) => production is null
+        ? editing.ReadSnapshotAsync(entry,ct):Task.FromResult(production.Snapshot(entry,ct));
 
     public Task<DiaryReadResult> ReadAsync(string module, DateOnly date, CancellationToken cancellationToken = default) =>
         Within(module, async (db, owner, ct) =>
@@ -101,7 +116,7 @@ internal sealed class IsolatedModuleDiaryRepository : IModuleDiaryRepository
             try { entry = row.ToDomain(); }
             catch (Exception error) when (error is JsonException or ArgumentException or InvalidOperationException)
             { return DiaryReadResult.Unavailable(); }
-            return DiaryReadResult.Available(await editing.ReadSnapshotAsync(entry, ct));
+            return DiaryReadResult.Available(await Snapshot(entry, ct));
         }, ReadFailure, cancellationToken);
 
     public Task<DiaryCalendarResult> CalendarAsync(string module, DateOnly from, DateOnly through, CancellationToken cancellationToken = default)
@@ -124,7 +139,7 @@ internal sealed class IsolatedModuleDiaryRepository : IModuleDiaryRepository
             if (entry.OwnerModuleProfileId != owner.Profile || entry.Module != owner.Module) throw new ProfileAccessDeniedException();
             // B3-03's immutable private snapshot copies the caller's shape under existing owner
             // gates; persistence never serializes the JsonIgnore domain values by accident.
-            var replacement = DiaryEntryRow.From(await editing.ReadSnapshotAsync(entry, token));
+            var replacement = DiaryEntryRow.From(await Snapshot(entry, token));
             if (!edit) db.Set<DiaryEntryRow>().Add(replacement);
             else
             {
@@ -169,6 +184,7 @@ internal sealed class IsolatedModuleDiaryRepository : IModuleDiaryRepository
             { SqlState: PostgresErrorCodes.SerializationFailure or PostgresErrorCodes.DeadlockDetected } }
         || error is DbUpdateException { InnerException: PostgresException
             { SqlState: PostgresErrorCodes.UniqueViolation, ConstraintName: "pk_module_diary_entries" } }
+        || error is DiaryTransactionConflictException
         || error is InvalidOperationException { InnerException: DbUpdateException
             { InnerException: PostgresException { SqlState: PostgresErrorCodes.SerializationFailure } } };
     private static bool IsExpected(Exception error) => Denied(error) || Conflict(error)

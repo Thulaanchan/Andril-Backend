@@ -9,15 +9,17 @@ using Owner = Andril.Persistence.Repositories.Learning.IsolatedLearningDocumentB
 
 namespace Andril.Persistence.Repositories.Learning;
 
-/// <summary>Unregistered, isolated PostgreSQL Portfolio slice. The shared Learning document
+/// <summary>Private Portfolio commands; the ordinary constructor retains its isolated guard.
+/// Explicit production composition supplies the real M2 serializable boundary. The shared Learning document
 /// boundary owns server identity, lifecycle, Account -> Membership -> Resource locking and
 /// fresh authorization at read release/commit. Does not activate production authority.</summary>
 internal sealed class IsolatedLearningPortfolioRepository : ILearningPortfolioRepository
 {
-    private readonly IsolatedLearningDocumentBoundary boundary;
+    private readonly ILearningDocumentBoundary boundary;
     internal Func<string, CancellationToken, Task>? TestCheckpoint { get; init; }
     internal IsolatedLearningPortfolioRepository(DbContextOptions<LearningDbContext> options, ICurrentUser user,
-        IPrivateModuleAccess access, IPrivateProfileService profiles) => boundary = new(options, user, access, profiles);
+        IPrivateModuleAccess access, IPrivateProfileService profiles) => boundary = new IsolatedLearningDocumentBoundary(options, user, access, profiles);
+    internal IsolatedLearningPortfolioRepository(ILearningDocumentBoundary boundary) => this.boundary = boundary;
     private Task<T> Within<T>(Func<LearningDbContext, Owner, CancellationToken, Task<T>> action,
         Func<PortfolioOperationState, T> failure, CancellationToken ct, bool write = false) => boundary.Run(action, f => failure(f switch
         {

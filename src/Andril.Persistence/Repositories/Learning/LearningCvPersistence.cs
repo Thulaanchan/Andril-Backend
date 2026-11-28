@@ -20,14 +20,24 @@ public static class LearningCvPersistence
         new IsolatedLearningCvRepository(new LearningOwnerDocumentTransaction(accounts, user, profiles, runtimeRole));
 }
 
+internal enum LearningPrivateDocument { Cv, Portfolio, Diary }
+
 internal sealed class LearningOwnerDocumentTransaction(AccountsDbContext accounts, ICurrentUser user,
-    IPrivateProfileService profiles, string runtimeRole) : ILearningDocumentBoundary
+    IPrivateProfileService profiles, string runtimeRole, LearningPrivateDocument document = LearningPrivateDocument.Cv) : ILearningDocumentBoundary
 {
     public async Task<T> Run<T>(Func<LearningDbContext, Owner, CancellationToken, Task<T>> action,
         Func<LearningDocumentFailure, T> failure, CancellationToken ct, bool write = false,
         Func<string, CancellationToken, Task>? checkpoint = null, Func<Exception, bool>? additionalConflict = null)
     {
         ct.ThrowIfCancellationRequested();
+        // Fixed backend-owned resource scopes; no client-controlled SQL identifier or purpose.
+        var table = document switch
+        {
+            LearningPrivateDocument.Cv => "andril_learning.learning_cvs",
+            LearningPrivateDocument.Portfolio => "andril_learning.learning_portfolios",
+            LearningPrivateDocument.Diary => "andril_diary.module_diary_entries",
+            _ => throw new ArgumentOutOfRangeException(nameof(document))
+        };
         if (!user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty)
             return failure(LearningDocumentFailure.Denied);
         if (string.IsNullOrWhiteSpace(runtimeRole) || accounts.Database.CurrentTransaction is not null)
@@ -61,17 +71,20 @@ internal sealed class LearningOwnerDocumentTransaction(AccountsDbContext account
                     await db.Database.ExecuteSqlInterpolatedAsync($"SELECT set_config('role',{runtimeRole},true)", ct);
                     var restricted = await db.Database.SqlQuery<bool>($"""
                         SELECT (current_user<>session_user AND NOT rolsuper AND NOT rolbypassrls AND NOT rolcreatedb AND NOT rolcreaterole
-                            AND row_security_active('andril_learning.learning_cvs'::regclass)
-                            AND (SELECT relforcerowsecurity FROM pg_class WHERE oid='andril_learning.learning_cvs'::regclass)
+                            AND row_security_active(to_regclass({table}))
+                            AND (SELECT relforcerowsecurity FROM pg_class WHERE oid=to_regclass({table}))
                             AND EXISTS(SELECT FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
                                 WHERE n.nspname='andril_identity' AND c.relname='account_module_lifecycles'
                                     AND c.relrowsecurity AND c.relforcerowsecurity)
-                            AND NOT EXISTS(SELECT FROM pg_class c WHERE c.oid='andril_learning.learning_cvs'::regclass
+                            AND NOT EXISTS(SELECT FROM pg_class c WHERE c.oid=to_regclass({table})
                                 AND pg_has_role(current_user,c.relowner,'MEMBER'))
                             AND NOT EXISTS(SELECT FROM pg_proc p JOIN pg_roles o ON o.oid=p.proowner
-                                WHERE p.oid IN (to_regprocedure('andril_learning.lock_cv_owner(uuid,uuid)'),
+                                WHERE (p.oid IN (to_regprocedure('andril_learning.lock_cv_owner(uuid,uuid)'),
                                     to_regprocedure('andril_learning.lock_learning_owners(uuid,uuid,uuid)'),
-                                    to_regprocedure('andril_learning.scope_visible(uuid,text)')) AND (o.rolsuper OR o.rolbypassrls))
+                                    to_regprocedure('andril_learning.scope_visible(uuid,text)'))
+                                    OR p.oid=CASE WHEN {document==LearningPrivateDocument.Diary}
+                                        THEN to_regprocedure('andril_diary.scope_visible(uuid,text)') ELSE NULL END)
+                                    AND (o.rolsuper OR o.rolbypassrls))
                             AND andril_learning.lock_cv_owner({subject},{profile.ProfileId})) AS "Value"
                         FROM pg_roles WHERE rolname=current_user
                         """).SingleAsync(ct);
