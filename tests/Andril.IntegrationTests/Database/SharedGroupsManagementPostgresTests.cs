@@ -150,6 +150,13 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
         var actor = new Actor(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
         var birth = minor ? new DateOnly(2015, 1, 1) : new DateOnly(1990, 1, 1);
         await using var db = Database.OpenAccounts();
+        await using var transaction = await db.Database.BeginTransactionAsync();
+        // Fixture-owner provisioning must obey M2 FORCE RLS even when the local
+        // test administrator has no superuser/BYPASSRLS privilege.
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            SELECT set_config('andril.account',{actor.Account.ToString()},true),
+                set_config('andril.subject',{actor.Subject.ToString()},true),set_config('andril.module',{module},true)
+            """);
         await db.Database.ExecuteSqlInterpolatedAsync($"""
             INSERT INTO andril_identity.accounts(id, supabase_user_id, created_at_utc, updated_at_utc)
                 VALUES ({actor.Account}, {actor.Subject}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
@@ -165,6 +172,7 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
                 VALUES ({actor.Account}, 'terms_agreed', 'fixture-terms-v1', CURRENT_TIMESTAMP),
                        ({actor.Account}, 'privacy_acknowledged', 'fixture-privacy-v1', CURRENT_TIMESTAMP);
             """);
+        await transaction.CommitAsync();
         return actor;
     }
 

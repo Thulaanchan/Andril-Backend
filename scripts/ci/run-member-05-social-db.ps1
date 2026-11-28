@@ -18,8 +18,10 @@ $functionalManifest = Join-Path $PSScriptRoot 'member-05-final-functional-requir
 $functional = @(Get-Content -LiteralPath $functionalManifest | Where-Object { $_ -ne '' })
 $runtimeManifest = Join-Path $PSScriptRoot 'member-05-runtime-required-db-tests.txt'
 $runtime = @(Get-Content -LiteralPath $runtimeManifest | Where-Object { $_ -ne '' })
-$expected = $social + $groups + $functional + $runtime
-if ($social.Count -ne 52 -or $groups.Count -ne 27 -or $functional.Count -ne 13 -or $runtime.Count -eq 0 -or @($expected | Sort-Object -Unique).Count -ne $expected.Count -or
+$learningManifest = Join-Path $PSScriptRoot 'member-01-learning-eligibility-required-db-tests.txt'
+$learning = @(Get-Content -LiteralPath $learningManifest | Where-Object { $_ -ne '' })
+$expected = $social + $groups + $functional + $runtime + $learning
+if ($social.Count -ne 52 -or $groups.Count -ne 27 -or $functional.Count -ne 13 -or $runtime.Count -eq 0 -or $learning.Count -ne 11 -or @($expected | Sort-Object -Unique).Count -ne $expected.Count -or
     @($expected | Where-Object { $_ -cnotmatch '^Andril\.IntegrationTests\.Database\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$' }).Count -ne 0) {
     throw 'The Member-05 acceptance manifests are incomplete, invalid, or contain duplicates.'
 }

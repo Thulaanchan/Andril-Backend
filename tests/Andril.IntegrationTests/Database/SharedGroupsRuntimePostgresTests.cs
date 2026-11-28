@@ -74,7 +74,7 @@ public sealed class SharedGroupsRuntimePostgresTests
     }
 }
 
-internal sealed class SharedGroupsHttpHost(SharedGroupsDatabase store, bool enabled = true, bool hobbies = false, bool social = true, bool learning = true)
+internal sealed class SharedGroupsHttpHost(SharedGroupsDatabase store, bool enabled = true, bool hobbies = false, bool social = true, bool learning = true, bool learningClassrooms = false)
     : WebApplicationFactory<Program>
 {
     protected override IHost CreateHost(IHostBuilder builder)
@@ -82,6 +82,7 @@ internal sealed class SharedGroupsHttpHost(SharedGroupsDatabase store, bool enab
         var settings = new Dictionary<string, string?>
         {
             ["SharedGroups:EnablePersistence"] = enabled.ToString(),
+            ["Learning:Classrooms:Enabled"] = learningClassrooms.ToString(),
             ["SharedGroups:EnableLearning"] = learning.ToString(),
             ["SharedGroups:EnableHobbies"] = hobbies.ToString(),
             ["SharedGroups:EnableSocial"] = social.ToString(),

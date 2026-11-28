@@ -14,6 +14,7 @@ builder.Services.AddProblemDetails();
 builder.Services.AddSupabaseAuthentication(builder.Configuration);
 builder.Services.AddAccounts(builder.Configuration);
 builder.Services.AddVerifiedSharedGroupsPersistence(builder.Configuration);
+builder.Services.AddVerifiedLearningClassrooms(builder.Configuration);
 builder.Services.AddNotifications();
 builder.Services.AddSupabaseIdentityVerification(builder.Configuration);
 builder.Services.AddSocialQuestionnaireServices();
@@ -108,6 +109,7 @@ app.UseRateLimiter();
 app.UseMiddleware<Andril.API.Middleware.ConfirmedAccountIdentityMiddleware>();
 app.UseAuthorization();
 app.MapControllers();
+app.MapVerifiedLearningClassrooms();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
    .WithName("HealthCheck")
    .AllowAnonymous();
