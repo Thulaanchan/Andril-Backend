@@ -21,8 +21,7 @@ public sealed class PrivacyExceptionHandler(IProblemDetailsService problems) : I
             ProblemDetails = new ProblemDetails
             {
                 Status = context.Response.StatusCode,
-                Title = isValidation ? "Privacy settings validation error" : "Privacy settings not found",
-                Detail = exception.Message
+                Title = isValidation ? "Privacy settings validation error" : "Privacy settings not found"
             }
         });
 

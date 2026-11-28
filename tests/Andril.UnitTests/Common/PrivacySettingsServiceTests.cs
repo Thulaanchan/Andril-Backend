@@ -61,7 +61,7 @@ public sealed class PrivacySettingsServiceTests
         public bool WrongAccount;
         public Guid? UserId => Account.SupabaseUserId;
         public bool IsAuthenticated => true;
-        public UserPrivacySettingsService Service => new(this, this, this, TimeProvider.System);
+        public UserPrivacySettingsService Service => new(this, new AccountService(this, this, TimeProvider.System), this, TimeProvider.System);
         public Fixture() => Settings = UserPrivacySettings.CreateDefault(Account.Id, DateTimeOffset.UtcNow);
         public Task<Account?> FindBySubjectAsync(Guid subject, CancellationToken cancellationToken = default) =>
             Task.FromResult<Account?>(WrongAccount ? Account.Create(Guid.NewGuid(), DateTimeOffset.UtcNow) : Account);
