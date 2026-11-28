@@ -50,6 +50,7 @@ public sealed class SocialContextualConsentSchemaPostgresTests
         Assert.Equal(5, await db.Database.SqlQueryRaw<int>("""
             SELECT count(*)::integer AS "Value" FROM pg_class t JOIN pg_namespace n ON n.oid=t.relnamespace
             WHERE n.nspname='andril_social_ai' AND t.relkind='r' AND t.relrowsecurity AND t.relforcerowsecurity
+                AND t.relname IN ('consents','consent_requests','consent_invalidations','consent_decision_audit','consent_audit_holds')
             """).SingleAsync());
     }
 }

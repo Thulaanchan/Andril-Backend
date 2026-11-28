@@ -22,6 +22,7 @@ public sealed class SocialMigrationTests
     private const string SocialInterestCatalogueMigrationName = "20261128021004_SocialInterestCatalogue";
     private const string SocialPersonalityEvidenceMigrationName = "20261128022353_SocialPersonalityEvidence";
     private const string SocialContextualConsentMigrationName = "20261128023415_SocialContextualConsent";
+    private const string SocialContextualConsentModuleEpochsMigrationName = "20261128025149_SocialContextualConsentModuleEpochs";
     private static readonly string[] ExpectedTables = ["social_questionnaire_answers", "social_questionnaire_responses"];
 
     [Fact]
@@ -30,7 +31,7 @@ public sealed class SocialMigrationTests
         using var context = new SocialDbContextFactory().CreateDbContext([]);
         var migrations = context.Database.GetMigrations().ToArray();
 
-        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName, PreferencesMigrationName, SafetyMigrationName, MatchingMigrationName, SocialInterestCatalogueMigrationName, SocialPersonalityEvidenceMigrationName, SocialContextualConsentMigrationName }, migrations);
+        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName, PreferencesMigrationName, SafetyMigrationName, MatchingMigrationName, SocialInterestCatalogueMigrationName, SocialPersonalityEvidenceMigrationName, SocialContextualConsentMigrationName, SocialContextualConsentModuleEpochsMigrationName }, migrations);
         Assert.NotNull(context.GetService<IMigrationsAssembly>().ModelSnapshot);
         Assert.False(context.Database.HasPendingModelChanges());
     }
@@ -108,7 +109,7 @@ public sealed class SocialMigrationTests
         await context.Database.MigrateAsync();
 
         var applied = (await context.Database.GetAppliedMigrationsAsync()).ToArray();
-        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName, PreferencesMigrationName, SafetyMigrationName, MatchingMigrationName, SocialInterestCatalogueMigrationName, SocialPersonalityEvidenceMigrationName, SocialContextualConsentMigrationName }, applied);
+        Assert.Equal(new[] { InitialMigrationName, LifecycleMigrationName, RelationshipMigrationName, PreferencesMigrationName, SafetyMigrationName, MatchingMigrationName, SocialInterestCatalogueMigrationName, SocialPersonalityEvidenceMigrationName, SocialContextualConsentMigrationName, SocialContextualConsentModuleEpochsMigrationName }, applied);
 
         // 2. Verify expected schema objects exist in andril_social without disposing EF Core-owned connection
         var conn = context.Database.GetDbConnection();
