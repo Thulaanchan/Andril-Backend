@@ -12,11 +12,13 @@ internal enum GalleryReadOperation
     MetadataList,
     MetadataDetail,
     PrivateMediaDelivery,
-    UploadValidation
+    UploadValidation,
+    UploadMutation,
+    LogicalDeletion
 }
 
 // Explicit backend composition. The existing Gallery registration and HTTP route inventory do not use it.
-internal sealed class GalleryReadBoundary(
+internal sealed partial class GalleryReadBoundary(
     AccountBackedGalleryActorResolver actors,
     Func<GalleryActor, GalleryReadOperation, CancellationToken, Task<bool>> authorizeOperation,
     IGalleryRepository repository,
@@ -72,7 +74,8 @@ internal sealed class GalleryReadBoundary(
             var result = await read(scope, token);
             token.ThrowIfCancellationRequested();
             // Recheck before handing buffered data to the caller. A production release fence needs a separate contract.
-            if ((result.Status is GalleryMetadataStatus.Success or GalleryMetadataStatus.MediaUnavailable) &&
+            if ((result.Status is GalleryMetadataStatus.Success or GalleryMetadataStatus.MediaUnavailable or
+                GalleryMetadataStatus.MutationPending or GalleryMetadataStatus.MutationConflict) &&
                 await ResolveAuthorizedScopeAsync(operation, token) != scope)
                 return new(GalleryMetadataStatus.Denied);
             return result;

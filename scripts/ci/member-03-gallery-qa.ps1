@@ -204,12 +204,12 @@ function Verify-Results([xml]$Document, [string[]]$Targets) {
     $summary['uniqueExecutionIds'] = $ids.Count
     $summary['identityMismatches'] = $mismatches
     if (!$counters -or $resultSummary.GetAttribute('outcome') -cnotin 'Passed','Completed' -or
-        $defs.Count -ne 84 -or $entries.Count -ne 84 -or $ids.Count -ne 84 -or
-        $rows.Count -ne 84 -or $passed -ne 84 -or $failed -or $skipped -or $mismatches) {
+        $defs.Count -ne 85 -or $entries.Count -ne 85 -or $ids.Count -ne 85 -or
+        $rows.Count -ne 85 -or $passed -ne 85 -or $failed -or $skipped -or $mismatches) {
         throw 'Gallery identity, result summary, or outcome reconciliation failed.'
     }
     foreach ($key in 'total','executed','passed') {
-        if ($counters.GetAttribute($key) -cne '84') { throw "Unexpected TRX counter: $key." }
+        if ($counters.GetAttribute($key) -cne '85') { throw "Unexpected TRX counter: $key." }
     }
     foreach ($key in $counterNames | Where-Object { $_ -cnotin 'total','executed','passed' }) {
         if ($counters.HasAttribute($key) -and $counters.GetAttribute($key) -cne '0') { throw "Unexpected TRX counter: $key." }
@@ -217,7 +217,7 @@ function Verify-Results([xml]$Document, [string[]]$Targets) {
     foreach ($key in 'failed','aborted','notExecuted') {
         if (!$counters.HasAttribute($key)) { throw "Missing TRX counter: $key." }
     }
-    Write-Host 'Verified all 84 identities and unique execution IDs with zero mismatches.'
+    Write-Host 'Verified all 85 identities and unique execution IDs with zero mismatches.'
 }
 
 
@@ -227,8 +227,8 @@ try {
     $inventory = Join-Path $PSScriptRoot 'member-03-gallery-required-db-tests.txt'
     $targets = [IO.File]::ReadAllLines($inventory,$utf8)
     $summary['inventorySha256'] = (Get-FileHash -LiteralPath $inventory).Hash
-    if ($targets.Count -ne 84 -or @($targets | Sort-Object -Unique).Count -ne 84 -or
-        $summary.inventorySha256 -cne 'B8C1154B080F7037851D799E4A9F95D2A3D17AB4941FFC7637956D6390DFB847' -or
+    if ($targets.Count -ne 85 -or @($targets | Sort-Object -Unique).Count -ne 85 -or
+        $summary.inventorySha256 -cne '35CA04CC527302EFC80B76766BD0FE731915C521D6BB670F32FADF0093AD12F8' -or
         @($targets | Where-Object { $_ -cnotmatch '^Andril\.IntegrationTests\.Database\.GalleryPersistenceTests\.[A-Za-z_]\w*$' }).Count) {
         throw 'Gallery inventory differs from the approved candidate proposal.'
     }
@@ -322,4 +322,4 @@ try {
     }
 }
 if (!$summary.accepted) { throw 'Gallery PostgreSQL acceptance did not complete.' }
-Write-Host "Verified 84 Gallery PostgreSQL executions on $($summary.commit), tree $($summary.tree)."
+Write-Host "Verified 85 Gallery PostgreSQL executions on $($summary.commit), tree $($summary.tree)."
