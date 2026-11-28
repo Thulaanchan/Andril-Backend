@@ -19,8 +19,11 @@ public static class CvStructuredFields
     };
     private static readonly HashSet<string> Contact = ["Email","Phone","CityCountry","ProfessionalProfileLinks"];
     // Conservative withholding, never a claim that free text can prove absence of all secrets.
-    private static readonly Regex EmbeddedContact = new(@"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|(?:\+?\d[\s().-]*){7,}|(?:https?://|www\.)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
-    private static readonly Regex Prohibited = new(@"\b(password|passwd|api[_ -]?key|secret[_ -]?key|private[_ -]?key|government[_ -]?id|passport|national[_ -]?id|ssn|iban|bank[_ -]?account|credit[_ -]?card|diary|residential[_ -]?address)\b|\b\d{3}-\d{2}-\d{4}\b|\b(?:\d[ -]?){13,19}\b|\b\d+\s+[^\r\n,]{1,60}\s+(street|road|avenue|lane|drive)\b", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(100));
+    // Boolean classification needs no captures. Linear-time matching prevents long
+    // nonmatching tokens from exhausting the unchanged safety timeout during PDF GC.
+    private const RegexOptions ClassificationOptions=RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | RegexOptions.NonBacktracking;
+    private static readonly Regex EmbeddedContact = new(@"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}|(?:\+?\d[\s().-]*){7,}|(?:https?://|www\.)", ClassificationOptions, TimeSpan.FromMilliseconds(100));
+    private static readonly Regex Prohibited = new(@"\b(password|passwd|api[_ -]?key|secret[_ -]?key|private[_ -]?key|government[_ -]?id|passport|national[_ -]?id|ssn|iban|bank[_ -]?account|credit[_ -]?card|diary|residential[_ -]?address)\b|\b\d{3}-\d{2}-\d{4}\b|\b(?:\d[ -]?){13,19}\b|\b\d+\s+[^\r\n,]{1,60}\s+(street|road|avenue|lane|drive)\b", ClassificationOptions, TimeSpan.FromMilliseconds(100));
     public static IReadOnlyList<string> Names(CvSectionCategory category) => Array.AsReadOnly(Allowed.TryGetValue(category,out var names) ? names.ToArray() : throw new ArgumentException("Unsupported CV section."));
     internal static IReadOnlyDictionary<string,string> Validate(CvSectionCategory category, IReadOnlyDictionary<string,string>? fields)
     {
