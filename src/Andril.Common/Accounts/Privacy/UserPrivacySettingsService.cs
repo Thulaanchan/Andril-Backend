@@ -12,12 +12,8 @@ public sealed class UserPrivacySettingsService(
     public async Task<UserPrivacySettingsDto> GetMyPrivacySettingsAsync(CancellationToken cancellationToken = default)
     {
         var account = await ResolveAccountAsync(cancellationToken);
-        var settings = await privacyRepository.GetByAccountIdAsync(account.Id, cancellationToken);
-        if (settings is null)
-        {
-            var defaultSettings = UserPrivacySettings.CreateDefault(account.Id, clock.GetUtcNow());
-            settings = await privacyRepository.UpsertAsync(defaultSettings, cancellationToken);
-        }
+        var settings = await privacyRepository.GetOrCreateAsync(account.Id, clock.GetUtcNow(), cancellationToken);
+        if (settings.AccountId != account.Id) throw new AccountStoreUnavailableException();
 
         return ToDto(settings);
     }
@@ -29,6 +25,7 @@ public sealed class UserPrivacySettingsService(
         var account = await ResolveAccountAsync(cancellationToken);
         var now = clock.GetUtcNow();
         var existing = await privacyRepository.GetByAccountIdAsync(account.Id, cancellationToken);
+        if (existing is not null && existing.AccountId != account.Id) throw new AccountStoreUnavailableException();
 
         if (existing is null)
         {
@@ -44,6 +41,7 @@ public sealed class UserPrivacySettingsService(
             now);
 
         var updated = await privacyRepository.UpsertAsync(existing, cancellationToken);
+        if (updated.AccountId != account.Id) throw new AccountStoreUnavailableException();
         return ToDto(updated);
     }
 
@@ -55,6 +53,11 @@ public sealed class UserPrivacySettingsService(
         var account = await accountRepository.FindBySubjectAsync(subject, cancellationToken);
         if (account is null)
             throw new PrivacyNotFoundException("Account not initialized.");
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!currentUser.IsAuthenticated || currentUser.UserId != subject)
+            throw new AccountAuthenticationRequiredException();
+        if (account.Id == Guid.Empty || account.SupabaseUserId != subject)
+            throw new AccountStoreUnavailableException();
 
         return account;
     }
