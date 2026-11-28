@@ -79,7 +79,7 @@ public sealed record HobbiesClubCreationQuotaResult
 /// </summary>
 public static class HobbiesClubCreationQuotaPolicy
 {
-    public const int FreeTierMaxCreatedClubs = 5;
+    public const int FreeTierMaxCreatedClubs = GroupLimitPolicy.FreeCreationQuota;
 
     /// <summary>
     /// Evaluates whether a user is eligible to create an additional Hobbies Club under the quota limits.
@@ -109,8 +109,8 @@ public static class HobbiesClubCreationQuotaPolicy
             return HobbiesClubCreationQuotaResult.InvalidCount("Created club count cannot be negative.");
         }
 
-        if (entitlementTier == HobbiesClubEntitlementTier.Unknown ||
-            !Enum.IsDefined(typeof(HobbiesClubEntitlementTier), entitlementTier))
+        var limits = GroupLimitPolicy.Resolve(scope, GroupLimitPolicy.FromClubTier(entitlementTier));
+        if (limits is null)
         {
             return HobbiesClubCreationQuotaResult.MissingOrInvalidEntitlement("Entitlement tier evidence is missing or invalid.");
         }
@@ -121,7 +121,7 @@ public static class HobbiesClubCreationQuotaPolicy
         }
 
         // Free or ExpiredPremium tier has a maximum of 5 created clubs (0-4 eligible, 5+ reached)
-        if (createdClubCount >= FreeTierMaxCreatedClubs)
+        if (!limits.CanCreate(createdClubCount))
         {
             return HobbiesClubCreationQuotaResult.QuotaReached($"Quota reached: free tier limit is {FreeTierMaxCreatedClubs} clubs.");
         }

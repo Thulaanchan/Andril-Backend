@@ -65,8 +65,8 @@ public sealed record HobbiesClubAdmissionCapacityResult
 /// </summary>
 public static class HobbiesClubAdmissionCapacityPolicy
 {
-    public const int FreeTierCapacity = 50;
-    public const int PremiumTierCapacity = 100;
+    public const int FreeTierCapacity = GroupLimitPolicy.FreeCapacity;
+    public const int PremiumTierCapacity = GroupLimitPolicy.PremiumCapacity;
 
     /// <summary>
     /// Evaluates whether a Hobbies Club can consider admitting additional members based on current total membership count and entitlement standing.
@@ -96,21 +96,14 @@ public static class HobbiesClubAdmissionCapacityPolicy
             return HobbiesClubAdmissionCapacityResult.InvalidCount("Membership count cannot be negative.");
         }
 
-        if (entitlementTier == HobbiesClubEntitlementTier.Unknown ||
-            !Enum.IsDefined(typeof(HobbiesClubEntitlementTier), entitlementTier))
+        var limits = GroupLimitPolicy.Resolve(scope, GroupLimitPolicy.FromClubTier(entitlementTier));
+        if (limits is null)
         {
             return HobbiesClubAdmissionCapacityResult.MissingOrInvalidEntitlement("Entitlement tier evidence is missing or invalid.");
         }
 
-        int maxCapacity = entitlementTier switch
-        {
-            HobbiesClubEntitlementTier.Premium => PremiumTierCapacity,
-            HobbiesClubEntitlementTier.Free => FreeTierCapacity,
-            HobbiesClubEntitlementTier.ExpiredPremium => FreeTierCapacity,
-            _ => FreeTierCapacity
-        };
-
-        if (currentMembershipCount >= maxCapacity)
+        int maxCapacity = limits.MembershipCapacity;
+        if (!limits.CanAdmit(currentMembershipCount))
         {
             return HobbiesClubAdmissionCapacityResult.CapacityReached(
                 maxCapacity,
