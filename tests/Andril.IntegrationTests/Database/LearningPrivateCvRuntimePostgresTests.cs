@@ -18,12 +18,12 @@ namespace Andril.IntegrationTests.Database;
 
 public sealed class LearningPrivateCvRuntimePostgresTests
 {
-    private sealed class Policies : IPolicyCatalogProvider
+    internal sealed class Policies : IPolicyCatalogProvider
     {
         public PolicyCatalog GetCurrent() => new(new("fixture-terms-v1","https://example.invalid/terms","en"),
             new("fixture-privacy-v1","https://example.invalid/privacy","en"),new("fixture-community-v1","https://example.invalid/community","en"));
     }
-    private sealed class Fixture(LearningEligibilityDatabase isolated) : IAsyncDisposable
+    internal sealed class Fixture(LearningEligibilityDatabase isolated) : IAsyncDisposable
     {
         internal SharedGroupsDatabase Groups => isolated.Groups;
         internal static async Task<Fixture> Create()

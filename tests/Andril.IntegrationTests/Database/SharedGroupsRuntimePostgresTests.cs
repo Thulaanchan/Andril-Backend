@@ -74,7 +74,7 @@ public sealed class SharedGroupsRuntimePostgresTests
     }
 }
 
-internal sealed class SharedGroupsHttpHost(SharedGroupsDatabase store, bool enabled = true, bool hobbies = false, bool social = true, bool learning = true, bool learningClassrooms = false, bool learningPrivateCv = false)
+internal sealed class SharedGroupsHttpHost(SharedGroupsDatabase store, bool enabled = true, bool hobbies = false, bool social = true, bool learning = true, bool learningClassrooms = false, bool learningPrivateCv = false, string? learningPortfolioRole = null, string? learningDiaryRole = null)
     : WebApplicationFactory<Program>
 {
     protected override IHost CreateHost(IHostBuilder builder)
@@ -85,6 +85,10 @@ internal sealed class SharedGroupsHttpHost(SharedGroupsDatabase store, bool enab
             ["Learning:Classrooms:Enabled"] = learningClassrooms.ToString(),
             ["Learning:PrivateCv:Enabled"] = learningPrivateCv.ToString(),
             ["Learning:PrivateCv:RuntimeRole"] = store.Role,
+            ["Learning:PrivatePortfolios:Enabled"] = (learningPortfolioRole is not null).ToString(),
+            ["Learning:PrivatePortfolios:RuntimeRole"] = learningPortfolioRole,
+            ["Learning:PrivateDiary:Enabled"] = (learningDiaryRole is not null).ToString(),
+            ["Learning:PrivateDiary:RuntimeRole"] = learningDiaryRole,
             ["SharedGroups:EnableLearning"] = learning.ToString(),
             ["SharedGroups:EnableHobbies"] = hobbies.ToString(),
             ["SharedGroups:EnableSocial"] = social.ToString(),
