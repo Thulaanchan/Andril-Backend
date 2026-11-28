@@ -12,7 +12,7 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace Andril.API.Development.Calls;
 
-internal sealed record LiveKitDevelopmentOptions(Uri ApiEndpoint, Uri RtcEndpoint, string ApiKey, string ApiSecret, TimeSpan ServerTokenLifetime)
+internal sealed record LiveKitDevelopmentOptions(Uri ApiEndpoint, Uri RtcEndpoint, string ApiKey, string ApiSecret, TimeSpan ServerTokenLifetime, TimeSpan? RequestTimeout = null)
 {
     public override string ToString() => nameof(LiveKitDevelopmentOptions);
 }
@@ -30,7 +30,8 @@ internal sealed class LiveKitDevelopmentAdapter : ICallMediaProvider, ICallWebho
     {
         if (environment.EnvironmentName != "ChatRealtimeDevelopment" || !Endpoint(options.ApiEndpoint, "https", "http") ||
             !Endpoint(options.RtcEndpoint, "wss", "ws") || string.IsNullOrWhiteSpace(options.ApiKey) || Encoding.UTF8.GetByteCount(options.ApiSecret) < 32 ||
-            options.ServerTokenLifetime < TimeSpan.FromSeconds(1) || options.ServerTokenLifetime == TimeSpan.MaxValue)
+            (options.RequestTimeout is { } timeout && (timeout < TimeSpan.FromMilliseconds(1) || timeout > TimeSpan.FromSeconds(30))) ||
+            options.ServerTokenLifetime > TimeSpan.FromMinutes(5) || options.ServerTokenLifetime < TimeSpan.FromSeconds(1) || options.ServerTokenLifetime == TimeSpan.MaxValue)
             throw new ArgumentException("LiveKit development configuration unavailable.");
         this.http = http; this.options = options; this.clock = clock ?? TimeProvider.System;
         key = new(Encoding.UTF8.GetBytes(options.ApiSecret));
@@ -97,6 +98,9 @@ internal sealed class LiveKitDevelopmentAdapter : ICallMediaProvider, ICallWebho
     }
     private async Task<JsonElement> RpcAsync<T>(string method, T body, Dictionary<string, object> grant, CancellationToken token, bool allowNotFound = false)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
+        deadline.CancelAfter(options.RequestTimeout ?? TimeSpan.FromSeconds(15));
+        token = deadline.Token;
         var now = clock.GetUtcNow();
         using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(options.ApiEndpoint, "twirp/livekit.RoomService/" + method));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Token(null, grant, now, now.Add(options.ServerTokenLifetime)));
