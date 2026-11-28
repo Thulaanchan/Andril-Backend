@@ -1,3 +1,4 @@
+using Andril.Social.Interfaces;
 using System;
 using System.Text.Json.Serialization;
 using System.Threading;
@@ -44,6 +45,14 @@ public sealed record SocialRevocationResponseDto(
     bool Success,
     bool MatchRevoked);
 
+public sealed record SocialSentLike(Guid ProfileId, string DisplayName, DateTime LikedAtUtc);
+
+public sealed record SocialSentLikesPage(IReadOnlyList<SocialSentLike> Items, string? NextCursor);
+
+public sealed record SocialMutualConnection(Guid ProfileId, string DisplayName, Guid MatchId, DateTime MatchedAtUtc);
+
+public sealed record SocialMutualConnectionsPage(IReadOnlyList<SocialMutualConnection> Items, string? NextCursor);
+
 /// <summary>
 /// Controller for authorized Social dating relationship operations: interest recording,
 /// privacy-preserving status inspection, and mutual-match revocation (CF-20).
@@ -64,6 +73,45 @@ public sealed class SocialRelationshipsController : ControllerBase
     {
         _relationshipAccessService = relationshipAccessService ?? throw new ArgumentNullException(nameof(relationshipAccessService));
     }
+
+    [HttpGet("sent-likes")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    [ProducesResponseType<SocialSentLikesPage>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<SocialSentLikesPage>> GetSentLikes([FromQuery] int? limit, [FromQuery] string? cursor,
+        [FromServices] SocialRelationshipListAccessService lists, CancellationToken cancellationToken)
+    {
+        var page = await lists.ListAsync(SocialRelationshipList.SentLikes, PageLimit(limit), PageCursor(cursor), cancellationToken);
+        return Ok(new SocialSentLikesPage(page.Items.Select(entry =>
+            new SocialSentLike(entry.PeerProfileId, entry.DisplayName, entry.RecordedAtUtc)).ToArray(), page.NextCursor));
+    }
+
+    [HttpGet("mutual-connections")]
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    [ProducesResponseType<SocialMutualConnectionsPage>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<SocialMutualConnectionsPage>> GetMutualConnections([FromQuery] int? limit, [FromQuery] string? cursor,
+        [FromServices] SocialRelationshipListAccessService lists, CancellationToken cancellationToken)
+    {
+        var page = await lists.ListAsync(SocialRelationshipList.MutualConnections, PageLimit(limit), PageCursor(cursor), cancellationToken);
+        return Ok(new SocialMutualConnectionsPage(page.Items.Select(entry =>
+            new SocialMutualConnection(entry.PeerProfileId, entry.DisplayName,
+                entry.MatchId ?? throw new InvalidOperationException("Missing active match identifier."), entry.RecordedAtUtc)).ToArray(), page.NextCursor));
+    }
+
+    private int PageLimit(int? limit) =>
+        Request.Query.TryGetValue("limit", out var values) && (values.Count != 1 || limit is null)
+            ? throw new ArgumentException("Invalid page limit.")
+            : limit ?? ISocialRelationshipListRepository.DefaultPageSize;
+
+    private string? PageCursor(string? cursor) =>
+        Request.Query.TryGetValue("cursor", out var values) && (values.Count != 1 || cursor is null)
+            ? throw new ArgumentException("Invalid page cursor.")
+            : cursor;
 
     /// <summary>
     /// Records the authenticated caller's directional interest toward a target candidate.

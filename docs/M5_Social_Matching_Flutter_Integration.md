@@ -104,3 +104,26 @@ The operator provisioning function belongs to a separately authorized database r
 There are no active Social contextual AI consent or generation HTTP operations. Internal PostgreSQL verification covers scoped consent and module-epoch revocation. Flutter should leave contextual AI controls unavailable until authoritative login/logout and conversation evidence, explicit interaction evidence, privacy, quota, budget and late-reply enforcement are integrated. [Runtime dependencies](M5_Social_Contextual_AI_Runtime_Readiness.md)
 
 The [runtime integration matrix](M5_Runtime_API_Acceptance.md) records the supported Social and Group operations verified together. Flutter should leave Contextual AI consent, generation, chat and call actions unavailable for this API surface. The existing starter selection endpoint has no module-switch or durable session-revocation contract.
+
+## Likes and Connections
+
+Both list routes require the caller’s confirmed bearer identity and current adult, active, opted-in Social profile. Use the same Authorization header as Explore. The server resolves the caller's profile from identity.
+
+| Flutter screen | Route | Item fields |
+| --- | --- | --- |
+| Sent Likes | `GET /api/v1/social/relationships/sent-likes` | `profileId`, `displayName`, `likedAtUtc` |
+| Mutual Connections | `GET /api/v1/social/relationships/mutual-connections` | `profileId`, `displayName`, `matchId`, `matchedAtUtc` |
+
+A successful page is `{"items":[],"nextCursor":null}` when empty. Omit the cursor for the first page. Send `limit` from 1 to 50, or omit it for 20. The server orders by recorded time descending and uses the peer profile ID as a stable tie-breaker. When `nextCursor` is a string, pass it unchanged as `cursor` on the same route. Stop when it is null. Pages reflect current authority at the time of each read. Refresh from the first page after a relationship action or a change to the signed-in profile.
+
+| HTTP status | Flutter behavior |
+| --- | --- |
+| 200 | Render the current page or empty state |
+| 400 | Reset malformed pagination and request the first page |
+| 401 | Refresh authentication or return to sign-in |
+| 403 | Treat Social profile access as unavailable |
+| 503 | Show a retryable service-unavailable state |
+
+Responses use `Cache-Control: no-store`. Sent Likes shows the caller’s own positive decisions and conveys no peer response. Blocked, restricted or otherwise ineligible peers are omitted without a reason. Mutual Connections returns active committed matches only and carries no permission for chat, calls or AI. List responses contain no questionnaire answers, location evidence or Accounts identifiers.
+
+Received Likes has no published route or count. CF-20 protects unreciprocated directional interest. A current canonical M2 Premium entitlement establishes subscription status alone. A separate Team Lead decision must authorize the exact disclosure and define audience, data fields, necessary consent and treatment of blocks, revocation and expiry before a Received Likes route can be implemented.
