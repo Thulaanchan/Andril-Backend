@@ -122,7 +122,8 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
                     andril_groups.update_group(uuid, text, uuid, text, text, text, boolean, bigint),
                     andril_groups.mutate_membership(uuid, text, uuid, uuid, text, bigint),
                     andril_groups.write_authority(text, uuid, text, boolean), andril_groups.read_profile_evidence(uuid, text, uuid),
-                    andril_groups.read_participation_evidence(uuid, text, uuid), andril_groups.read_club_capacity(uuid, uuid) TO {store.Role};
+                    andril_groups.read_participation_evidence(uuid, text, uuid), andril_groups.read_club_capacity(uuid, uuid),
+                    andril_groups.read_discovery(uuid, text, integer, text, integer), andril_groups.read_own_participation(uuid, text, uuid) TO {store.Role};
                 """;
             await groups.Database.ExecuteSqlRawAsync(grants);
             await tx.CommitAsync();
