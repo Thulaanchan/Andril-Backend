@@ -35,7 +35,8 @@ public sealed class AiEndpointSecurityTests
 {
     private static Guid Id(int n) => Guid.Parse($"00000000-0000-0000-0000-{n:D12}");
     private static readonly DateTimeOffset Now = new(2026, 11, 19, 0, 0, 0, TimeSpan.Zero);
-    private const string Secret = "private-prompt-assistant-sk_synthetic-Host=private;Password=secret";
+    private const string ConfidentialMarker = "T05-SYNTHETIC-CONFIDENTIAL-MARKER";
+    private static string Secret => ConfidentialMarker;
     private sealed class Clock : TimeProvider { public override DateTimeOffset GetUtcNow() => Now; }
     private sealed class Fake : IAiActorAuthorization, IAiPrivacyNoticeGate, IAiConversationRepository, IAiOperationRepository
     {
