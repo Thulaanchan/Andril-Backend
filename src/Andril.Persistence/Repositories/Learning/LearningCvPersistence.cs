@@ -20,7 +20,7 @@ public static class LearningCvPersistence
         new IsolatedLearningCvRepository(new LearningOwnerDocumentTransaction(accounts, user, profiles, runtimeRole));
 }
 
-internal enum LearningPrivateDocument { Cv, Portfolio, Diary, OwnerActivities }
+internal enum LearningPrivateDocument { Cv, Portfolio, Diary, OwnerActivities, XpRead }
 
 internal sealed class LearningOwnerDocumentTransaction(AccountsDbContext accounts, ICurrentUser user,
     IPrivateProfileService profiles, string runtimeRole, LearningPrivateDocument document = LearningPrivateDocument.Cv) : ILearningDocumentBoundary
@@ -37,6 +37,7 @@ internal sealed class LearningOwnerDocumentTransaction(AccountsDbContext account
             LearningPrivateDocument.Portfolio => "andril_learning.learning_portfolios",
             LearningPrivateDocument.Diary => "andril_diary.module_diary_entries",
             LearningPrivateDocument.OwnerActivities => "andril_learning.private_owner_activities",
+            LearningPrivateDocument.XpRead => "andril_learning.xp_credits",
             _ => throw new ArgumentOutOfRangeException(nameof(document))
         };
         if (!user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty)

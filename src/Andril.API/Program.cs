@@ -19,6 +19,7 @@ builder.Services.AddVerifiedLearningPrivateCv(builder.Configuration);
 builder.Services.AddVerifiedLearningPrivatePortfolios(builder.Configuration);
 builder.Services.AddVerifiedLearningPrivateDiary(builder.Configuration);
 builder.Services.AddVerifiedLearningOwnerActivities(builder.Configuration);
+builder.Services.AddVerifiedLearningXpRead(builder.Configuration);
 builder.Services.AddNotifications();
 builder.Services.AddSupabaseIdentityVerification(builder.Configuration);
 builder.Services.AddSocialQuestionnaireServices();
@@ -118,6 +119,7 @@ app.MapVerifiedLearningPrivateCv();
 app.MapVerifiedLearningPrivatePortfolios();
 app.MapVerifiedLearningPrivateDiary();
 app.MapVerifiedLearningOwnerActivities();
+app.MapVerifiedLearningXpRead();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
    .WithName("HealthCheck")
    .AllowAnonymous();

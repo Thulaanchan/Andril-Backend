@@ -17,6 +17,9 @@ internal sealed class IsolatedLearningActivitiesDbContext(DbContextOptions<Isola
             table.HasCheckConstraint("ck_learning_activity_kind", "kind BETWEEN 1 AND 7");
             table.HasCheckConstraint("ck_learning_connection_pair", "kind <> 7 OR (jsonb_array_length(members) = 2 AND members->0->>'ProfileId' IS NOT NULL AND members->1->>'ProfileId' IS NOT NULL AND pair_low IS NOT NULL AND pair_high IS NOT NULL AND pair_low < pair_high AND pair_low = LEAST((members->0->>'ProfileId')::uuid,(members->1->>'ProfileId')::uuid) AND pair_high = GREATEST((members->0->>'ProfileId')::uuid,(members->1->>'ProfileId')::uuid) AND status IS NOT NULL AND status IN ('Pending','Accepted','Declined','Cancelled','Disconnected'))");
             table.HasCheckConstraint("ck_learning_activity_json", "jsonb_typeof(members) = 'array' AND jsonb_array_length(members) > 0 AND jsonb_typeof(content) = 'object'");
+            // The production owner-only table cannot contain kind 5. Keep its approved
+            // V1 model unchanged; peer storage enforces the newly approved pair rule.
+            if(schema==Schema)table.HasCheckConstraint("ck_learning_mentorship_pair","kind<>5 OR (jsonb_array_length(members)=2 AND members->0->>'ProfileId' IS NOT NULL AND members->1->>'ProfileId' IS NOT NULL AND pair_low IS NOT NULL AND pair_high IS NOT NULL AND pair_low<pair_high AND pair_low=LEAST((members->0->>'ProfileId')::uuid,(members->1->>'ProfileId')::uuid) AND pair_high=GREATEST((members->0->>'ProfileId')::uuid,(members->1->>'ProfileId')::uuid) AND status IS NOT NULL AND status IN ('Pending','Accepted','Declined','Cancelled'))");
             table.HasCheckConstraint("ck_learning_exchange_pair", "kind <> 1 OR (jsonb_array_length(members) = 2 AND members->0->>'ProfileId' IS NOT NULL AND members->1->>'ProfileId' IS NOT NULL AND pair_low IS NOT NULL AND pair_high IS NOT NULL AND pair_low < pair_high AND pair_low = LEAST((members->0->>'ProfileId')::uuid,(members->1->>'ProfileId')::uuid) AND pair_high = GREATEST((members->0->>'ProfileId')::uuid,(members->1->>'ProfileId')::uuid) AND status IS NOT NULL AND status IN ('Pending','Accepted','Declined','Cancelled'))");
         });
         row.HasKey(x => x.Id); row.Property(x => x.Id).ValueGeneratedNever();
@@ -29,6 +32,8 @@ internal sealed class IsolatedLearningActivitiesDbContext(DbContextOptions<Isola
         // A separate index avoids changing DEC-M1-01 or conflating connections with exchanges.
         row.HasIndex(x => new { x.Kind, x.PairLow, x.PairHigh }).IsUnique()
             .HasFilter("kind = 7 AND status IN ('Pending','Accepted')").HasDatabaseName("ux_learning_connection_live_pair");
+        if(schema==Schema)row.HasIndex(x=>new{x.Kind,x.PairLow,x.PairHigh,x.Status}).IsUnique()
+            .HasFilter("kind=5 AND status='Pending'").HasDatabaseName("ux_learning_mentorship_pending_pair");
         foreach (var property in row.Metadata.GetProperties())
             property.SetColumnName(string.Concat(property.Name.Select((c, i) => i > 0 && char.IsUpper(c) ? "_" + char.ToLowerInvariant(c) : char.ToLowerInvariant(c).ToString())));
     }

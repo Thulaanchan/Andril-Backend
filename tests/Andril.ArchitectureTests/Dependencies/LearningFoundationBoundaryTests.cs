@@ -5,6 +5,7 @@ using Andril.API.Authentication;
 using Andril.Common.Accounts.Profiles;
 using Andril.Learning.Entities;
 using Andril.Learning.Activities;
+using Andril.Learning.Progress;
 using Andril.Learning.Portfolio;
 using Andril.Common.Diary;
 using Andril.Learning.CV;
@@ -171,7 +172,8 @@ public sealed class LearningFoundationBoundaryTests
             typeof(PortfolioReadResult),typeof(PortfolioListResult),typeof(PortfolioDeleteResult),typeof(PortfolioPreviewResult),
             typeof(LearningPortfolio),typeof(PortfolioPreview),typeof(ILearningActivitiesRepository),typeof(LearningActivityKind),
             typeof(LearningActivityAction),typeof(LearningActivityResult),typeof(LearningActivityView),typeof(LearningActivityOutcome),
-            typeof(CreateLearningActivityRequest),typeof(ChangeLearningActivityRequest) }.Contains(type);
+            typeof(CreateLearningActivityRequest),typeof(ChangeLearningActivityRequest),typeof(ILearningXpRepository),
+            typeof(LearningXpResult),typeof(LearningXpOutcome),typeof(LearningXpEntry),typeof(LearningXpProgress) }.Contains(type);
 
     [Theory]
     [InlineData(false,false)]
@@ -295,9 +297,23 @@ public sealed class LearningFoundationBoundaryTests
         }
     }
 
-    private static bool IsLearningBoundaryType(Type type) => type.Assembly == Learning || type == typeof(LearningDbContext) || type == typeof(LearningPrivateActivitiesDbContext) ||
+    private static bool IsLearningBoundaryType(Type type) => type.Assembly == Learning || type == typeof(LearningDbContext) || type == typeof(LearningPrivateActivitiesDbContext) || type == typeof(LearningXpReadDbContext) ||
         (type.HasElementType && IsLearningBoundaryType(type.GetElementType()!)) ||
         (type.IsGenericType && type.GetGenericArguments().Any(IsLearningBoundaryType));
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task XpReadActivationDoesNotPublishPoliciesOrExposeAwardRoutes(bool enabled)
+    {
+        var configuration=new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
+        {["Learning:XpRead:Enabled"]=enabled.ToString(),["Learning:XpRead:RuntimeRole"]="metadata_xp_read"}).Build();
+        var services=ProductionServices(configuration);Assert.Equal(enabled?1:0,services.Count(s=>s.ServiceType==typeof(ILearningXpRepository)));
+        Assert.DoesNotContain(services,s=>s.ServiceType==typeof(ILearningXpAuthority)||s.ServiceType==typeof(ILearningXpPolicyAuthority)||s.ServiceType==typeof(ILearningXpAdjustmentAuthority)||s.ServiceType==typeof(DbContextOptions<LearningXpReadDbContext>));
+        var builder=WebApplication.CreateBuilder(new WebApplicationOptions{EnvironmentName="Production"});builder.Services.AddAuthorization();builder.Services.AddVerifiedLearningXpRead(configuration);
+        await using var app=builder.Build();app.MapVerifiedLearningXpRead();var endpoints=((IEndpointRouteBuilder)app).DataSources.SelectMany(s=>s.Endpoints).OfType<RouteEndpoint>().ToArray();
+        Assert.Equal(enabled?1:0,endpoints.Length);Assert.All(endpoints,endpoint=>{Assert.Equal(new[]{"GET"},endpoint.Metadata.GetRequiredMetadata<HttpMethodMetadata>().HttpMethods);Assert.NotEmpty(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());Assert.Null(endpoint.Metadata.GetMetadata<IAllowAnonymous>());});
+    }
 
     [Theory]
     [InlineData(false)]
