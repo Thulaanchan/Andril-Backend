@@ -4,6 +4,8 @@ using System.Text;
 using Andril.Common.Accounts.Onboarding;
 using Andril.Shared.Authentication;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Andril.API")]
+
 namespace Andril.Common.Accounts.Lifecycle;
 
 internal enum AccountOwnerOperation { Deactivate, Reactivate, Delete }
@@ -32,7 +34,8 @@ internal sealed record AccountOwnerLifecycleDecision(AccountOwnerLifecycleResult
 // read current operation-specific security/eligibility and revision inside that fence,
 // and commit state, receipt and audit atomically. Satisfied is never inferred from a
 // missing source, an old JWT or a module membership. Unknown commits must propagate;
-// callers must not automatically retry. No production adapter or DI binding exists yet.
+// callers must not automatically retry. The PostgreSQL adapter requires explicit
+// composition with an approved authority; no default live authority is supplied.
 internal interface IAccountOwnerLifecycleStore
 {
     Task<AccountOwnerLifecycleResult> ExecuteAsync(Guid subject, Guid requestKey, AccountOwnerOperation operation,

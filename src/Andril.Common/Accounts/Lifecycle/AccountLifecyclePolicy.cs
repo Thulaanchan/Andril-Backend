@@ -1,7 +1,8 @@
 namespace Andril.Common.Accounts.Lifecycle;
 
 // Account-wide product states, distinct from per-module active/inactive membership
-// and from operation-specific moderation restrictions. Not mapped to persistence.
+// and from operation-specific moderation restrictions. The Accounts adapter persists
+// their explicit names, without reinterpreting historical restriction records.
 internal enum AccountLifecycleState
 {
     Active,

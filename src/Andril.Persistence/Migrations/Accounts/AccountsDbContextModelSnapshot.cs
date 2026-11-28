@@ -611,6 +611,129 @@ namespace Andril.Persistence.Migrations.Accounts
                         });
                 });
 
+            modelBuilder.Entity("Andril.Persistence.Accounts.AccountOwnerAuditRow", b =>
+                {
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
+                    b.Property<DateTimeOffset>("ChangedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("changed_at_utc");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("operation")
+                        .UseCollation("C");
+
+                    b.Property<string>("PreviousState")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("previous_state")
+                        .UseCollation("C");
+
+                    b.Property<Guid>("RequestKey")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_key");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("state")
+                        .UseCollation("C");
+
+                    b.HasKey("AccountId", "Revision");
+
+                    b.HasIndex("AccountId", "RequestKey");
+
+                    b.ToTable("account_owner_audit", "andril_identity", t =>
+                        {
+                            t.HasCheckConstraint("ck_owner_audit", "revision > 1 AND isfinite(changed_at_utc) AND ((operation = 'Deactivate' AND previous_state = 'Active' AND state = 'Deactivated') OR (operation = 'Reactivate' AND previous_state = 'Deactivated' AND state = 'Active') OR (operation = 'Delete' AND previous_state IN ('Active','Deactivated') AND state = 'Deleted'))");
+                        });
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Accounts.AccountOwnerReceiptRow", b =>
+                {
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<Guid>("RequestKey")
+                        .HasColumnType("uuid")
+                        .HasColumnName("request_key");
+
+                    b.Property<DateTimeOffset>("ChangedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("changed_at_utc");
+
+                    b.Property<string>("IntentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)")
+                        .HasColumnName("intent_hash")
+                        .UseCollation("C");
+
+                    b.Property<long>("Revision")
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("state")
+                        .UseCollation("C");
+
+                    b.HasKey("AccountId", "RequestKey");
+
+                    b.ToTable("account_owner_receipts", "andril_identity", t =>
+                        {
+                            t.HasCheckConstraint("ck_owner_receipt", "request_key <> '00000000-0000-0000-0000-000000000000'::uuid AND revision > 1 AND state IN ('Active','Deactivated','Deleted') AND intent_hash COLLATE \"C\" ~ '^[0-9A-F]{64}$' AND isfinite(changed_at_utc)");
+                        });
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Accounts.AccountOwnerStateRow", b =>
+                {
+                    b.Property<Guid>("AccountId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("account_id");
+
+                    b.Property<DateTimeOffset>("ChangedAtUtc")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("changed_at_utc");
+
+                    b.Property<long>("Revision")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("revision");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("character varying(16)")
+                        .HasColumnName("state")
+                        .UseCollation("C");
+
+                    b.HasKey("AccountId");
+
+                    b.ToTable("account_owner_states", "andril_identity", t =>
+                        {
+                            t.HasCheckConstraint("ck_owner_revision", "revision > 0");
+
+                            t.HasCheckConstraint("ck_owner_state", "state IN ('Active','Suspended','Deactivated','Deleted')");
+
+                            t.HasCheckConstraint("ck_owner_time", "isfinite(changed_at_utc)");
+                        });
+                });
+
             modelBuilder.Entity("Andril.Persistence.Accounts.ModuleLifecycleAuditRow", b =>
                 {
                     b.Property<Guid>("AccountId")
@@ -886,6 +1009,33 @@ namespace Andril.Persistence.Migrations.Accounts
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired()
                         .HasConstraintName("fk_profile_photo_profile_module");
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Accounts.AccountOwnerAuditRow", b =>
+                {
+                    b.HasOne("Andril.Persistence.Accounts.AccountOwnerReceiptRow", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId", "RequestKey")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Accounts.AccountOwnerReceiptRow", b =>
+                {
+                    b.HasOne("Andril.Persistence.Accounts.AccountOwnerStateRow", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Andril.Persistence.Accounts.AccountOwnerStateRow", b =>
+                {
+                    b.HasOne("Andril.Common.Accounts.Account", null)
+                        .WithMany()
+                        .HasForeignKey("AccountId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Andril.Persistence.Accounts.ModuleLifecycleAuditRow", b =>
