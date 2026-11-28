@@ -319,7 +319,7 @@ public sealed class HobbiesMapMigrationTests
         var expected = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal)
             { "__EFMigrationsHistory_Gallery", "__EFMigrationsHistory_Map" };
         if (galleryPresent)
-            expected.UnionWith(["GalleryMedia", "GalleryPreferences"]);
+            expected.UnionWith(["GalleryMedia", "GalleryPreferences", "GalleryUploadOperations"]);
         if (mapPresent)
             expected.UnionWith(Tables);
         while (await rows.ReadAsync())
