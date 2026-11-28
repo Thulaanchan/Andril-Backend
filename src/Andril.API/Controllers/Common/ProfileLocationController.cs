@@ -1,7 +1,6 @@
 using Andril.Common.Accounts;
 using Andril.Common.Accounts.Profiles;
 using Andril.Common.Accounts.StarterModules;
-using Andril.Shared.Authentication;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using ModuleNames = Andril.Common.Accounts.StarterModules.StarterModules;
@@ -14,9 +13,8 @@ namespace Andril.API.Controllers.Common;
 [Route("api/v1/account")]
 [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
 public sealed class ProfileLocationController(
-    ICurrentUser user,
-    IAccountRepository accounts,
-    IPrivateProfileRepository profileRepository,
+    IAccountService accounts,
+    IPrivateProfileService profiles,
     IProfileLocationRepository locationRepository,
     TimeProvider clock)
     : ControllerBase
@@ -34,17 +32,15 @@ public sealed class ProfileLocationController(
     public async Task<ActionResult<ProfileLocationDto>> GetProfileLocation(
         string module, CancellationToken cancellationToken)
     {
-        var account = await RequireAccountAsync(cancellationToken);
+        var account = await accounts.GetMeAsync(cancellationToken) ?? throw new StarterModuleAccountMissingException();
         var normModule = ValidateModule(module);
-
-        var profile = await profileRepository.ReadAsync(account.Id, normModule, _ => { }, cancellationToken)
-            ?? throw new ProfileMissingException();
-
-        var location = await locationRepository.GetByProfileIdAsync(profile.Id, cancellationToken);
-        if (location is null)
-            return NotFound();
-
-        return Ok(new ProfileLocationDto(location.ProfileId, location.Module, location.City, location.Region, location.UpdatedAtUtc));
+        return await profiles.WithAuthorizedProfileAsync<ActionResult<ProfileLocationDto>>(normModule, async profile =>
+        {
+            var location = await locationRepository.GetByProfileIdAsync(profile.ProfileId, cancellationToken);
+            if (location is null) return NotFound();
+            CheckScope(location, profile.ProfileId, account.AccountId, normModule);
+            return Ok(ToDto(location));
+        }, cancellationToken);
     }
 
     [HttpPut("profiles/{module}/location")]
@@ -54,30 +50,21 @@ public sealed class ProfileLocationController(
     public async Task<ActionResult<ProfileLocationDto>> SetProfileLocation(
         string module, [FromBody] UpdateProfileLocationRequest request, CancellationToken cancellationToken)
     {
-        var account = await RequireAccountAsync(cancellationToken);
+        var account = await accounts.GetMeAsync(cancellationToken) ?? throw new StarterModuleAccountMissingException();
         var normModule = ValidateModule(module);
-
         if (string.IsNullOrWhiteSpace(request?.City) || !ApprovedLocationsCatalog.IsValidLocation(request.City))
             throw new ProfileValidationException();
-
-        var profile = await profileRepository.GetOrCreateAsync(account.Id, normModule, _ => { }, clock, cancellationToken);
-
-        var existing = await locationRepository.GetByProfileIdAsync(profile.Id, cancellationToken);
-        var now = clock.GetUtcNow();
-
-        ProfileLocationRecord saved;
-        if (existing is null)
+        return await profiles.WithAuthorizedProfileAsync<ActionResult<ProfileLocationDto>>(normModule, async profile =>
         {
-            var record = ProfileLocationRecord.Create(profile.Id, account.Id, normModule, request.City, request.Region, now);
-            saved = await locationRepository.UpsertAsync(record, cancellationToken);
-        }
-        else
-        {
-            existing.Update(request.City, request.Region, now);
-            saved = await locationRepository.UpsertAsync(existing, cancellationToken);
-        }
-
-        return Ok(new ProfileLocationDto(saved.ProfileId, saved.Module, saved.City, saved.Region, saved.UpdatedAtUtc));
+            var existing = await locationRepository.GetByProfileIdAsync(profile.ProfileId, cancellationToken);
+            if (existing is not null) CheckScope(existing, profile.ProfileId, account.AccountId, normModule);
+            var now = clock.GetUtcNow();
+            var record = existing ?? ProfileLocationRecord.Create(profile.ProfileId, account.AccountId, normModule, request.City, request.Region, now);
+            if (existing is not null) record.Update(request.City, request.Region, now);
+            var saved = await locationRepository.UpsertAsync(record, cancellationToken);
+            CheckScope(saved, profile.ProfileId, account.AccountId, normModule);
+            return Ok(ToDto(saved));
+        }, cancellationToken);
     }
 
     [HttpDelete("profiles/{module}/location")]
@@ -86,24 +73,28 @@ public sealed class ProfileLocationController(
     public async Task<IActionResult> ClearProfileLocation(
         string module, CancellationToken cancellationToken)
     {
-        var account = await RequireAccountAsync(cancellationToken);
+        var account = await accounts.GetMeAsync(cancellationToken) ?? throw new StarterModuleAccountMissingException();
         var normModule = ValidateModule(module);
-
-        var profile = await profileRepository.ReadAsync(account.Id, normModule, _ => { }, cancellationToken);
-        if (profile is not null)
+        return await profiles.WithAuthorizedProfileAsync<IActionResult>(normModule, async profile =>
         {
-            await locationRepository.DeleteByProfileIdAsync(profile.Id, cancellationToken);
-        }
-
-        return NoContent();
+            var existing = await locationRepository.GetByProfileIdAsync(profile.ProfileId, cancellationToken);
+            if (existing is not null)
+            {
+                CheckScope(existing, profile.ProfileId, account.AccountId, normModule);
+                await locationRepository.DeleteByProfileIdAsync(profile.ProfileId, cancellationToken);
+            }
+            return NoContent();
+        }, cancellationToken);
     }
 
-    private async Task<Account> RequireAccountAsync(CancellationToken ct)
+    private static void CheckScope(ProfileLocationRecord record, Guid profileId, Guid accountId, string module)
     {
-        if (!user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty)
-            throw new AccountAuthenticationRequiredException();
-        return await accounts.FindBySubjectAsync(subject, ct) ?? throw new StarterModuleAccountMissingException();
+        if (record.ProfileId != profileId || record.AccountId != accountId || record.Module != module)
+            throw new ProfileAccessDeniedException();
     }
+
+    private static ProfileLocationDto ToDto(ProfileLocationRecord record) =>
+        new(record.ProfileId, record.Module, record.City, record.Region, record.UpdatedAtUtc);
 
     private static string ValidateModule(string module)
     {
