@@ -39,7 +39,7 @@ public sealed class HobbiesMapMigrationTests
         Assert.False(map.Database.HasPendingModelChanges());
 
         using var gallery = new HobbiesGalleryDbContextFactory().CreateDbContext([]);
-        var galleryId = Assert.Single(gallery.Database.GetMigrations());
+        var galleryId = gallery.Database.GetMigrations().First();
         Assert.EndsWith("_InitialHobbiesGallery", galleryId);
         using var accounts = new AccountsDbContext(
             new DbContextOptionsBuilder<AccountsDbContext>().UseNpgsql(OfflineConnection).Options);
@@ -319,7 +319,7 @@ public sealed class HobbiesMapMigrationTests
         var expected = new System.Collections.Generic.HashSet<string>(StringComparer.Ordinal)
             { "__EFMigrationsHistory_Gallery", "__EFMigrationsHistory_Map" };
         if (galleryPresent)
-            expected.UnionWith(["GalleryMedia", "GalleryPreferences"]);
+            expected.UnionWith(["GalleryMedia", "GalleryPreferences", "GalleryUploadOperations"]);
         if (mapPresent)
             expected.UnionWith(Tables);
         while (await rows.ReadAsync())

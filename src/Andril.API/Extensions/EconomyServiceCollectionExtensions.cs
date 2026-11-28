@@ -1,7 +1,5 @@
 using Andril.API.Middleware;
 using Andril.Common.Accounts;
-using Andril.Economy.Payments;
-using Andril.Economy.Premium;
 using Andril.Economy.VirtualGifts;
 using Andril.Economy.Wallet;
 using Andril.Persistence.DbContexts;
@@ -26,11 +24,6 @@ public static class EconomyServiceCollectionExtensions
         // Wallet & Ledger
         services.AddScoped<ICoinWalletRepository, PostgresCoinWalletRepository>();
         services.AddScoped<ICoinWalletService, CoinWalletService>();
-
-        // Entitlements & Payments
-        services.AddScoped<IEntitlementRepository, PostgresEntitlementRepository>();
-        services.AddScoped<IEntitlementService, EntitlementService>();
-        services.AddScoped<IPaymentVerificationService, PaymentVerificationService>();
 
         // Exception Handling
         services.AddExceptionHandler<EconomyExceptionHandler>();

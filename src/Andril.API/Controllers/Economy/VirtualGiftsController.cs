@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Andril.API.Controllers.Economy;
 
+[NonController]
 [ApiController]
 [Authorize]
 [Route("api/v1/economy/gifts")]

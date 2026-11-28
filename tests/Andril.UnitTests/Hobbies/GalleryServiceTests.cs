@@ -52,6 +52,18 @@ public sealed class GalleryServiceTests
     }
 
     [Fact]
+    public async Task GetMineById_RejectsDifferentMediaReturnedForTheSameOwner()
+    {
+        var media = CreateMedia(OwnerId);
+        var repository = new MetadataRepositoryProbe(media);
+        var service = new GalleryService(repository,
+            new FakeGalleryActorContext(new GalleryActor(OwnerId, "Hobbies", true)));
+
+        Assert.Null(await service.GetMineByIdAsync(Guid.NewGuid()));
+        Assert.Equal(new[] { "detail" }, repository.Calls);
+    }
+
+    [Fact]
     public async Task GetMine_ReturnsOnlyOwnActiveHobbiesMedia()
     {
         var repository = new FakeGalleryRepository();

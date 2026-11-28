@@ -116,6 +116,85 @@ public sealed class NotificationDispatchBoundaryCharacterizationTests
         Assert.Equal(1, f.Sender.Calls);
     }
 
+    [Fact]
+    public async Task PendingDeviceAuthorization_WhenDenied_ShouldNeverInvokeSender()
+    {
+        var f = new Fixture();
+        var authorization = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        f.Devices.AuthorizationTaskOverride = authorization.Task;
+        f.Devices.BeforeReturn = () => entered.TrySetResult();
+        var timeout = TimeSpan.FromSeconds(10);
+        Task<NotificationPushResult>? operation = null;
+
+        try
+        {
+            Assert.True(f.Devices.Allowed);
+            Assert.True(f.Prefs.Current!.PushEnabled);
+            Assert.Equal(f.Scope, f.Prefs.Current.RecipientScope);
+            Assert.Equal(f.NotificationId, f.Repository.Entry!.Id);
+            Assert.Equal(f.Scope, f.Repository.Entry.RecipientScope);
+            operation = f.ExecuteAsync();
+
+            // Entry is signaled after the fake records the request.
+            // The timeout guards a hang; it does not prove ordering.
+            await entered.Task.WaitAsync(timeout);
+            Assert.Equal(1, f.Devices.Calls);
+            Assert.Equal(f.AccountId, f.Devices.LastAccountId);
+            Assert.NotNull(f.Devices.LastRequest);
+            Assert.Equal(f.NotificationId, f.Devices.LastRequest.NotificationId);
+            Assert.Equal(f.DeviceId, f.Devices.LastRequest.DeviceRegistrationId);
+            Assert.Equal(f.Scope, f.Devices.LastRequest.RecipientScope);
+            Assert.Equal(1, f.Access.Calls);
+            Assert.Equal(1, f.Repository.FindCalls);
+            Assert.Equal(1, f.Prefs.Calls);
+            Assert.False(authorization.Task.IsCompleted);
+            Assert.False(operation.IsCompleted);
+            Assert.Equal(0, f.Sender.Calls);
+
+            authorization.SetResult(false);
+            var result = await operation.WaitAsync(timeout);
+
+            Assert.Equal(NotificationPushOutcome.NotSent, result.Outcome);
+            Assert.False(result.WasAccepted);
+            Assert.Equal(1, f.Devices.Calls);
+            Assert.Equal(0, f.Sender.Calls);
+        }
+        finally
+        {
+            // Settle authorization even when an earlier assertion fails.
+            authorization.TrySetResult(false);
+            entered.TrySetCanceled();
+            foreach (var pending in new Task?[] { authorization.Task, operation })
+            {
+                if (pending is null)
+                    continue;
+
+                try
+                {
+                    await pending.WaitAsync(timeout);
+                }
+                catch (TimeoutException)
+                {
+                    // Observe any eventual fault from a broken implementation
+                    // without hiding the original assertion failure.
+                    _ = pending.ContinueWith(
+                        static completed => { _ = completed.Exception; },
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted |
+                            TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+                catch
+                {
+                    // Observe cleanup faults without replacing the test failure.
+                }
+            }
+        }
+    }
+
     private sealed class Fixture
     {
         public Guid AccountId { get; } = Guid.NewGuid();
@@ -215,6 +294,9 @@ public sealed class NotificationDispatchBoundaryCharacterizationTests
         public bool Allowed { get; set; } = true;
         public Action? BeforeReturn { get; set; }
         public int Calls { get; private set; }
+        public Task<bool>? AuthorizationTaskOverride { get; set; }
+        public Guid LastAccountId { get; private set; }
+        public NotificationPushRequest? LastRequest { get; private set; }
 
         public Task<bool> IsAuthorizedActiveRegistrationAsync(
             Guid authenticatedAccountId,
@@ -222,8 +304,10 @@ public sealed class NotificationDispatchBoundaryCharacterizationTests
             CancellationToken cancellationToken = default)
         {
             Calls++;
+            LastAccountId = authenticatedAccountId;
+            LastRequest = request;
             BeforeReturn?.Invoke();
-            return Task.FromResult(Allowed);
+            return AuthorizationTaskOverride ?? Task.FromResult(Allowed);
         }
     }
 

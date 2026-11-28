@@ -14,7 +14,7 @@ internal enum LearningDocumentFailure { Denied, Unavailable, Conflict, CommitUnk
 /// lock_cv_owner has a historical name: it checks Learning profile ownership/lifecycle, never
 /// a document or operation grant. Production purpose/session/standing and coordinated M2
 /// callbacks remain pending; this component cannot use hosted or pooled connections.</summary>
-internal sealed class IsolatedLearningDocumentBoundary
+internal sealed class IsolatedLearningDocumentBoundary : ILearningDocumentBoundary
 {
     internal sealed record Owner(Guid Subject, Guid Profile);
     private readonly DbContextOptions<LearningDbContext> options;
@@ -46,7 +46,7 @@ internal sealed class IsolatedLearningDocumentBoundary
     private async Task Revalidate(Owner expected, CancellationToken ct)
     { if (await Resolve(ct) != expected) throw new ProfileAccessDeniedException(); ct.ThrowIfCancellationRequested(); }
 
-    internal async Task<T> Run<T>(Func<LearningDbContext, Owner, CancellationToken, Task<T>> action,
+    public async Task<T> Run<T>(Func<LearningDbContext, Owner, CancellationToken, Task<T>> action,
         Func<LearningDocumentFailure, T> failure, CancellationToken ct, bool write = false,
         Func<string, CancellationToken, Task>? checkpoint = null, Func<Exception, bool>? additionalConflict = null)
     {

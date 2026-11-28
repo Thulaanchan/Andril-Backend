@@ -6,11 +6,18 @@ using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.OpenApi;
 
 var builder = WebApplication.CreateBuilder(args);
-builder.Services.AddControllers();
+builder.Services.AddControllers()
+    .AddControlledSocialQuestionnaireResponses(builder.Configuration)
+    .AddControlledSocialMatching(builder.Configuration)
+    .AddControlledSharedGroups(builder.Configuration);
 builder.Services.AddProblemDetails();
 builder.Services.AddSupabaseAuthentication(builder.Configuration);
 builder.Services.AddAccounts(builder.Configuration);
-builder.Services.AddEconomy(builder.Configuration);
+builder.Services.AddVerifiedSharedGroupsPersistence(builder.Configuration);
+builder.Services.AddVerifiedLearningClassrooms(builder.Configuration);
+builder.Services.AddVerifiedLearningPrivateCv(builder.Configuration);
+builder.Services.AddVerifiedLearningPrivatePortfolios(builder.Configuration);
+builder.Services.AddVerifiedLearningPrivateDiary(builder.Configuration);
 builder.Services.AddNotifications();
 builder.Services.AddSupabaseIdentityVerification(builder.Configuration);
 builder.Services.AddSocialQuestionnaireServices();
@@ -105,6 +112,10 @@ app.UseRateLimiter();
 app.UseMiddleware<Andril.API.Middleware.ConfirmedAccountIdentityMiddleware>();
 app.UseAuthorization();
 app.MapControllers();
+app.MapVerifiedLearningClassrooms();
+app.MapVerifiedLearningPrivateCv();
+app.MapVerifiedLearningPrivatePortfolios();
+app.MapVerifiedLearningPrivateDiary();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
    .WithName("HealthCheck")
    .AllowAnonymous();

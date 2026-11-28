@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Andril.API.Authorization.Social;
 using Andril.Common.Accounts.Profiles;
+using Andril.Persistence.Repositories.Social;
 using Andril.Social.Entities;
 using Andril.Social.Interfaces;
 using Andril.Social.Personality;
@@ -23,7 +24,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(profileId, "social", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository();
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository();
         var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
             stubProfileService,
             _catalog,
@@ -59,7 +60,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(profileId, "social", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository();
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository();
         var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
             stubProfileService,
             _catalog,
@@ -90,7 +91,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(profileId, "social", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository();
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository();
         var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
             stubProfileService,
             _catalog,
@@ -120,7 +121,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(profileId, "social", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository();
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository();
         var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
             stubProfileService,
             _catalog,
@@ -151,7 +152,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(profileId, "social", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository();
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository();
         var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
             stubProfileService,
             _catalog,
@@ -177,7 +178,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(profileId, "social", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository();
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository();
         var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
             stubProfileService,
             _catalog,
@@ -201,7 +202,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(profileId, "social", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository();
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository();
         var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
             stubProfileService,
             _catalog,
@@ -223,7 +224,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(profileId, "hobbies", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository();
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository();
         var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
             stubProfileService,
             _catalog,
@@ -244,7 +245,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(Guid.Empty, "social", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository();
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository();
         var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
             stubProfileService,
             _catalog,
@@ -269,7 +270,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(profileId, "social", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository();
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository();
         var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
             stubProfileService,
             _catalog,
@@ -291,7 +292,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(profileId, "social", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository { ShouldThrow = true };
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository { ShouldThrow = true };
         var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
             stubProfileService,
             _catalog,
@@ -324,7 +325,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         var profile = new PrivateProfileDto(Guid.NewGuid(), "social", DateTimeOffset.UtcNow);
         var stubProfileService = new StubPrivateProfileService(profile);
         var appService = new QuestionnaireApplicationService(_catalog);
-        var stubRepo = new TrackingQuestionnairePersistenceRepository();
+        var stubRepo = new TrackingQuestionnaireLifecycleRepository();
 
         Assert.Throws<ArgumentNullException>(() =>
             new SocialQuestionnairePersistentSubmissionOrchestrator(null!, _catalog, appService, stubRepo));
@@ -339,6 +340,21 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
             new SocialQuestionnairePersistentSubmissionOrchestrator(stubProfileService, _catalog, appService, null!));
     }
 
+    [Fact]
+    public async Task DuplicateInitialResponseReturnsStableConflictWithoutAnId()
+    {
+        var profile = new PrivateProfileDto(Guid.NewGuid(), "social", DateTimeOffset.UtcNow);
+        var repository = new TrackingQuestionnaireLifecycleRepository { HasCurrentResponse = true };
+        var orchestrator = new SocialQuestionnairePersistentSubmissionOrchestrator(
+            new StubPrivateProfileService(profile), _catalog, new QuestionnaireApplicationService(_catalog), repository);
+
+        var result = await orchestrator.SubmitAndPersistAsync(new QuestionnaireSubmission("v1", [], Skip: true));
+
+        Assert.False(result.IsSuccess);
+        Assert.Null(result.ResponseId);
+        Assert.Equal(SocialQuestionnairePersistentSubmissionResult.CurrentResponseExists, Assert.Single(result.Errors));
+        Assert.Equal(0, repository.SaveCallCount);
+    }
     private sealed class StubPrivateProfileService(PrivateProfileDto profile) : IPrivateProfileService
     {
         public Task<T> WithAuthorizedProfileAsync<T>(string module, Func<PrivateProfileDto, Task<T>> action, CancellationToken cancellationToken)
@@ -351,22 +367,29 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestratorTests
         public Task<PrivateProfileDto> CreateAsync(string module, CancellationToken cancellationToken = default) => Task.FromResult(profile);
     }
 
-    private sealed class TrackingQuestionnairePersistenceRepository : IQuestionnairePersistenceRepository
+    private sealed class TrackingQuestionnaireLifecycleRepository : ISocialQuestionnaireLifecycleRepository
     {
         public Guid? LastSavedProfileId { get; private set; }
         public QuestionnaireResponseEntity? LastSavedResponse { get; private set; }
         public int SaveCallCount { get; private set; }
         public bool ShouldThrow { get; set; }
+        public bool HasCurrentResponse { get; init; }
 
-        public Task<QuestionnaireResponseEntity?> GetByIdAsync(Guid profileId, Guid responseId, CancellationToken cancellationToken = default)
+        public Task<QuestionnaireResponseEntity?> GetActiveResponseAsync(Guid profileId, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult<QuestionnaireResponseEntity?>(null);
         }
 
-        public Task SaveAsync(Guid profileId, QuestionnaireResponseEntity response, CancellationToken cancellationToken = default)
+        public Task ReplaceCurrentResponseAsync(Guid profileId, Guid existingResponseId,
+            QuestionnaireResponseEntity newResponse, CancellationToken cancellationToken = default) => throw new NotSupportedException();
+
+        public Task WithdrawResponseAsync(Guid profileId, Guid responseId,
+            CancellationToken cancellationToken = default) => throw new NotSupportedException();
+        public Task CreateInitialResponseAsync(Guid profileId, QuestionnaireResponseEntity response, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            if (HasCurrentResponse) throw new SocialQuestionnaireCurrentResponseConflictException();
             if (ShouldThrow)
             {
                 throw new InvalidOperationException("Simulated database failure.");

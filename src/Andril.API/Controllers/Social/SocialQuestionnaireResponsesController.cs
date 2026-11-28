@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Data.Common;
 using System.Linq;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -13,6 +14,7 @@ using Andril.Social.Personality;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 
 namespace Andril.API.Controllers.Social;
 
@@ -46,7 +48,7 @@ public sealed record SocialQuestionnaireSubmissionResponseDto(
 /// Controller for authorized Social questionnaire response submission and owner-scoped retrieval (SOC-01).
 /// Enforces trusted server-side authorization, strict payload validation, privacy-safe projections,
 /// and no-store caching headers.
-/// Excluded from automatic MVC discovery via [NonController] until persistence activation is approved.
+/// Explicit opt-in activation adds this controller after verified persistence registration.
 /// </summary>
 [ApiController]
 [Authorize]
@@ -78,6 +80,9 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
     public async Task<ActionResult<SocialQuestionnaireSubmissionResponseDto>> SubmitResponse(
         [FromBody] JsonElement rawPayload,
         CancellationToken cancellationToken)
@@ -134,6 +139,8 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
     [ProducesResponseType<SocialQuestionnaireActiveResponseDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType(StatusCodes.Status401Unauthorized)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
     public async Task<ActionResult<SocialQuestionnaireActiveResponseDto>> GetMyActiveResponse(
         CancellationToken cancellationToken)
     {
@@ -175,6 +182,14 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
 
             return Ok(projection);
         }
+        catch (Exception error) when (IsStorageFailure(error))
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Questionnaire storage is unavailable."
+            });
+        }
         catch (ProfileAccessDeniedException)
         {
             return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
@@ -194,6 +209,9 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
             });
         }
     }
+
+    private static bool IsStorageFailure(Exception error) => error is DbException or DbUpdateException or TimeoutException
+        or InvalidOperationException { InnerException: DbException or TimeoutException };
 
     private static readonly HashSet<string> SafeValidationCodes = new(StringComparer.Ordinal)
     {
@@ -350,6 +368,16 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
             var result = await _orchestrator.SubmitAndPersistAsync(submission, cancellationToken);
             if (!result.IsSuccess)
             {
+                if (result.Errors.Count == 1 && result.Errors[0] == SocialQuestionnairePersistentSubmissionResult.CurrentResponseExists)
+                {
+                    return Conflict(new ProblemDetails
+                    {
+                        Status = StatusCodes.Status409Conflict,
+                        Title = "A current questionnaire response already exists.",
+                        Extensions = { ["code"] = SocialQuestionnairePersistentSubmissionResult.CurrentResponseExists }
+                    });
+                }
+
                 var safeErrors = result.Errors
                     .Select(SanitizeValidationError)
                     .Where(error => error is not null)
@@ -383,6 +411,14 @@ public sealed class SocialQuestionnaireResponsesController : ControllerBase
             return Ok(new SocialQuestionnaireSubmissionResponseDto(
                 result.ResponseId.Value,
                 result.Status.ToString()));
+        }
+        catch (Exception error) when (IsStorageFailure(error))
+        {
+            return StatusCode(StatusCodes.Status503ServiceUnavailable, new ProblemDetails
+            {
+                Status = StatusCodes.Status503ServiceUnavailable,
+                Title = "Questionnaire storage is unavailable."
+            });
         }
         catch (ProfileAccessDeniedException)
         {

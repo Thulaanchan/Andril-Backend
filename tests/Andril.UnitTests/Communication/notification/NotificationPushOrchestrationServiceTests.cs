@@ -467,6 +467,65 @@ public sealed class NotificationPushOrchestrationServiceTests
         Assert.Equal(0, f.Sender.Calls);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task PreferenceScopeMismatch_ShouldDenyBeforeDeviceAndSender(
+        bool differentModule)
+    {
+        var f = CreateFixture();
+        var test = PrepareAuthorizedPath(
+            f.Access, f.Repository, f.Preferences, f.Devices);
+        var preferenceScope = differentModule
+            ? new NotificationModuleScope(NotificationModule.Hobbies,
+                test.Scope.RecipientModuleProfileId)
+            : new NotificationModuleScope(NotificationModule.Learning,
+                Guid.NewGuid());
+        f.Preferences.Value = new NotificationChannelPreferences(
+            preferenceScope, inAppEnabled: true, pushEnabled: true,
+            emailEnabled: true);
+        var cancellationToken = CancellationToken.None;
+
+        Assert.NotEqual(Guid.Empty, test.AccountId);
+        Assert.NotEqual(Guid.Empty, test.NotificationId);
+        Assert.NotEqual(Guid.Empty, test.DeviceId);
+        Assert.Equal(NotificationModule.Learning, test.Scope.Module);
+        Assert.Equal(test.Scope, f.Access.Scope);
+        Assert.False(f.Access.ThrowOnResolve);
+        Assert.Equal(test.NotificationId, f.Repository.Entry!.Id);
+        Assert.Equal(test.Scope, f.Repository.Entry.RecipientScope);
+        Assert.True(f.Preferences.Value.PushEnabled);
+        Assert.True(f.Devices.Authorized);
+        Assert.False(cancellationToken.IsCancellationRequested);
+
+        if (differentModule)
+        {
+            Assert.NotEqual(test.Scope.Module, preferenceScope.Module);
+            Assert.Equal(test.Scope.RecipientModuleProfileId,
+                preferenceScope.RecipientModuleProfileId);
+        }
+        else
+        {
+            Assert.Equal(test.Scope.Module, preferenceScope.Module);
+            Assert.NotEqual(test.Scope.RecipientModuleProfileId,
+                preferenceScope.RecipientModuleProfileId);
+        }
+
+        var result = await f.Service.TrySendAsync(test.AccountId,
+            NotificationModule.Learning, test.NotificationId, test.DeviceId,
+            cancellationToken);
+
+        Assert.Equal(NotificationPushOutcome.NotSent, result.Outcome);
+        Assert.False(result.WasAccepted);
+        Assert.Equal(1, f.Access.Calls);
+        Assert.Equal(1, f.Repository.FindCalls);
+        Assert.Equal(test.Scope, f.Repository.LastScope);
+        Assert.Equal(test.NotificationId, f.Repository.LastId);
+        Assert.Equal(1, f.Preferences.Calls);
+        Assert.Equal(0, f.Devices.Calls);
+        Assert.Equal(0, f.Sender.Calls);
+    }
+
     [Fact]
     public async Task PushDisabled_ShouldNeverSend()
     {
@@ -549,6 +608,90 @@ public sealed class NotificationPushOrchestrationServiceTests
         Assert.Equal(1, f.Sender.Calls);
     }
 
+    [Fact]
+    public async Task PendingNotificationLookup_WhenFaulted_ShouldBlockDownstreamProcessing()
+    {
+        var f = CreateFixture();
+        var test = PrepareAuthorizedPath(
+            f.Access, f.Repository, f.Preferences, f.Devices);
+        var lookup = new TaskCompletionSource<NotificationEntry?>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        f.Repository.LookupTaskOverride = lookup.Task;
+        f.Repository.LookupEntered = entered;
+        var timeout = TimeSpan.FromSeconds(10);
+        Task<NotificationPushResult>? operation = null;
+
+        try
+        {
+            Assert.True(f.Preferences.Value!.PushEnabled);
+            Assert.Equal(test.Scope, f.Preferences.Value.RecipientScope);
+            Assert.True(f.Devices.Authorized);
+            Assert.Equal(test.NotificationId, f.Repository.Entry!.Id);
+            Assert.Equal(test.Scope, f.Repository.Entry.RecipientScope);
+            operation = f.Service.TrySendAsync(test.AccountId,
+                NotificationModule.Learning, test.NotificationId,
+                test.DeviceId, CancellationToken.None);
+
+            // The signal follows the fake's counter/scope/ID recording.
+            // The timeout guards a hang; it does not prove ordering.
+            await entered.Task.WaitAsync(timeout);
+            Assert.Equal(1, f.Access.Calls);
+            Assert.Equal(1, f.Repository.FindCalls);
+            Assert.Equal(test.Scope, f.Repository.LastScope);
+            Assert.Equal(test.NotificationId, f.Repository.LastId);
+            Assert.False(lookup.Task.IsCompleted);
+            Assert.False(operation.IsCompleted);
+            Assert.Equal(0, f.Preferences.Calls);
+            Assert.Equal(0, f.Devices.Calls);
+            Assert.Equal(0, f.Sender.Calls);
+
+            var failure = new InvalidOperationException("N33 synthetic lookup failure.");
+            lookup.SetException(failure);
+            var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+                () => operation.WaitAsync(timeout));
+
+            Assert.Same(failure, thrown);
+            Assert.Equal(1, f.Repository.FindCalls);
+            Assert.Equal(0, f.Preferences.Calls);
+            Assert.Equal(0, f.Devices.Calls);
+            Assert.Equal(0, f.Sender.Calls);
+        }
+        finally
+        {
+            // Settle pending signals even if Phase A fails, then observe both
+            // tasks without replacing the original assertion failure.
+            lookup.TrySetCanceled();
+            entered.TrySetCanceled();
+            foreach (var pending in new Task?[] { lookup.Task, operation })
+            {
+                if (pending is null)
+                    continue;
+
+                try
+                {
+                    await pending.WaitAsync(timeout);
+                }
+                catch (TimeoutException)
+                {
+                    // A broken implementation may ignore lookup completion.
+                    // Observe any eventual fault after the bounded cleanup.
+                    _ = pending.ContinueWith(
+                        static completed => { _ = completed.Exception; },
+                        CancellationToken.None,
+                        TaskContinuationOptions.OnlyOnFaulted |
+                            TaskContinuationOptions.ExecuteSynchronously,
+                        TaskScheduler.Default);
+                }
+                catch
+                {
+                    // Expected lookup/operation fault or cleanup cancellation.
+                }
+            }
+        }
+    }
+
     private sealed class FakeAccessReader
         : INotificationRecipientAccessReader
     {
@@ -586,6 +729,10 @@ public sealed class NotificationPushOrchestrationServiceTests
 
         public NotificationModuleScope? LastScope { get; private set; }
 
+        public Task<NotificationEntry?>? LookupTaskOverride { get; set; }
+
+        public TaskCompletionSource? LookupEntered { get; set; }
+
         public Task AddAsync(
             NotificationEntry notification,
             CancellationToken cancellationToken = default)
@@ -601,8 +748,9 @@ public sealed class NotificationPushOrchestrationServiceTests
             FindCalls++;
             LastScope = recipientScope;
             LastId = notificationId;
+            LookupEntered?.TrySetResult();
 
-            return Task.FromResult(Entry);
+            return LookupTaskOverride ?? Task.FromResult(Entry);
         }
 
         public Task<IReadOnlyList<NotificationEntry>>

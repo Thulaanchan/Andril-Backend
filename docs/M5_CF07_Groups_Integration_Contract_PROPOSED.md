@@ -1,4 +1,6 @@
 # ANDRIL M5 — CF-07 SHARED GROUPS BACKEND INTEGRATION CONTRACT (PROPOSED)
+
+The later Team Lead decision governs commercial Group limits. [CF-07 unified Group limits](M5_CF07_Unified_Group_Limits_Decision.md)
 ## Multi-Module Integration Specification: Learning, Hobbies & Social
 
 > **STATUS: PROPOSAL / NOT IMPLEMENTED**  

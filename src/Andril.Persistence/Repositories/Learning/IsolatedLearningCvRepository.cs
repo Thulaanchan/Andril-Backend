@@ -9,18 +9,18 @@ using Owner = Andril.Persistence.Repositories.Learning.IsolatedLearningDocumentB
 
 namespace Andril.Persistence.Repositories.Learning;
 
-/// <summary>Unregistered CV-only local composition. Reuses Common module/profile gates and
-/// the established Learning physical owner lock function, not LearningSetup operation grants.
-/// Production CV-purpose/session/standing adapters and transaction-bound M2 callbacks remain
-/// pending. Synthetic non-network Common authorities are used only in the isolated test host.</summary>
+/// <summary>Shared private CV commands. The local constructor retains its isolated guard;
+/// production composition must explicitly supply the real M2 transaction boundary.</summary>
 internal sealed class IsolatedLearningCvRepository : ILearningCvRepository
 {
-    private readonly IsolatedLearningDocumentBoundary boundary;
+    private readonly ILearningDocumentBoundary boundary;
     internal Func<string, CancellationToken, Task>? TestCheckpoint { get; init; }
 
     internal IsolatedLearningCvRepository(DbContextOptions<LearningDbContext> options, ICurrentUser user,
         IPrivateModuleAccess access, IPrivateProfileService profiles)
-        => boundary = new(options, user, access, profiles);
+        => boundary = new IsolatedLearningDocumentBoundary(options, user, access, profiles);
+
+    internal IsolatedLearningCvRepository(ILearningDocumentBoundary boundary) => this.boundary = boundary;
 
     private Task<T> Within<T>(Func<LearningDbContext, Owner, CancellationToken, Task<T>> action,
         Func<CvOperationState, T> failure, CancellationToken ct, bool write = false)

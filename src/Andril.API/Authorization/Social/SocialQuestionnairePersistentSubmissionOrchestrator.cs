@@ -5,6 +5,7 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.Common.Accounts.Profiles;
+using Andril.Persistence.Repositories.Social;
 using Andril.Social.Entities;
 using Andril.Social.Interfaces;
 using Andril.Social.Personality;
@@ -18,6 +19,8 @@ namespace Andril.API.Authorization.Social;
 /// </summary>
 public sealed record SocialQuestionnairePersistentSubmissionResult
 {
+    public const string CurrentResponseExists = "CURRENT_RESPONSE_EXISTS";
+
     [JsonIgnore]
     public bool IsSuccess { get; }
 
@@ -83,7 +86,7 @@ public interface ISocialQuestionnairePersistentSubmissionOrchestrator
 /// <summary>
 /// Orchestrates authorized Social questionnaire submissions: verifies caller Social profile ownership,
 /// validates submission content against the active definition catalog, maps answers to domain entities,
-/// and persists snapshots atomically via <see cref="IQuestionnairePersistenceRepository"/>.
+/// and persists snapshots atomically via <see cref="ISocialQuestionnaireLifecycleRepository"/>.
 /// Fails closed on unauthenticated or mismatched profile scopes.
 /// </summary>
 public sealed class SocialQuestionnairePersistentSubmissionOrchestrator : ISocialQuestionnairePersistentSubmissionOrchestrator
@@ -93,13 +96,13 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestrator : ISocia
     private readonly IPrivateProfileService _profileService;
     private readonly QuestionnaireDefinitionCatalog _catalog;
     private readonly QuestionnaireApplicationService _questionnaireApplicationService;
-    private readonly IQuestionnairePersistenceRepository _repository;
+    private readonly ISocialQuestionnaireLifecycleRepository _repository;
 
     public SocialQuestionnairePersistentSubmissionOrchestrator(
         IPrivateProfileService profileService,
         QuestionnaireDefinitionCatalog catalog,
         QuestionnaireApplicationService questionnaireApplicationService,
-        IQuestionnairePersistenceRepository repository)
+        ISocialQuestionnaireLifecycleRepository repository)
     {
         _profileService = profileService ?? throw new ArgumentNullException(nameof(profileService));
         _catalog = catalog ?? throw new ArgumentNullException(nameof(catalog));
@@ -117,7 +120,7 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestrator : ISocia
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (!string.Equals(profile.Module, SocialModule, StringComparison.OrdinalIgnoreCase)
+            if (profile is null || !string.Equals(profile.Module, SocialModule, StringComparison.OrdinalIgnoreCase)
                 || profile.ProfileId == Guid.Empty)
             {
                 throw new ProfileAccessDeniedException();
@@ -166,7 +169,16 @@ public sealed class SocialQuestionnairePersistentSubmissionOrchestrator : ISocia
                 submission.Skip,
                 nowUtc);
 
-            await _repository.SaveAsync(profile.ProfileId, responseEntity, cancellationToken).ConfigureAwait(false);
+            try
+            {
+                await _repository.CreateInitialResponseAsync(profile.ProfileId, responseEntity, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SocialQuestionnaireCurrentResponseConflictException)
+            {
+                return SocialQuestionnairePersistentSubmissionResult.Rejected(
+                    SocialQuestionnairePersistentSubmissionResult.CurrentResponseExists,
+                    "A current questionnaire response already exists.");
+            }
 
             return SocialQuestionnairePersistentSubmissionResult.Success(responseId, responseEntity.Status);
         }, cancellationToken).ConfigureAwait(false);

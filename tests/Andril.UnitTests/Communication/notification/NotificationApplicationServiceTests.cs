@@ -718,10 +718,140 @@ public sealed class NotificationApplicationServiceTests
         Assert.Equal(0, repository.MarkReadCalls);
     }
 
+    [Fact]
+    public async Task ListLatestAsync_SameProfileIdDifferentModule_ShouldDenyEntirePage()
+    {
+        var profileId = Guid.Parse("11111111-1111-4111-8111-111111111111");
+        var learningScope = new NotificationModuleScope(NotificationModule.Learning, profileId);
+        var hobbiesScope = new NotificationModuleScope(NotificationModule.Hobbies, profileId);
+        Assert.Equal(learningScope.RecipientModuleProfileId, hobbiesScope.RecipientModuleProfileId);
+        Assert.NotEqual(learningScope.Module, hobbiesScope.Module);
+
+        var learningNotification = CreateEntry(learningScope,
+            Guid.Parse("22222222-2222-4222-8222-222222222222"));
+        var hobbiesNotification = CreateEntry(hobbiesScope,
+            Guid.Parse("33333333-3333-4333-8333-333333333333"));
+        var access = new FakeAccessReader { Scope = learningScope };
+        var repository = new FakeRepository
+        {
+            // Deliberately contaminated: the fake returns both rows unchanged.
+            ListResult = new[] { learningNotification, hobbiesNotification }
+        };
+        var service = CreateService(access, repository);
+
+        var result = await service.ListLatestAsync(
+            Guid.Parse("44444444-4444-4444-8444-444444444444"),
+            NotificationModule.Learning, 10);
+
+        Assert.Empty(result);
+        Assert.Equal(2, repository.ListResult.Count);
+        Assert.Same(learningNotification, repository.ListResult[0]);
+        Assert.Same(hobbiesNotification, repository.ListResult[1]);
+        Assert.Same(learningScope, repository.LastScope);
+        Assert.Equal(1, access.Calls);
+        Assert.Equal(1, repository.ListCalls);
+        Assert.Equal(0, repository.FindCalls);
+        Assert.Equal(0, repository.AddCalls);
+        Assert.Equal(0, repository.MarkReadCalls);
+        Assert.Null(repository.LastAddedNotification);
+        Assert.Null(repository.LastReadAtUtc);
+        Assert.False(learningNotification.IsRead);
+        Assert.Null(learningNotification.ReadAtUtc);
+        Assert.False(hobbiesNotification.IsRead);
+        Assert.Null(hobbiesNotification.ReadAtUtc);
+    }
+
+    [Fact]
+    public async Task FindAsync_SameProfileIdDifferentModule_ShouldDenyMatchingId()
+    {
+        var profileId = Guid.Parse("11111111-1111-4111-8111-111111111111");
+        var learningScope = new NotificationModuleScope(NotificationModule.Learning, profileId);
+        var hobbiesScope = new NotificationModuleScope(NotificationModule.Hobbies, profileId);
+        Assert.Equal(learningScope.RecipientModuleProfileId, hobbiesScope.RecipientModuleProfileId);
+        Assert.NotEqual(learningScope.Module, hobbiesScope.Module);
+
+        var requestedId = Guid.Parse("33333333-3333-4333-8333-333333333333");
+        var hobbiesNotification = CreateEntry(hobbiesScope, requestedId);
+        Assert.Equal(requestedId, hobbiesNotification.Id);
+        var access = new FakeAccessReader { Scope = learningScope };
+        var repository = new FakeRepository
+        {
+            // Exact requested ID, wrong module: only the service may reject it.
+            FindResult = hobbiesNotification
+        };
+        var service = CreateService(access, repository);
+
+        var result = await service.FindAsync(
+            Guid.Parse("44444444-4444-4444-8444-444444444444"),
+            NotificationModule.Learning, requestedId);
+
+        Assert.Null(result);
+        Assert.Same(hobbiesNotification, repository.FindResult);
+        Assert.Same(learningScope, repository.LastScope);
+        Assert.Equal(requestedId, repository.LastNotificationId);
+        Assert.Equal(1, access.Calls);
+        Assert.Equal(1, repository.FindCalls);
+        Assert.Equal(0, repository.ListCalls);
+        Assert.Equal(0, repository.AddCalls);
+        Assert.Equal(0, repository.MarkReadCalls);
+        Assert.Null(repository.LastAddedNotification);
+        Assert.Null(repository.LastReadAtUtc);
+        Assert.False(hobbiesNotification.IsRead);
+        Assert.Null(hobbiesNotification.ReadAtUtc);
+    }
+
+    [Fact]
+    public async Task MarkRead_AccessReaderFault_ShouldNotReachRepository()
+    {
+        var accountId = Guid.Parse("44444444-4444-4444-8444-444444444444");
+        var notificationId = Guid.Parse("33333333-3333-4333-8333-333333333333");
+        var failure = new InvalidOperationException("N32 synthetic authorization reader failure.");
+        var access = new FakeAccessReader
+        {
+            Scope = new NotificationModuleScope(NotificationModule.Learning,
+                Guid.Parse("11111111-1111-4111-8111-111111111111")),
+            ResolveException = failure
+        };
+        var repository = new FakeRepository { MarkResult = true };
+        var service = CreateService(access, repository);
+        var readAtUtc = CreatedAt.AddMinutes(10);
+        var cancellationToken = CancellationToken.None;
+        Assert.Equal(TimeSpan.Zero, readAtUtc.Offset);
+        Assert.False(cancellationToken.IsCancellationRequested);
+
+        var thrown = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => service.TryMarkReadAsync(accountId, NotificationModule.Learning,
+                notificationId, readAtUtc, cancellationToken));
+
+        Assert.Same(failure, thrown);
+        Assert.Equal(1, access.Calls);
+        Assert.Equal(accountId, access.LastAccountId);
+        Assert.Equal(NotificationModule.Learning, access.LastModule);
+        var faultedTask = access.LastFaultedTask;
+        Assert.NotNull(faultedTask);
+        Assert.True(faultedTask.IsFaulted);
+        Assert.Same(failure, Assert.Single(faultedTask.Exception!.InnerExceptions));
+        Assert.Equal(0, repository.AddCalls);
+        Assert.Equal(0, repository.ListCalls);
+        Assert.Equal(0, repository.FindCalls);
+        Assert.Equal(0, repository.MarkReadCalls);
+        Assert.Null(repository.LastAddedNotification);
+        Assert.Null(repository.LastReadAtUtc);
+        Assert.Null(repository.LastScope);
+    }
+
     private sealed class FakeAccessReader
         : INotificationRecipientAccessReader
     {
         public NotificationModuleScope? Scope { get; set; }
+
+        public Exception? ResolveException { get; set; }
+
+        public Guid LastAccountId { get; private set; }
+
+        public NotificationModule LastModule { get; private set; }
+
+        public Task<NotificationModuleScope?>? LastFaultedTask { get; private set; }
 
         public int Calls { get; private set; }
 
@@ -733,6 +863,14 @@ public sealed class NotificationApplicationServiceTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Calls++;
+            LastAccountId = authenticatedAccountId;
+            LastModule = module;
+
+            if (ResolveException is { } failure)
+            {
+                LastFaultedTask = Task.FromException<NotificationModuleScope?>(failure);
+                return LastFaultedTask;
+            }
 
             return Task.FromResult(Scope);
         }

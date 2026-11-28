@@ -9,12 +9,17 @@ using System.Threading.Tasks;
 using Andril.API.Authorization.Social;
 using Andril.API.Contracts.Social;
 using Andril.API.Controllers.Social;
+using Andril.API.Extensions;
 using Andril.Common.Accounts.Profiles;
 using Andril.Social.Entities;
+using Andril.Social.Interfaces;
 using Andril.Social.Personality;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Controllers;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
 namespace Andril.SecurityTests.Social;
@@ -93,6 +98,46 @@ public sealed class SocialQuestionnaireResponsesControllerTests
 
     #endregion
 
+    [Fact]
+    public void ControlledActivationAddsOnlyTheResponseControllerAndVerifiedServices()
+    {
+        static (ControllerFeature Feature, IServiceCollection Services) Discover(bool enabled)
+        {
+            var configuration = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["SocialQuestionnaire:EnablePersistence"] = enabled.ToString(),
+                ["SocialQuestionnaire:RuntimeRole"] = "unused_runtime_role",
+                ["ConnectionStrings:AndrilAccounts"] = "Host=127.0.0.1;Database=unused"
+            }).Build();
+            var services = new ServiceCollection();
+            var mvc = services.AddControllers().AddApplicationPart(typeof(SocialQuestionnaireResponsesController).Assembly)
+                .AddControlledSocialQuestionnaireResponses(configuration);
+            var feature = new ControllerFeature();
+            mvc.PartManager.PopulateFeature(feature);
+            return (feature, services);
+        }
+
+        var (disabled, disabledServices) = Discover(false);
+        var (enabled, enabledServices) = Discover(true);
+        Assert.Equal(typeof(SocialQuestionnaireResponsesController).GetTypeInfo(),
+            Assert.Single(enabled.Controllers.Except(disabled.Controllers)));
+        Assert.Empty(disabled.Controllers.Except(enabled.Controllers));
+        Assert.DoesNotContain(disabledServices, service => service.ServiceType == typeof(ISocialQuestionnaireLifecycleRepository));
+        Assert.Contains(enabledServices, service => service.ServiceType == typeof(ISocialQuestionnaireLifecycleRepository));
+    }
+
+    [Fact]
+    public async Task DuplicateInitialResponseReturnsAStableNonDisclosingConflict()
+    {
+        var result = SocialQuestionnairePersistentSubmissionResult.Rejected(
+            SocialQuestionnairePersistentSubmissionResult.CurrentResponseExists, "private diagnostic");
+        var controller = new SocialQuestionnaireResponsesController(new StubSubmissionOrchestrator(result), new StubLifecycleAccessService());
+        var action = await controller.SubmitResponse(new QuestionnaireSubmission("v1", [], Skip: true), CancellationToken.None);
+        var problem = Assert.IsType<ProblemDetails>(Assert.IsType<ConflictObjectResult>(action.Result).Value);
+        Assert.Equal(StatusCodes.Status409Conflict, problem.Status);
+        Assert.Equal(SocialQuestionnairePersistentSubmissionResult.CurrentResponseExists, problem.Extensions["code"]);
+        Assert.Null(problem.Detail);
+    }
     #region Constructor Guardrails
 
     [Fact]

@@ -29,5 +29,6 @@ public sealed class HobbiesGalleryDbContext : DbContext
 
         modelBuilder.ApplyConfiguration(
             new GalleryPreferencesConfiguration());
+        modelBuilder.ApplyConfiguration(new GalleryUploadOperationConfiguration());
     }
 }

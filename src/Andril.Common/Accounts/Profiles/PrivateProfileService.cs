@@ -26,6 +26,14 @@ public sealed class PrivateProfileService(ICurrentUser user, IOnboardingIdentity
             profile => action(ToDto(profile, accountId, module)), cancellationToken);
     }
 
+    public async Task<T> WithSerializableLearningProfileAsync<T>(Func<PrivateProfileDto, Task<T>> action, CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        var (accountId, validate) = await AuthorizeAsync(ModuleNames.Learning, cancellationToken);
+        return await repository.WithSerializableLearningProfileAsync(accountId, validate,
+            profile => action(ToDto(profile, accountId, ModuleNames.Learning)), cancellationToken);
+    }
+
     private async Task<(Guid AccountId, Action<StarterModuleState> Validate)> AuthorizeAsync(string module, CancellationToken ct)
     {
         if (!user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty)

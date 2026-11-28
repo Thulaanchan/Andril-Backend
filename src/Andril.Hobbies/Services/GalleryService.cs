@@ -1,7 +1,10 @@
 
+using System.Runtime.CompilerServices;
 using Andril.Hobbies.DTOs;
 using Andril.Hobbies.Entities;
 using Andril.Hobbies.Interfaces;
+
+[assembly: InternalsVisibleTo("Andril.API")]
 
 namespace Andril.Hobbies.Services;
 
@@ -146,7 +149,7 @@ public sealed class GalleryService : IGalleryService
             cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
 
-        if (!IsAccessible(media, ownerId))
+        if (!IsAccessible(media, ownerId) || media!.Id != mediaId)
             return null;
 
         var coverId = await _repository.GetCoverIdAsync(
@@ -154,7 +157,35 @@ public sealed class GalleryService : IGalleryService
             cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
 
-        return ToDto(media!, coverId);
+        return ToDto(media, coverId);
+    }
+
+    internal async Task<bool> VerifyPrivateMediaAsync(Guid mediaId, IGalleryPrivateObjectEvidenceReader objects,
+        CancellationToken cancellationToken)
+    {
+        var expected = await FindPrivateMediaBindingAsync(mediaId, cancellationToken);
+        if (expected is null)
+            return false;
+        var evidence = await objects.FindAuthorizedAsync(expected, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return evidence == expected;
+    }
+
+    internal async Task<GalleryPrivateObjectEvidence?> FindPrivateMediaBindingAsync(Guid mediaId,
+        CancellationToken cancellationToken)
+    {
+        var ownerId = RequireActiveHobbiesProfile();
+        cancellationToken.ThrowIfCancellationRequested();
+        if (mediaId == Guid.Empty)
+            return null;
+
+        var media = await _repository.GetOwnedByIdAsync(mediaId, ownerId, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (!IsAccessible(media, ownerId) || media!.Id != mediaId || !media.IsPrivate ||
+            string.IsNullOrWhiteSpace(media.StorageObjectKey))
+            return null;
+
+        return new GalleryPrivateObjectEvidence(mediaId, ownerId, HobbiesModule, media.StorageObjectKey, media.ProviderGeneration);
     }
 
     public async Task<bool> UpdateTitleAsync(

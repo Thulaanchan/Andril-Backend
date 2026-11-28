@@ -1,4 +1,5 @@
 using System;
+using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using Andril.API.Authorization.Social;
@@ -12,9 +13,10 @@ namespace Andril.API.Controllers.Social;
 /// <summary>
 /// Request payload for recording caller directional dating interest toward a target candidate profile.
 /// </summary>
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record SocialRecordInterestRequest(
-    Guid TargetProfileId,
-    bool IsPositive);
+    [property: JsonRequired] Guid TargetProfileId,
+    [property: JsonRequired] bool IsPositive);
 
 /// <summary>
 /// Privacy-safe response projected from a directional interest operation.
@@ -51,6 +53,8 @@ public sealed record SocialRevocationResponseDto(
 [ApiController]
 [Authorize]
 [NonController]
+[SocialMatchingErrors]
+[ProducesResponseType<ProblemDetails>(StatusCodes.Status503ServiceUnavailable)]
 [Route("api/v1/social/relationships")]
 public sealed class SocialRelationshipsController : ControllerBase
 {
@@ -66,7 +70,7 @@ public sealed class SocialRelationshipsController : ControllerBase
     /// Conditionally establishes an atomic mutual match when reciprocal positive interest exists.
     /// Never reveals unreciprocated decisions.
     /// </summary>
-    [HttpPost("interest")]
+    [HttpPost("interest"), StrictSocialJson]
     [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
     [ProducesResponseType<SocialRelationshipOperationResponseDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
@@ -120,7 +124,7 @@ public sealed class SocialRelationshipsController : ControllerBase
                 Detail = "The relationship interest operation could not be completed with the provided parameters."
             });
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException error) when (!SocialMatchingErrorsAttribute.IsDatabaseUnavailable(error))
         {
             return BadRequest(new ProblemDetails
             {
@@ -187,7 +191,7 @@ public sealed class SocialRelationshipsController : ControllerBase
                 Detail = "The relationship status operation could not be completed with the provided parameters."
             });
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException error) when (!SocialMatchingErrorsAttribute.IsDatabaseUnavailable(error))
         {
             return BadRequest(new ProblemDetails
             {
@@ -253,7 +257,7 @@ public sealed class SocialRelationshipsController : ControllerBase
                 Detail = "The relationship revocation operation could not be completed with the provided parameters."
             });
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException error) when (!SocialMatchingErrorsAttribute.IsDatabaseUnavailable(error))
         {
             return BadRequest(new ProblemDetails
             {

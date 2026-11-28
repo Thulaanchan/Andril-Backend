@@ -221,17 +221,19 @@ public sealed class SocialQuestionnaireServiceRegistrationTests
     }
 
     [Fact]
-    public void AddSocialQuestionnaireResponseServices_MissingPersistenceRepository_FailsClosedWhenResolvingOrchestrator()
+    public void AddSocialQuestionnaireResponseServices_MissingLifecycleRepository_FailsClosedWhenResolvingOrchestrator()
     {
         var services = new ServiceCollection();
         services.AddSocialQuestionnaireResponseServices();
         services.AddScoped<IPrivateProfileService, StubProfileService>();
+        services.AddScoped<IQuestionnairePersistenceRepository, StubPersistenceRepository>();
 
         using var provider = services.BuildServiceProvider();
         using var scope = provider.CreateScope();
 
-        Assert.Throws<InvalidOperationException>(() =>
+        var failure = Assert.Throws<InvalidOperationException>(() =>
             scope.ServiceProvider.GetRequiredService<ISocialQuestionnairePersistentSubmissionOrchestrator>());
+        Assert.Contains(nameof(ISocialQuestionnaireLifecycleRepository), failure.Message);
     }
 
     [Fact]

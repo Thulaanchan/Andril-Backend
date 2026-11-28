@@ -1,0 +1,50 @@
+[
+  {
+    "File": "NotoSans-Regular.ttf",
+    "SourcePath": "hinted/ttf/NotoSans/NotoSans-Regular.ttf",
+    "Commit": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+    "GitBlob": "d55220958aa51eeeb85048d746eabe43d2cd9f14",
+    "Bytes": 569208,
+    "Sha256": "B85C38ECEA8A7CFB39C24E395A4007474FA5A4FC864F6EE33309EB4948D232D5"
+  },
+  {
+    "File": "NotoSerif-Regular.ttf",
+    "SourcePath": "hinted/ttf/NotoSerif/NotoSerif-Regular.ttf",
+    "Commit": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+    "GitBlob": "8ef59c11cbdad66a73a9b4ea381ec3e5dcf45faf",
+    "Bytes": 616196,
+    "Sha256": "C8F669CEB2C9C60CCF55198B305E08A997FFCA79A38CC7EEB551E643CBE66505"
+  },
+  {
+    "File": "NotoSansMono-Regular.ttf",
+    "SourcePath": "hinted/ttf/NotoSansMono/NotoSansMono-Regular.ttf",
+    "Commit": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+    "GitBlob": "541efd808dfb0b88972ab8390cb1328e4bbd9a06",
+    "Bytes": 512836,
+    "Sha256": "D9E2B23D19F8230BE7146F409A52B1D23117E635E28F2E2892CF91B7382F325B"
+  },
+  {
+    "File": "LICENSE.txt",
+    "SourcePath": "LICENSE",
+    "Commit": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+    "GitBlob": "c82d72e422e2d08c5ab439b6bac7c2177ea0c565",
+    "Bytes": 4377,
+    "Sha256": "0DAB92D0544F7B233403F14B84A663BDBFA746982EDA629E7F4F9FFE1B036FEB"
+  },
+  {
+    "File": "NotoSansSinhala-Regular.ttf",
+    "SourcePath": "hinted/ttf/NotoSansSinhala/NotoSansSinhala-Regular.ttf",
+    "Commit": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+    "GitBlob": "c00949bda80793674c5996a9e40d44f8762bbd03",
+    "Bytes": 310232,
+    "Sha256": "A966549310B2D3046BA25BBEEF11985428FF9356FA656FD6118BC90FB82DF031"
+  },
+  {
+    "File": "NotoSansTamil-Regular.ttf",
+    "SourcePath": "hinted/ttf/NotoSansTamil/NotoSansTamil-Regular.ttf",
+    "Commit": "ffebf8c1ee449e544955a7e813c54f9b73848eac",
+    "GitBlob": "e64d13fe042ce2705eba95658c481552044f3476",
+    "Bytes": 74248,
+    "Sha256": "6532DB33B8B264ABE3A098A40619FEB489B5DDF5AB1D2B46E72B51EEB548001B"
+  }
+]

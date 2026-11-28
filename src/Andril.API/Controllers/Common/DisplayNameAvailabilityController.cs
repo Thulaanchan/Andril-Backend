@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Andril.API.Controllers.Common;
 
+[NonController]
 [ApiController]
 [Authorize]
 [Route("api/v1/account/profiles/{module}/display-name")]

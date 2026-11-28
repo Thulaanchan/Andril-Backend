@@ -89,34 +89,6 @@ namespace Andril.Persistence.Migrations.Economy
                     table.CheckConstraint("ck_gift_transactions_sender_nonempty", "sender_account_id <> '00000000-0000-0000-0000-000000000000'::uuid");
                 });
 
-            migrationBuilder.CreateTable(
-                name: "premium_entitlements",
-                schema: "andril_economy",
-                columns: table => new
-                {
-                    account_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    tier = table.Column<int>(type: "integer", nullable: false),
-                    is_active = table.Column<bool>(type: "boolean", nullable: false),
-                    expires_at_utc = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
-                    provider = table.Column<string>(type: "character varying(32)", maxLength: 32, nullable: false),
-                    external_subscription_id = table.Column<string>(type: "character varying(128)", maxLength: 128, nullable: true),
-                    created_at_utc = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
-                    updated_at_utc = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
-                },
-                constraints: table =>
-                {
-                    table.PrimaryKey("pk_premium_entitlements", x => x.account_id);
-                    table.CheckConstraint("ck_premium_entitlements_account_id_nonempty", "account_id <> '00000000-0000-0000-0000-000000000000'::uuid");
-                    table.CheckConstraint("ck_premium_entitlements_timestamps", "updated_at_utc >= created_at_utc");
-                    table.ForeignKey(
-                        name: "fk_premium_entitlements_accounts",
-                        column: x => x.account_id,
-                        principalSchema: "andril_identity",
-                        principalTable: "accounts",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
-                });
-
             migrationBuilder.CreateIndex(
                 name: "ix_coin_transactions_account_created",
                 schema: "andril_economy",
@@ -146,7 +118,6 @@ namespace Andril.Persistence.Migrations.Economy
             migrationBuilder.Sql("ALTER TABLE andril_economy.coin_wallets ENABLE ROW LEVEL SECURITY;");
             migrationBuilder.Sql("ALTER TABLE andril_economy.coin_transactions ENABLE ROW LEVEL SECURITY;");
             migrationBuilder.Sql("ALTER TABLE andril_economy.gift_transactions ENABLE ROW LEVEL SECURITY;");
-            migrationBuilder.Sql("ALTER TABLE andril_economy.premium_entitlements ENABLE ROW LEVEL SECURITY;");
         }
 
         /// <inheritdoc />
@@ -162,10 +133,6 @@ namespace Andril.Persistence.Migrations.Economy
 
             migrationBuilder.DropTable(
                 name: "gift_transactions",
-                schema: "andril_economy");
-
-            migrationBuilder.DropTable(
-                name: "premium_entitlements",
                 schema: "andril_economy");
         }
     }

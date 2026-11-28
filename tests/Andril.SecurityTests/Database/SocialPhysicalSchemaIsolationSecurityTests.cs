@@ -15,22 +15,32 @@ namespace Andril.SecurityTests.Database;
 /// <summary>
 /// Security tests verifying physical module, schema, and profile isolation for the Social domain:
 /// - Guarantees strict schema isolation within 'andril_social'.
-/// - Verifies complete structural decoupling from 'andril_identity' and 'andril_hobbies'.
+/// - Verifies EF model isolation from 'andril_identity' and 'andril_hobbies'.
 /// - Verifies migration history isolation to prevent cross-module schema collisions.
 /// - Verifies profile scoping and cross-module profile discriminator boundaries.
 /// </summary>
 public sealed class SocialPhysicalSchemaIsolationSecurityTests
 {
-    private static readonly Type[] AllowedEntityTypes =
+    private static readonly string?[] AllowedEntityTypes =
     [
-        typeof(QuestionnaireResponseEntity),
-        typeof(QuestionnaireAnswerEntity)
+        typeof(QuestionnaireResponseEntity).FullName,
+        typeof(QuestionnaireAnswerEntity).FullName,
+        "Andril.Persistence.DbContexts.SocialQuestionnaireCurrentResponse",
+        "Andril.Persistence.DbContexts.SocialDirectionalInterestRow",
+        "Andril.Persistence.DbContexts.SocialMatchRow",
+        "Andril.Persistence.DbContexts.SocialMatchingPreferencesRow",
+        "Andril.Persistence.DbContexts.SocialLocationEvidenceRow"
     ];
 
     private static readonly string[] AllowedTables =
     [
         "social_questionnaire_responses",
-        "social_questionnaire_answers"
+        "social_questionnaire_answers",
+        "social_questionnaire_current_responses",
+        "social_directional_interests",
+        "social_matches",
+        "social_matching_preferences",
+        "social_location_evidence"
     ];
 
     [Fact]
@@ -45,7 +55,7 @@ public sealed class SocialPhysicalSchemaIsolationSecurityTests
 
         foreach (var entityType in entityTypes)
         {
-            Assert.Contains(entityType.ClrType, AllowedEntityTypes);
+            Assert.Contains(entityType.ClrType.FullName, AllowedEntityTypes);
             Assert.Equal(SocialDbContext.Schema, entityType.GetSchema());
             Assert.Equal("andril_social", entityType.GetSchema());
         }
@@ -68,7 +78,7 @@ public sealed class SocialPhysicalSchemaIsolationSecurityTests
             // Foreign keys must only point to principal entities within andril_social
             foreach (var fk in entityType.GetForeignKeys())
             {
-                Assert.Contains(fk.PrincipalEntityType.ClrType, AllowedEntityTypes);
+                Assert.Contains(fk.PrincipalEntityType.ClrType.FullName, AllowedEntityTypes);
                 Assert.Equal(SocialDbContext.Schema, fk.PrincipalEntityType.GetSchema());
             }
 

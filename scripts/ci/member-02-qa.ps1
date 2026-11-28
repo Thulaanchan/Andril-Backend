@@ -148,7 +148,7 @@ function Invoke-QaTests([string]$Suite, [string]$Project, $Expected, [switch]$Co
 }
 
 function Invoke-OfflineQa($Inventory) {
-    Remove-Item Env:ANDRIL_M2_TEST_POSTGRES, Env:ANDRIL_M3_TEST_POSTGRES, Env:ANDRIL_M2_TEST_POSTGRES_ALLOW_ROLES -ErrorAction SilentlyContinue
+    Remove-Item Env:ANDRIL_M2_TEST_POSTGRES, Env:ANDRIL_M3_TEST_POSTGRES, Env:ANDRIL_M2_TEST_POSTGRES_ALLOW_ROLES, Env:ANDRIL_RUN_LIVEKIT_SANDBOX -ErrorAction SilentlyContinue
     $suites = [ordered]@{
         unit = 'tests/Andril.UnitTests/Andril.UnitTests.csproj'
         security = 'tests/Andril.SecurityTests/Andril.SecurityTests.csproj'
@@ -161,7 +161,7 @@ function Invoke-OfflineQa($Inventory) {
             if (!(Invoke-QaTests $suite $suites[$suite] (Get-QaExpectedCases $entries) -Coverage)) { $suite }
         }
     )
-    Add-Detail "- Offline skip inventory covers $($Inventory.requiredM2.Count) M2 and $($Inventory.offlineOnlySkips.Count) other database methods."
+    Add-Detail "- Offline skip inventory covers $($Inventory.requiredM2.Count) M2 and $($Inventory.offlineOnlySkips.Count) other environment-dependent methods."
     if ($failed.Count) { throw "Offline verification failed for $($failed -join ', ')." }
 }
 
@@ -282,7 +282,7 @@ COMMIT;
         Remove-Item Env:PGPASSWORD, Env:PGSSLMODE, Env:PGCONNECT_TIMEOUT, Env:PGOPTIONS
         $probesPassed = $true
         Add-Detail '- PostgreSQL 17.12 loopback, maintenance database, database create/drop and role probes passed.'
-        Add-Detail "- Relational selection includes $($expected.Count) M2 methods and excludes $($Inventory.offlineOnlySkips.Count) other database methods."
+        Add-Detail "- Relational selection includes $($expected.Count) M2 methods and excludes $($Inventory.offlineOnlySkips.Count) other environment-dependent methods."
         $env:ANDRIL_M2_TEST_POSTGRES = "Host=127.0.0.1;Port=55432;Database=postgres;Username=andril_qa_fixture;Password=$password;SSL Mode=Disable;Timeout=5"
         $env:ANDRIL_M2_TEST_POSTGRES_ALLOW_ROLES = '1'
         foreach ($partition in $partitions.Keys) {

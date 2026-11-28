@@ -1,0 +1,232 @@
+openapi: 3.0.3
+info:
+  title: ANDRIL Social questionnaire
+  version: v1
+  description: Social questionnaire operations verified with ASP.NET Core and isolated PostgreSQL.
+    The active definition uses the confirmed Social scope. Submission and owner retrieval
+    require the questionnaire persistence opt-in and verified runtime role. This contract
+    publishes the current response and explicitly skipped state.
+security:
+  - supabaseBearer: []
+paths:
+  /api/v1/social/questionnaires/active:
+    get:
+      operationId: getActiveSocialQuestionnaire
+      summary: Get the active questionnaire definition
+      responses:
+        '200':
+          description: Canonical questionnaire definition
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionnaireDefinition'
+        '401':
+          $ref: '#/components/responses/AuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+  /api/v1/social/questionnaires/responses:
+    post:
+      operationId: submitSocialQuestionnaireResponse
+      summary: Establish the caller's current questionnaire response
+      description: The host must opt in to verified questionnaire persistence.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QuestionnaireSubmission'
+            example:
+              version: v1
+              skip: true
+              answers: []
+      responses:
+        '200':
+          description: Current response was persisted
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionnaireSubmissionResult'
+        '400':
+          description: Invalid body, version, or answers
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          $ref: '#/components/responses/AuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '409':
+          description: A current response already exists
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              example:
+                status: 409
+                title: A current questionnaire response already exists.
+                code: CURRENT_RESPONSE_EXISTS
+        '503':
+          description: Questionnaire storage is unavailable
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+  /api/v1/social/questionnaires/responses/me:
+    get:
+      operationId: getMySocialQuestionnaireResponse
+      summary: Get the caller's current questionnaire response
+      description: The host must opt in to verified questionnaire persistence.
+      responses:
+        '200':
+          description: Caller's privately scoped current response
+          headers:
+            Cache-Control:
+              $ref: '#/components/headers/NoStore'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QuestionnaireCurrentResponse'
+              example:
+                responseId: 11111111-1111-4111-8111-111111111111
+                version: v1
+                status: Skipped
+                createdAtUtc: '2026-11-28T00:00:00+00:00'
+                answers: []
+        '401':
+          $ref: '#/components/responses/AuthenticationRequired'
+        '403':
+          $ref: '#/components/responses/AccessDenied'
+        '404':
+          description: No current response for the authorized caller
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+components:
+  securitySchemes:
+    supabaseBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  headers:
+    NoStore:
+      description: Private questionnaire content must not be stored in caches.
+      schema:
+        type: string
+        example: no-store
+  responses:
+    AuthenticationRequired:
+      description: A confirmed caller must authenticate with a valid access token.
+    AccessDenied:
+      description: Identity confirmation or Social access denied.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+  schemas:
+    QuestionnaireDefinition:
+      type: object
+      required: [version, questions]
+      properties:
+        version:
+          type: string
+          example: v1
+        questions:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuestionnaireQuestion'
+    QuestionnaireQuestion:
+      type: object
+      required: [id, prompt, isRequired, options]
+      properties:
+        id:
+          type: string
+        prompt:
+          type: string
+        isRequired:
+          type: boolean
+        options:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuestionnaireOption'
+    QuestionnaireOption:
+      type: object
+      required: [id, label]
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+    QuestionnaireSubmission:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version:
+          type: string
+          enum: [v1]
+        skip:
+          type: boolean
+        answers:
+          type: array
+          description: Supply every required question for completion and no answers when skipping.
+          items:
+            $ref: '#/components/schemas/QuestionnaireAnswer'
+    QuestionnaireAnswer:
+      type: object
+      additionalProperties: false
+      required: [questionId, optionId]
+      properties:
+        questionId:
+          type: string
+        optionId:
+          type: string
+    QuestionnaireSubmissionResult:
+      type: object
+      required: [responseId, status]
+      properties:
+        responseId:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [Completed, Skipped]
+    QuestionnaireCurrentResponse:
+      type: object
+      required: [responseId, version, status, createdAtUtc, answers]
+      properties:
+        responseId:
+          type: string
+          format: uuid
+        version:
+          type: string
+        status:
+          type: string
+          enum: [Completed, Skipped]
+        createdAtUtc:
+          type: string
+          format: date-time
+        answers:
+          type: array
+          items:
+            $ref: '#/components/schemas/QuestionnaireAnswer'
+    Problem:
+      type: object
+      properties:
+        type:
+          type: string
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+        code:
+          type: string

@@ -12,7 +12,9 @@ internal sealed class LearningCvRow
     public int Template { get; private set; }
     public bool IncludeContactInformation { get; private set; }
     public string Sections { get; private set; } = null!;
-    private sealed record StoredEntry(Guid Id, Guid SectionId, string? Text);
+    [System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
+    private sealed record StoredEntry(Guid Id, Guid SectionId, string? Text, Dictionary<string,string>? Fields = null);
+    [System.Text.Json.Serialization.JsonUnmappedMemberHandling(System.Text.Json.Serialization.JsonUnmappedMemberHandling.Disallow)]
     private sealed record StoredSection(Guid Id, CvSectionCategory Category, StoredEntry[] Entries);
 
     internal static LearningCvRow From(LearningCv cv) => new()
@@ -20,14 +22,14 @@ internal sealed class LearningCvRow
         OwnerLearningProfileId = cv.OwnerLearningProfileId, CvId = cv.Id, Template = (int)cv.Template,
         IncludeContactInformation = cv.IncludeContactInformation,
         Sections = JsonSerializer.Serialize(cv.Sections.Select(s => new StoredSection(s.Id, s.Category,
-            s.Entries.Select(e => new StoredEntry(e.Id, e.SectionId, e.Text)).ToArray())))
+            s.Entries.Select(e => new StoredEntry(e.Id, e.SectionId, e.Text,e.Fields.Count == 0 ? null : new(e.Fields))).ToArray())))
     };
     internal LearningCv ToDomain()
     {
         var sections = JsonSerializer.Deserialize<StoredSection[]>(Sections) ?? throw new JsonException("Invalid stored CV.");
         if (sections.Any(s => s is null || s.Entries is null || s.Entries.Any(e => e is null))) throw new JsonException("Invalid stored CV.");
         return LearningCv.FromStoredSnapshot(CvId, OwnerLearningProfileId, (CvTemplate)Template,
-            sections.Select(s => new CvSection(s.Id, s.Category, s.Entries.Select(e => new CvSection.Entry(e.Id, e.SectionId, e.Text)))), IncludeContactInformation);
+            sections.Select(s => new CvSection(s.Id, s.Category, s.Entries.Select(e => new CvSection.Entry(e.Id, e.SectionId, e.Text,e.Fields)))), IncludeContactInformation);
     }
     internal void ReplaceContent(LearningCvRow row)
     {

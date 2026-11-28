@@ -17,4 +17,10 @@
     <ProjectReference Include="..\..\src\Andril.API\Andril.API.csproj" />
     <ProjectReference Include="..\..\src\Andril.Persistence\Andril.Persistence.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="../../scripts/database/install-canonical-entitlements.sql" Link="install-canonical-entitlements.sql" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../contracts/openapi/social-questionnaire.v1.yaml" Link="social-questionnaire.v1.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../contracts/openapi/social-matching.v1.yaml" Link="social-matching.v1.yaml" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../../contracts/openapi/shared-groups.v1.yaml" Link="shared-groups.v1.yaml" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

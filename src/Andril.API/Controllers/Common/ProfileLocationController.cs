@@ -8,6 +8,7 @@ using ModuleNames = Andril.Common.Accounts.StarterModules.StarterModules;
 
 namespace Andril.API.Controllers.Common;
 
+[NonController]
 [ApiController]
 [Authorize]
 [Route("api/v1/account")]

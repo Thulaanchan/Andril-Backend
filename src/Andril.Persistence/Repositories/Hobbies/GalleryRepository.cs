@@ -9,7 +9,7 @@ using Microsoft.EntityFrameworkCore.Storage;
 namespace Andril.Persistence.Repositories.Hobbies;
 
 public sealed class GalleryRepository<TDbContext>
-    : IGalleryRepository, IGalleryPageRepository
+    : IGalleryRepository, IGalleryPageRepository, IGalleryLifecycleRepository
     where TDbContext : DbContext
 {
     private const string HobbiesModule = "Hobbies";
@@ -192,21 +192,7 @@ public sealed class GalleryRepository<TDbContext>
             throw new InvalidOperationException("The owner's Gallery preferences are already tracked.");
         }
 
-        var database = _context.Database;
-        if (database.CurrentTransaction is not null || Transaction.Current is not null
-            || database.GetEnlistedTransaction() is not null)
-        {
-            throw new InvalidOperationException("Cover selection requires its own transaction.");
-        }
-        // An outer EF strategy can also retry the entire operation.
-        if (ExecutionStrategy.Current?.RetriesOnFailure == true
-            || database.CreateExecutionStrategy().RetriesOnFailure)
-            throw new InvalidOperationException("Cover selection requires a non-retrying execution strategy.");
-
-        await using var transaction =
-            await database.BeginTransactionAsync(
-                System.Data.IsolationLevel.Serializable,
-                cancellationToken);
+        await using var transaction = await BeginCoverOrDeleteAsync(cancellationToken);
 
         var mediaExists = await _context.Set<GalleryMedia>()
             .AnyAsync(
@@ -258,5 +244,52 @@ public sealed class GalleryRepository<TDbContext>
         {
             entry.State = EntityState.Detached;
         }
+    }
+
+    async Task<GalleryLogicalDeleteOutcome> IGalleryLifecycleRepository.DeleteOwnedAsync(Guid mediaId,
+        Guid ownerProfileId, Func<CancellationToken, Task<bool>> reauthorize, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (mediaId == Guid.Empty || ownerProfileId == Guid.Empty)
+            return GalleryLogicalDeleteOutcome.Unavailable;
+        if (_context.ChangeTracker.HasChanges())
+            throw new InvalidOperationException("The Gallery context contains pending changes.");
+
+        await using var transaction = await BeginCoverOrDeleteAsync(cancellationToken);
+        var owned = _context.Set<GalleryMedia>().Where(media => media.Id == mediaId &&
+            media.OwnerModuleProfileId == ownerProfileId && media.Module == HobbiesModule && media.IsPrivate);
+        var deleted = await owned.Select(media => (bool?)media.IsDeleted).SingleOrDefaultAsync(cancellationToken);
+        if (deleted is null)
+            return GalleryLogicalDeleteOutcome.Unavailable;
+
+        // Both transactions read the state the other may write. PostgreSQL can abort a conflict.
+        if (await _context.Set<GalleryPreferences>().AnyAsync(preferences =>
+                preferences.OwnerModuleProfileId == ownerProfileId && preferences.CoverMediaId == mediaId,
+                cancellationToken))
+            return GalleryLogicalDeleteOutcome.SelectedCover;
+        if (deleted.Value)
+            return GalleryLogicalDeleteOutcome.Deleted;
+        if (!await reauthorize(cancellationToken))
+            return GalleryLogicalDeleteOutcome.Denied;
+
+        var count = await owned.Where(media => !media.IsDeleted)
+            .ExecuteUpdateAsync(update => update.SetProperty(media => media.IsDeleted, true), cancellationToken);
+        if (count != 1)
+            return GalleryLogicalDeleteOutcome.Unavailable;
+        if (!await reauthorize(cancellationToken))
+            return GalleryLogicalDeleteOutcome.Denied;
+        await transaction.CommitAsync(cancellationToken);
+        return GalleryLogicalDeleteOutcome.Deleted;
+    }
+
+    private Task<IDbContextTransaction> BeginCoverOrDeleteAsync(CancellationToken cancellationToken)
+    {
+        var database = _context.Database;
+        if (database.CurrentTransaction is not null || Transaction.Current is not null ||
+            database.GetEnlistedTransaction() is not null)
+            throw new InvalidOperationException("Gallery lifecycle changes require their own transaction.");
+        if (ExecutionStrategy.Current?.RetriesOnFailure == true || database.CreateExecutionStrategy().RetriesOnFailure)
+            throw new InvalidOperationException("Gallery lifecycle changes require a non-retrying execution strategy.");
+        return database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, cancellationToken);
     }
 }

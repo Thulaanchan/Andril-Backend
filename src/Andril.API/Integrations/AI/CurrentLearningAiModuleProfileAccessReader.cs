@@ -3,6 +3,7 @@ using Andril.AI.Interfaces;
 using Andril.Common.Accounts;
 using Andril.Common.Accounts.Profiles;
 using Andril.Shared.Authentication;
+using Andril.API.Integrations.Learning;
 
 namespace Andril.API.Integrations.AI;
 
@@ -25,27 +26,9 @@ public sealed class CurrentLearningAiModuleProfileAccessReader(
             !currentUser.IsAuthenticated || currentUser.UserId is not Guid subject || subject == Guid.Empty)
             return null;
 
-        // Never provision an account, or use the caller's account ID as identity evidence.
-        var account = await accounts.FindBySubjectAsync(subject, cancellationToken);
-        if (account is null || account.Id != accountId || account.SupabaseUserId != subject)
-            return null;
-
-        try
-        {
-            var profileId = await profiles.WithAuthorizedProfileAsync<Guid?>("learning", async profile =>
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                if (profile.Module != "learning" || profile.ProfileId == Guid.Empty)
-                    return null;
-                await moduleAccess.RequireAsync("learning", cancellationToken);
-                return profile.ProfileId;
-            }, cancellationToken);
-
-            cancellationToken.ThrowIfCancellationRequested();
-            return currentUser.IsAuthenticated && currentUser.UserId == subject ? profileId : null;
-        }
-        catch (ProfileAccessDeniedException) { return null; }
-        catch (ProfileMissingException) { return null; }
-        // Unavailable authority and cancellation propagate to the existing confidential error boundary.
+        var value=await new CurrentLearningOwnerBoundary(currentUser,accounts,profiles,moduleAccess)
+            .WithCurrentOwnerAsync<ProfileResult>((owner,_)=>Task.FromResult<ProfileResult?>(new ProfileResult(owner.ProfileId)),cancellationToken,accountId);
+        return value?.Id;
     }
+    private sealed record ProfileResult(Guid Id);
 }

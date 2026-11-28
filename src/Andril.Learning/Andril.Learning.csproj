@@ -1,5 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\Andril.Shared\Andril.Shared.csproj" />
+    <PackageReference Include="HarfBuzzSharp" Version="[14.2.1.301]" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" Version="[14.2.1.301]" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" Version="[14.2.1.301]" />
+    <EmbeddedResource Include="CV\Fonts\*.ttf" />
+    <None Update="CV\Fonts\LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="CV\Fonts\HarfBuzz-*.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Update="CV\Fonts\provenance.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 </Project>

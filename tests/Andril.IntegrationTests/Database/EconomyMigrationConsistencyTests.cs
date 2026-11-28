@@ -90,7 +90,7 @@ public sealed class EconomyMigrationConsistencyTests
     }
 
     [Fact]
-    public void InitialDownDropsOnlyTheFourEconomyTables()
+    public void InitialDownDropsOnlyWalletAndGiftTables()
     {
         using var db = new EconomyDbContextFactory().CreateDbContext([]);
         var assembly = db.GetService<IMigrationsAssembly>();
@@ -99,7 +99,7 @@ public sealed class EconomyMigrationConsistencyTests
         Assert.All(migration.DownOperations, operation => Assert.IsType<DropTableOperation>(operation));
         var drops = migration.DownOperations.Cast<DropTableOperation>().ToArray();
         Assert.All(drops, table => Assert.Equal("andril_economy", table.Schema));
-        Assert.Equal(new[] { "coin_transactions", "coin_wallets", "gift_transactions", "premium_entitlements" },
+        Assert.Equal(new[] { "coin_transactions", "coin_wallets", "gift_transactions" },
             drops.Select(table => table.Name).OrderBy(name => name));
     }
 
@@ -114,5 +114,6 @@ public sealed class EconomyMigrationConsistencyTests
         Assert.DoesNotContain("ALTER TABLE andril_identity.accounts", sql);
         Assert.DoesNotContain("DROP TABLE andril_identity.accounts", sql);
         Assert.DoesNotContain("CREATE TABLE \"Account\"", sql);
+        Assert.DoesNotContain("premium_entitlements", sql);
     }
 }

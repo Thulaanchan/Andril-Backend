@@ -38,11 +38,12 @@ public sealed class EconomyAccountMappingTests
     }
 
     [Fact]
-    public void EconomyModelCreatesOnlyItsFourTablesAndReferencesTheOwnedAccountKey()
+    public void EconomyMigrationsCreateOnlyOwnedTablesAndReferenceTheCanonicalAccountKey()
     {
         using var db = new EconomyDbContextFactory().CreateDbContext([]);
         var model = db.GetService<IDesignTimeModel>().Model;
         Assert.Equal(5, model.GetEntityTypes().Count());
+        Assert.True(model.FindEntityType(typeof(EntitlementRecord))!.IsTableExcludedFromMigrations());
         foreach (var type in new[] { typeof(CoinWallet), typeof(EntitlementRecord) })
         {
             var fk = model.FindEntityType(type)!.GetForeignKeys().Single();
@@ -53,7 +54,7 @@ public sealed class EconomyAccountMappingTests
         var operations = db.GetService<IMigrationsModelDiffer>()
             .GetDifferences(null, model.GetRelationalModel());
         var tables = operations.OfType<CreateTableOperation>().ToArray();
-        Assert.Equal(new[] { "coin_transactions", "coin_wallets", "gift_transactions", "premium_entitlements" },
+        Assert.Equal(new[] { "coin_transactions", "coin_wallets", "gift_transactions" },
             tables.Select(t => t.Name).OrderBy(n => n));
         Assert.All(tables, t => Assert.Equal("andril_economy", t.Schema));
         Assert.All(tables.SelectMany(t => t.ForeignKeys), fk =>
@@ -68,17 +69,18 @@ public sealed class EconomyAccountMappingTests
         Assert.DoesNotContain("ALTER TABLE andril_identity.accounts", sql);
         Assert.DoesNotContain("DROP TABLE andril_identity.accounts", sql);
         Assert.Contains("REFERENCES andril_identity.accounts (id)", sql);
+        Assert.DoesNotContain("premium_entitlements", sql);
     }
 
     [Fact]
-    public void PreservedInitialEconomyMigrationEnablesRlsOnEveryBusinessTable()
+    public void InitialEconomyMigrationEnablesRlsOnEveryOwnedBusinessTable()
     {
         using var db = new EconomyDbContextFactory().CreateDbContext([]);
         var assembly = db.GetService<IMigrationsAssembly>();
         var migration = assembly.CreateMigration(
             assembly.Migrations["20261126160000_InitialEconomy"], db.Database.ProviderName!);
         var statements = migration.UpOperations.OfType<SqlOperation>().Select(op => op.Sql).ToArray();
-        foreach (var table in new[] { "coin_wallets", "coin_transactions", "gift_transactions", "premium_entitlements" })
+        foreach (var table in new[] { "coin_wallets", "coin_transactions", "gift_transactions" })
             Assert.Contains("ALTER TABLE andril_economy." + table + " ENABLE ROW LEVEL SECURITY;", statements);
     }
 

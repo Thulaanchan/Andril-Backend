@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 ﻿using System.IdentityModel.Tokens.Jwt;
 using System.Net;
 using System.Net.Http.Json;
@@ -39,6 +40,7 @@ public sealed class LiveKitDevelopmentAdapterTests
     private sealed class Handler : HttpMessageHandler
     {
         internal List<(string Method, JsonElement Body, JwtSecurityToken Token)> Requests { get; } = [];
+        internal bool Stall { get; set; }
         internal bool Fail { get; set; }
         internal bool WrongRoom { get; set; }
         internal bool Missing { get; set; }
@@ -46,6 +48,7 @@ public sealed class LiveKitDevelopmentAdapterTests
         internal bool TwirpNotFound { get; set; }
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (Stall) await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             var method = request.RequestUri!.Segments.Last();
             var body = await request.Content!.ReadFromJsonAsync<JsonElement>(cancellationToken: cancellationToken);
             Requests.Add((method, body, new JwtSecurityTokenHandler().ReadJwtToken(request.Headers.Authorization!.Parameter)));
@@ -144,5 +147,67 @@ public sealed class LiveKitDevelopmentAdapterTests
         Assert.DoesNotContain("secret", failure.Message);
         Assert.Throws<ArgumentException>(() => new LiveKitDevelopmentAdapter(h.Client, h.Options, new Environment { EnvironmentName = Environments.Production }));
         Assert.Throws<ArgumentException>(() => new LiveKitDevelopmentAdapter(h.Client, h.Options with { ApiEndpoint = new Uri("http://foreign.invalid") }, new Environment()));
+    }
+    [Fact]
+    public async Task D12ProviderDeadlineCancelsStalledRequestAndAllowsRecovery()
+    {
+        using var h = new Harness();
+        var adapter = new LiveKitDevelopmentAdapter(h.Client, h.Options with { RequestTimeout = TimeSpan.FromMilliseconds(50) }, new Environment(), new Clock());
+        h.Http.Stall = true;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => adapter.CreateOrGetRoomAsync(Room, default));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => adapter.IssueCredentialAsync(Room, Room.CallerIdentity, CallType.Audio, TimeSpan.FromMinutes(1), default));
+        h.Http.Stall = false;
+        await adapter.CreateOrGetRoomAsync(Room, default);
+        Assert.NotNull(await adapter.IssueCredentialAsync(Room, Room.CallerIdentity, CallType.Audio, TimeSpan.FromMinutes(1), default));
+        await adapter.CloseRoomAsync(Room, default);
+    }
+    [Theory]
+    [InlineData("Production", "true")]
+    [InlineData("ChatRealtimeDevelopment", "false")]
+    [InlineData("Development", "true")]
+    public void D12ConfigurationRequiresExactEnvironmentAndExplicitOptIn(string environment, string enabled)
+    {
+        var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(
+            new Dictionary<string, string?> { ["LiveKitSandbox:Enabled"] = enabled }).Build();
+        Assert.Throws<InvalidOperationException>(() => LiveKitSandboxConfiguration.Load(config, new Environment { EnvironmentName = environment }));
+    }
+    [Fact]
+    public void D12ConfigurationValidatesSecretsAndEndpointsWithoutNetwork()
+    {
+        using var h = new Harness();
+        var values = new Dictionary<string, string?> { ["LiveKitSandbox:Enabled"] = "true",
+            ["LiveKitSandbox:ApiEndpoint"] = "https://synthetic.invalid", ["LiveKitSandbox:RtcEndpoint"] = "wss://synthetic.invalid",
+            ["LiveKitSandbox:ApiKey"] = "synthetic", ["LiveKitSandbox:ApiSecret"] = h.Secret };
+        var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(values).Build();
+        Assert.Equal(h.Secret, LiveKitSandboxConfiguration.Load(config, new Environment()).ApiSecret);
+        Assert.DoesNotContain(h.Secret, LiveKitSandboxConfiguration.Load(config, new Environment()).ToString());
+        values["LiveKitSandbox:ApiSecret"] = "";
+        config = new Microsoft.Extensions.Configuration.ConfigurationBuilder().AddInMemoryCollection(values).Build();
+        Assert.Throws<ArgumentException>(() => LiveKitSandboxConfiguration.Load(config, new Environment()));
+    }
+    [Theory]
+    [InlineData(-1)] [InlineData(0)] [InlineData(31000)]
+    public void D12ProviderDeadlineMustBeFiniteAndBounded(int milliseconds)
+    {
+        using var h = new Harness();
+        Assert.Throws<ArgumentException>(() => new LiveKitDevelopmentAdapter(h.Client,
+            h.Options with { RequestTimeout = TimeSpan.FromMilliseconds(milliseconds) }, new Environment()));
+    }
+    [Fact]
+    public async Task D12CallerCancellationDoesNotCreateAProviderBinding()
+    {
+        using var h = new Harness();
+        using var cancelled = new CancellationTokenSource();
+        cancelled.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => h.Adapter.CreateOrGetRoomAsync(Room, cancelled.Token));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => h.Adapter.IssueCredentialAsync(Room,
+            Room.CallerIdentity, CallType.Audio, TimeSpan.FromMinutes(1), default));
+    }
+    [Theory]
+    [InlineData("")] [InlineData("Bearer ")] [InlineData("Basic invalid")] [InlineData("not-a-token")]
+    public async Task D13MissingOrMalformedAuthorizationFailsClosed(string authorization)
+    {
+        using var h = new Harness();
+        Assert.Null(await h.Adapter.VerifyAsync(Body("participant_joined"), authorization, default));
     }
 }

@@ -28,7 +28,10 @@ namespace Andril.Social.Entities;
 /// </remarks>
 public sealed class QuestionnaireResponseEntity
 {
-    private QuestionnaireResponseEntity() { }
+    private readonly List<QuestionnaireAnswerEntity> _answers = [];
+    private readonly IReadOnlyList<QuestionnaireAnswerEntity> _answerView;
+
+    private QuestionnaireResponseEntity() => _answerView = _answers.AsReadOnly();
 
     private QuestionnaireResponseEntity(
         Guid id,
@@ -36,14 +39,14 @@ public sealed class QuestionnaireResponseEntity
         string version,
         QuestionnaireParticipationStatus status,
         DateTimeOffset createdAtUtc,
-        IReadOnlyList<QuestionnaireAnswerEntity> answers)
+        IReadOnlyList<QuestionnaireAnswerEntity> answers) : this()
     {
         Id = id;
         ProfileId = profileId;
         Version = version;
         Status = status;
         CreatedAtUtc = createdAtUtc;
-        Answers = answers;
+        _answers.AddRange(answers);
     }
 
     /// <summary>
@@ -80,7 +83,7 @@ public sealed class QuestionnaireResponseEntity
     /// Gets the defensive, read-only collection of answers associated with this response.
     /// </summary>
     [JsonIgnore]
-    public IReadOnlyList<QuestionnaireAnswerEntity> Answers { get; private set; } = Array.Empty<QuestionnaireAnswerEntity>();
+    public IReadOnlyList<QuestionnaireAnswerEntity> Answers => _answerView;
 
     /// <summary>
     /// Creates a validated, immutable <see cref="QuestionnaireResponseEntity"/> snapshot.
@@ -181,15 +184,13 @@ public sealed class QuestionnaireResponseEntity
                 skip && answerList.Length > 0 ? nameof(skip) : nameof(answers));
         }
 
-        var answersSnapshot = Array.AsReadOnly((QuestionnaireAnswerEntity[])answerList.Clone());
-
         return new QuestionnaireResponseEntity(
             id,
             profileId,
             definition.Version,
             validationResult.Status,
             createdAtUtc,
-            answersSnapshot);
+            answerList);
     }
 
     /// <summary>

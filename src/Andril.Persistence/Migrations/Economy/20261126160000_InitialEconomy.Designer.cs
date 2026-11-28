@@ -103,6 +103,7 @@ namespace Andril.Persistence.Migrations.Economy
 
                     b.ToTable("premium_entitlements", "andril_economy", t =>
                         {
+                            t.ExcludeFromMigrations();
                             t.HasCheckConstraint("ck_premium_entitlements_account_id_nonempty", "account_id <> '00000000-0000-0000-0000-000000000000'::uuid");
 
                             t.HasCheckConstraint("ck_premium_entitlements_timestamps", "updated_at_utc >= created_at_utc");

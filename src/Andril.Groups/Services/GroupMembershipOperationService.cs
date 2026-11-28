@@ -33,6 +33,9 @@ public sealed class GroupJoinOperationResult
     [JsonIgnore]
     public bool EntityRemoved { get; }
 
+    [JsonIgnore]
+    public GroupMembershipTransactionStatus? TransactionStatus { get; private init; }
+
     public GroupJoinOperationResult(bool success, bool membershipCreated = false, bool entityRemoved = false)
     {
         Success = success;
@@ -57,6 +60,9 @@ public sealed class GroupJoinOperationResult
 
     public static GroupJoinOperationResult Failed() =>
         new(success: false, membershipCreated: false, entityRemoved: false);
+
+    public static GroupJoinOperationResult Failed(GroupMembershipTransactionStatus status) =>
+        new(success: false) { TransactionStatus = status };
 
     /// <inheritdoc />
     public override string ToString() => "GroupJoinOperationResult [private]";
@@ -191,9 +197,12 @@ public interface IGroupMembershipOperationService
 /// </summary>
 public sealed class GroupMembershipOperationService : IGroupMembershipOperationService
 {
-    private readonly IGroupEntryRepository _entryRepository;
-    private readonly IGroupMembershipRepository _membershipRepository;
-    private readonly IGroupJoinRequestRepository _joinRequestRepository;
+    private readonly IGroupEntryRepository? _entryRepository;
+    private readonly IGroupMembershipRepository? _membershipRepository;
+    private readonly IGroupJoinRequestRepository? _joinRequestRepository;
+    private IGroupEntryRepository OfflineEntries => _entryRepository ?? throw new InvalidOperationException("Use strict Group membership operations.");
+    private IGroupMembershipRepository OfflineMemberships => _membershipRepository ?? throw new InvalidOperationException("Use strict Group membership operations.");
+    private IGroupJoinRequestRepository OfflineRequests => _joinRequestRepository ?? throw new InvalidOperationException("Use strict Group membership operations.");
     private readonly IGroupMembershipTransactionRepository? _transactionRepository;
     private readonly IGroupAuthoritativeEvidenceProvider? _evidenceProvider;
     private readonly IGroupActorContext? _actorContext;
@@ -205,6 +214,14 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
         IGroupJoinRequestRepository joinRequestRepository)
         : this(entryRepository, membershipRepository, joinRequestRepository, null, null, null)
     {
+    }
+
+    public GroupMembershipOperationService(IGroupMembershipTransactionRepository transactions,
+        IGroupAuthoritativeEvidenceProvider evidence, IGroupActorContext actors)
+    {
+        _transactionRepository = transactions ?? throw new ArgumentNullException(nameof(transactions));
+        _evidenceProvider = evidence ?? throw new ArgumentNullException(nameof(evidence));
+        _actorContext = actors ?? throw new ArgumentNullException(nameof(actors));
     }
 
     public GroupMembershipOperationService(
@@ -244,27 +261,27 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
         }
 
         // 2. Verify target group exists within module scope
-        var group = await _entryRepository.GetGroupAsync(groupId, scope, cancellationToken);
+        var group = await OfflineEntries.GetGroupAsync(groupId, scope, cancellationToken);
         if (group is null)
         {
             throw new InvalidOperationException("Target group does not exist within the specified module scope.");
         }
 
         // 3. Prevent duplicate membership
-        if (await _membershipRepository.ExistsAsync(groupId, scope, callerProfileId, cancellationToken))
+        if (await OfflineMemberships.ExistsAsync(groupId, scope, callerProfileId, cancellationToken))
         {
             throw new InvalidOperationException("Profile is already an active member of this group.");
         }
 
         // 4. Prevent duplicate pending join requests
-        if (await _joinRequestRepository.ExistsAsync(groupId, scope, callerProfileId, cancellationToken))
+        if (await OfflineRequests.ExistsAsync(groupId, scope, callerProfileId, cancellationToken))
         {
             throw new InvalidOperationException("Join request is already pending for this profile.");
         }
 
         // 5. Persist join request
         var joinRequest = new GroupJoinRequest(groupId, scope, callerProfileId, DateTime.UtcNow);
-        await _joinRequestRepository.SaveJoinRequestAsync(joinRequest, cancellationToken);
+        await OfflineRequests.SaveJoinRequestAsync(joinRequest, cancellationToken);
 
         return GroupJoinOperationResult.RequestSubmitted();
     }
@@ -287,7 +304,7 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
             throw new UnauthorizedAccessException($"Cancellation denied: {authResult.Status}");
         }
 
-        var removed = await _joinRequestRepository.RemoveJoinRequestAsync(
+        var removed = await OfflineRequests.RemoveJoinRequestAsync(
             groupId, scope, callerProfileId, cancellationToken);
 
         if (!removed)
@@ -325,7 +342,7 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
         }
 
         // 3. Verify join request exists
-        var pendingRequest = await _joinRequestRepository.GetJoinRequestAsync(
+        var pendingRequest = await OfflineRequests.GetJoinRequestAsync(
             groupId, scope, applicantProfileId, cancellationToken);
 
         if (pendingRequest is null)
@@ -346,15 +363,15 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
 
             // 5. Create membership and delete join request
             var membership = new GroupMembership(groupId, scope, applicantProfileId);
-            await _membershipRepository.SaveMembershipAsync(membership, cancellationToken);
-            await _joinRequestRepository.RemoveJoinRequestAsync(groupId, scope, applicantProfileId, cancellationToken);
+            await OfflineMemberships.SaveMembershipAsync(membership, cancellationToken);
+            await OfflineRequests.RemoveJoinRequestAsync(groupId, scope, applicantProfileId, cancellationToken);
 
             return GroupJoinOperationResult.Approved();
         }
         else
         {
             // Reject: delete join request
-            await _joinRequestRepository.RemoveJoinRequestAsync(groupId, scope, applicantProfileId, cancellationToken);
+            await OfflineRequests.RemoveJoinRequestAsync(groupId, scope, applicantProfileId, cancellationToken);
             return GroupJoinOperationResult.Rejected();
         }
     }
@@ -379,7 +396,7 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
             throw new ArgumentException("Caller profile identifier cannot be empty.", nameof(callerProfileId));
         }
 
-        var removed = await _membershipRepository.RemoveMembershipAsync(
+        var removed = await OfflineMemberships.RemoveMembershipAsync(
             groupId, scope, callerProfileId, cancellationToken);
 
         if (!removed)
@@ -442,7 +459,7 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
 
         if (!txResult.Success || txResult.Status != GroupMembershipTransactionStatus.Committed)
         {
-            return GroupJoinOperationResult.Failed();
+            return GroupJoinOperationResult.Failed(txResult.Status);
         }
 
         return GroupJoinOperationResult.RequestSubmitted();
@@ -502,12 +519,16 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
     }
 
     /// <inheritdoc />
-    public async Task<GroupJoinOperationResult> ProcessJoinRequestStrictAsync(
-        Guid groupId,
-        GroupModuleScope scope,
-        Guid applicantProfileId,
-        bool approve,
-        CancellationToken cancellationToken = default)
+    public Task<GroupJoinOperationResult> ProcessJoinRequestStrictAsync(Guid groupId, GroupModuleScope scope,
+        Guid applicantProfileId, bool approve, CancellationToken cancellationToken = default) =>
+        ProcessJoinRequestAsync(groupId, scope, applicantProfileId, approve, null, cancellationToken);
+
+    public Task<GroupJoinOperationResult> ProcessJoinRequestAtRevisionAsync(Guid groupId, GroupModuleScope scope,
+        Guid applicantProfileId, bool approve, long expectedRevision, CancellationToken cancellationToken = default) =>
+        ProcessJoinRequestAsync(groupId, scope, applicantProfileId, approve, expectedRevision, cancellationToken);
+
+    private async Task<GroupJoinOperationResult> ProcessJoinRequestAsync(Guid groupId, GroupModuleScope scope,
+        Guid applicantProfileId, bool approve, long? expectedRevision, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var (txRepo, evidenceProvider, actorContext) = EnsureStrictServicesConfigured();
@@ -573,7 +594,7 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
                 var currentCount = await evidenceProvider.GetCurrentMemberCountAsync(groupId, scope, cancellationToken);
                 if (currentCount >= capacity.Value)
                 {
-                    return GroupJoinOperationResult.Failed();
+                    return GroupJoinOperationResult.Failed(GroupMembershipTransactionStatus.CapacityExceeded);
                 }
             }
         }
@@ -586,14 +607,14 @@ public sealed class GroupMembershipOperationService : IGroupMembershipOperationS
             approve,
             actorEvidence.ProfileId,
             DateTime.UtcNow,
-            cancellationToken: cancellationToken);
+            expectedRevision, cancellationToken);
 
         cancellationToken.ThrowIfCancellationRequested();
 
         // 4. Validate confirmed transaction results and verify returned repository entity scope
         if (!txResult.Success || txResult.Status != GroupMembershipTransactionStatus.Committed)
         {
-            return GroupJoinOperationResult.Failed();
+            return GroupJoinOperationResult.Failed(txResult.Status);
         }
 
         if (approve)

@@ -11,6 +11,7 @@ public sealed class EntitlementRecordConfiguration : IEntityTypeConfiguration<En
     {
         builder.ToTable("premium_entitlements", EconomyDatabaseOptions.Schema, table =>
         {
+            table.ExcludeFromMigrations();
             table.HasCheckConstraint("ck_premium_entitlements_account_id_nonempty", "account_id <> '00000000-0000-0000-0000-000000000000'::uuid");
             table.HasCheckConstraint("ck_premium_entitlements_timestamps", "updated_at_utc >= created_at_utc");
         });
