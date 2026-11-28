@@ -10,6 +10,30 @@ public sealed class PrivateProfilePhotoTests
     private static readonly PhotoUploadEvidence Evidence = new(new string('a', 64), new string('b', 64), "image/jpeg", 150, 300, 300);
 
     [Fact]
+    public void ExplicitRemovalHidesReferenceAndRetainsObjectUntilRetentionReview()
+    {
+        var photo = Create();
+        photo.MarkStored(photo.LeaseToken!.Value, Now);
+        var key = photo.ObjectKey;
+        photo.DetachForRetentionReview(Now.AddSeconds(1));
+        Assert.False(photo.IsCurrent);
+        Assert.False(photo.CleanupPending);
+        Assert.False(photo.CanClaimCleanup(Now.AddDays(1)));
+        Assert.Equal(key, photo.ObjectKey);
+    }
+
+    [Fact]
+    public void RemovalCannotDiscardUnsettledExternalWriteEvidence()
+    {
+        var photo = Create();
+        photo.Reclaim(Guid.NewGuid(), Now.AddMinutes(3), Now.AddMinutes(5));
+        photo.MarkStored(photo.LeaseToken!.Value, Now.AddMinutes(3));
+        Assert.Throws<PhotoDependencyException>(() => photo.DetachForRetentionReview(Now.AddMinutes(4)));
+        Assert.True(photo.IsCurrent);
+        Assert.True(photo.LateWriteRisk);
+    }
+
+    [Fact]
     public void PublicationAndSupersedingAreOneWay()
     {
         var photo = Create();

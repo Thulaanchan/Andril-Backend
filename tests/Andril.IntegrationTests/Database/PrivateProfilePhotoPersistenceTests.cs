@@ -24,6 +24,50 @@ public sealed class PrivateProfilePhotoPersistenceTests
     private static readonly string Hash = new('a', 64);
     private static readonly PhotoUploadEvidence Evidence = new(Hash, new string('b', 64), "image/jpeg", 29, 300, 300);
 
+    [LocalPostgresFact]
+    public async Task ConfirmedRemovalIsIdempotentPrivateAndRetainsUnpurgedObjectEvidence()
+    {
+        await using var local = await LocalAccountDatabase.CreateAsync();
+        var (scope, account) = await SeedAsync(local);
+        await using var db = local.Open();
+        var objects = new ControlledObjects();
+        var service = Workflow(db, await ActorAsync(db, account), objects);
+        var current = await UploadAsync(service, scope.Module, Guid.NewGuid());
+        await Assert.ThrowsAsync<PhotoUploadInvalidException>(() => service.RemoveAsync(scope.Module, current.UploadId, false));
+        Assert.True((await service.GetCurrentAsync(scope.Module)).IsCurrent);
+        var removed = await service.RemoveAsync(scope.Module, current.UploadId, true);
+        Assert.False(removed.IsCurrent);
+        Assert.Equal(removed, await service.RemoveAsync(scope.Module, current.UploadId, true));
+        await Assert.ThrowsAsync<ProfileMissingException>(() => service.GetContentAsync(scope.Module, current.UploadId));
+        await using var check = local.Open();
+        var retained = await check.PrivateProfilePhotos.SingleAsync();
+        Assert.False(retained.CleanupPending);
+        Assert.False(retained.IsCurrent);
+        Assert.NotEmpty(retained.ObjectKey);
+        Assert.Empty(objects.Deleted);
+    }
+
+    [LocalPostgresFact]
+    public async Task RemovalDeniesForeignPhotoAndPendingReplacementWithoutChangingCurrentReference()
+    {
+        await using var local = await LocalAccountDatabase.CreateAsync();
+        var (scope, account) = await SeedAsync(local);
+        var (foreign, foreignAccount) = await SeedAsync(local);
+        await using var db = local.Open();
+        var objects = new ControlledObjects();
+        var service = Workflow(db, await ActorAsync(db, account), objects);
+        var current = await UploadAsync(service, scope.Module, Guid.NewGuid());
+        await using (var foreignDb = local.Open())
+        {
+            var other = Workflow(foreignDb, await ActorAsync(foreignDb, foreignAccount), new ControlledObjects());
+            var photo = await UploadAsync(other, foreign.Module, Guid.NewGuid());
+            await Assert.ThrowsAsync<ProfileMissingException>(() => service.RemoveAsync(scope.Module, photo.UploadId, true));
+        }
+        await new PrivateProfilePhotoStore(db).ReserveAsync(scope, Guid.NewGuid(), Hash, Evidence, default);
+        await Assert.ThrowsAsync<PhotoUploadConflictException>(() => service.RemoveAsync(scope.Module, current.UploadId, true));
+        Assert.Equal(current.UploadId, (await service.GetCurrentAsync(scope.Module)).UploadId);
+    }
+
     [Fact]
     public void MigrationIsAdditiveScopedAndMatchesSnapshot()
     {
