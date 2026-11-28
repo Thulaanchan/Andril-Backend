@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ANDRIL Social matching and relationships
-  version: 1.1.0
+  version: 1.2.0
   description: Social requests require a bearer token and confirmed identity.
     Responses use no-store. Location and Explore require the separate
     distance-discovery opt-in. Interest selections and personality operations
@@ -84,6 +84,42 @@ paths:
       operationId: deleteSocialMatch
       responses:
         '200': { $ref: '#/components/responses/Revocation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/social/relationships/sent-likes:
+    get:
+      operationId: listSocialSentLikes
+      parameters:
+        - $ref: '#/components/parameters/RelationshipListLimit'
+        - $ref: '#/components/parameters/RelationshipListCursor'
+      responses:
+        '200':
+          description: The caller's currently visible outgoing positive interests.
+          headers:
+            Cache-Control: { schema: { type: string, example: 'no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/SentLikesPage' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/social/relationships/mutual-connections:
+    get:
+      operationId: listSocialMutualConnections
+      parameters:
+        - $ref: '#/components/parameters/RelationshipListLimit'
+        - $ref: '#/components/parameters/RelationshipListCursor'
+      responses:
+        '200':
+          description: The caller's currently authorized committed mutual matches.
+          headers:
+            Cache-Control: { schema: { type: string, example: 'no-store' } }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/MutualConnectionsPage' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -328,6 +364,15 @@ components:
   securitySchemes:
     supabaseBearer: { type: http, scheme: bearer, bearerFormat: JWT }
   parameters:
+    RelationshipListLimit:
+      name: limit
+      in: query
+      schema: { type: integer, format: int32, minimum: 1, maximum: 50, default: 20 }
+    RelationshipListCursor:
+      name: cursor
+      in: query
+      description: Opaque nextCursor from the previous page of the same operation.
+      schema: { type: string, minLength: 34, maxLength: 34 }
     TargetProfile:
       name: targetProfileId
       in: path
@@ -345,6 +390,37 @@ components:
         application/json:
           schema: { $ref: '#/components/schemas/RevocationResult' }
   schemas:
+    SentLikesPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            required: [profileId, displayName, likedAtUtc]
+            properties:
+              profileId: { type: string, format: uuid }
+              displayName: { type: string }
+              likedAtUtc: { type: string, format: date-time }
+        nextCursor: { type: string, nullable: true }
+    MutualConnectionsPage:
+      type: object
+      required: [items, nextCursor]
+      properties:
+        items:
+          type: array
+          maxItems: 50
+          items:
+            type: object
+            required: [profileId, displayName, matchId, matchedAtUtc]
+            properties:
+              profileId: { type: string, format: uuid }
+              displayName: { type: string }
+              matchId: { type: string, format: uuid }
+              matchedAtUtc: { type: string, format: date-time }
+        nextCursor: { type: string, nullable: true }
     ExploreCard:
       type: object
       required: [candidateProfileId, displayName, age, approximateDistanceKm, sharedLanguages, sharedConnectionGoals]

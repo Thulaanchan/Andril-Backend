@@ -58,9 +58,12 @@ public static class SocialMatchingRuntimeExtensions
             provider.GetService<SocialLocationSettings>(), provider.GetRequiredService<TimeProvider>()));
         services.TryAddScoped<ISocialDiscoveryEvidenceProvider>(provider => provider.GetRequiredService<PostgresSocialMatchingEvidenceProvider>());
         services.TryAddScoped<ISocialRelationshipEvidenceProvider>(provider => provider.GetRequiredService<PostgresSocialMatchingEvidenceProvider>());
-        services.TryAddScoped<ISocialRelationshipTransactionRepository>(provider => new PostgresSocialRelationshipTransactionRepository(
+        services.TryAddScoped(provider => new PostgresSocialRelationshipTransactionRepository(
             provider.GetRequiredService<AccountsDbContext>(), provider.GetRequiredService<DbContextOptions<SocialDbContext>>(),
             provider.GetRequiredService<ICurrentUser>(), runtimeRole));
+        services.TryAddScoped<ISocialRelationshipTransactionRepository>(provider => provider.GetRequiredService<PostgresSocialRelationshipTransactionRepository>());
+        services.TryAddScoped<ISocialRelationshipListRepository>(provider => provider.GetRequiredService<PostgresSocialRelationshipTransactionRepository>());
+        services.TryAddScoped<SocialRelationshipListAccessService>();
         services.TryAddScoped(provider => new PostgresSocialSafetyRepository(provider.GetRequiredService<DbContextOptions<SocialDbContext>>(),
             provider.GetRequiredService<ICurrentUser>(), provider.GetRequiredService<IOnboardingIdentity>(), runtimeRole));
         services.TryAddScoped<ISocialDiscoveryAccessService, SocialDiscoveryAccessService>();
