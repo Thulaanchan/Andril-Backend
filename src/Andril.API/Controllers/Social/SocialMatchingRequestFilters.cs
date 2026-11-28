@@ -2,6 +2,7 @@ using System.Data.Common;
 using System.Text.Json;
 using Andril.Common.Accounts;
 using Andril.Common.Accounts.Profiles;
+using Andril.Persistence.Repositories.Social;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.EntityFrameworkCore;
@@ -22,6 +23,7 @@ public sealed class SocialMatchingErrorsAttribute : ExceptionFilterAttribute
         {
             _ when IsDatabaseUnavailable(error) => (503, "Social matching storage is unavailable."),
             ProfileAccessDeniedException or ProfileMissingException => (403, "Social profile access denied."),
+            SocialPersonalityConflictException => (409, "Current Social personality evidence has changed."),
             ArgumentException => (400, "Invalid Social request."),
             _ => (0, "")
         };

@@ -41,7 +41,7 @@ public sealed class SocialMatchingSettingsController(PostgresSocialProfileEviden
     {
         var ranges = new SocialExploreRangeFilters(input.MinAge, input.MaxAge, input.MinDistanceKm, input.MaxDistanceKm);
         await profiles.SetSelfPreferencesAsync(new SocialMatchingPreferences(input.Discoverable, ranges, input.ShowMe,
-            input.Languages, input.ConnectionGoals), token);
+            input.Languages, input.ConnectionGoals), token, preservePartnerPreferences: true);
         return NoContent();
     }
 

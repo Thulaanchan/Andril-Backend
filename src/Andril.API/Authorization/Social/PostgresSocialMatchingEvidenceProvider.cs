@@ -72,11 +72,11 @@ public sealed class PostgresSocialMatchingEvidenceProvider(PostgresSocialMatchin
         return SocialScoringProfileEvidence.CreateAuthoritativeDiscovery(row.ProfileId, Age(row), row.Gender, preferences,
             isOptedIn: true, isActive: true, row.Discoverable, confirmedLanguages: row.Languages, confirmedConnectionGoals: row.Goals, confirmedSocialInterestIds: row.Interests,
             questionnaireAnswers: answers, questionnaireVersion: row.QuestionnaireVersion,
-            questionnaireRevision: row.ResponseId?.ToString("D"), partnerPreferences: partner);
+            questionnaireRevision: row.ResponseId?.ToString("D"), archetypeConfirmation: row.Confirmation, partnerPreferences: partner);
     }
 
     private SocialEvidenceRevisionSnapshot CreateRevision(SocialMatchingEvidenceRecord row) => new(row.ProfileId,
-        questionnaireRevision: row.QuestionnaireRevision, archetypeConfirmationRevision: 0,
+        questionnaireRevision: row.QuestionnaireRevision, archetypeConfirmationRevision: row.ConfirmationRevision,
         partnerPreferencesRevision: row.PreferencesRevision, demographicsRevision: row.DemographicsRevision,
         locationDistanceRevision: row.LocationRevision, languagesRevision: row.PreferencesRevision,
         connectionGoalsRevision: row.PreferencesRevision, socialInterestsRevision: row.InterestsRevision, blockingRevision: row.SafetyRevision,
