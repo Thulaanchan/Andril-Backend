@@ -1,8 +1,13 @@
 openapi: 3.0.3
 info:
   title: ANDRIL Social matching and relationships
-  version: 1.0.0
-  description: Social requests require a bearer token and confirmed identity. Responses use no-store. Location and Explore require the separate distance-discovery opt-in.
+  version: 1.1.0
+  description: Social requests require a bearer token and confirmed identity.
+    Responses use no-store. Location and Explore require the separate
+    distance-discovery opt-in. Interest selections and personality operations
+    require their separate persistence options. The Social catalogue starts
+    empty until approved entries are provisioned. Contextual AI consent and
+    generation have no active HTTP operations.
 security:
   - supabaseBearer: []
 paths:
@@ -155,6 +160,170 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '415': { $ref: '#/components/responses/UnsupportedMedia' }
         '503': { $ref: '#/components/responses/Unavailable' }
+  /api/v1/social/matching/interests/catalogue:
+    get:
+      operationId: readSocialInterestCatalogue
+      description: Read active approved Social catalogue entries. An empty list
+        indicates that no active entries are configured.
+      responses:
+        "200":
+          description: Current authorized result.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SocialInterestCatalogueItem"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/social/matching/interests/me:
+    get:
+      operationId: readOwnSocialInterestSelections
+      description: Read only the caller’s choices and current evidence revision. A
+        null list means no choices have been committed.
+      responses:
+        "200":
+          description: Current authorized result.
+          headers: &a1
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SocialInterestSelection"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+    put:
+      operationId: replaceOwnSocialInterestSelections
+      description: Replace the caller’s choices with distinct active catalogue IDs. An
+        empty array clears the selection.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ReplaceSocialInterests"
+      responses:
+        "204":
+          description: Saved.
+          headers: *a1
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "415":
+          description: An application/json body is required.
+          headers: *a1
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/social/matching/personality/me:
+    get:
+      operationId: readOwnSocialPersonality
+      description: Read own current completed questionnaire reference, unresolved
+        axes, confirmation status and optional partner preferences.
+      responses:
+        "200":
+          description: Current authorized result.
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SocialPersonality"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/social/matching/personality/preferences:
+    put:
+      operationId: writeSocialPersonalityPreferences
+      description: Set optional ranking preferences on the caller’s existing matching
+        settings. Supply all three values or null for all three to clear.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SocialPartnerPreferences"
+      responses:
+        "204":
+          description: Saved.
+          headers: &a1
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The current questionnaire or initial matching preferences are
+            unavailable.
+          headers: *a1
+        "415":
+          description: An application/json body is required.
+          headers: *a1
+        "503":
+          $ref: "#/components/responses/Unavailable"
+  /api/v1/social/matching/personality/confirmation:
+    put:
+      operationId: confirmOwnSocialArchetype
+      description: Confirm one or more unresolved axes against the current completed
+        questionnaire. Use exact questionnaireResponseId.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmSocialArchetype"
+      responses:
+        "204":
+          description: Saved.
+          headers: &a1
+            Cache-Control:
+              schema:
+                type: string
+                example: no-store
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "409":
+          description: The current questionnaire or initial matching preferences are
+            unavailable.
+          headers: *a1
+        "415":
+          description: An application/json body is required.
+          headers: *a1
+        "503":
+          $ref: "#/components/responses/Unavailable"
 components:
   securitySchemes:
     supabaseBearer: { type: http, scheme: bearer, bearerFormat: JWT }
@@ -241,3 +410,163 @@ components:
       required: [restricted]
       properties:
         restricted: { type: boolean }
+    SocialInterestCatalogueItem:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        displayName:
+          type: string
+      required:
+        - id
+        - displayName
+    SocialInterestSelection:
+      type: object
+      additionalProperties: false
+      properties:
+        interestIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          uniqueItems: true
+          nullable: true
+        revision:
+          type: integer
+          format: int64
+          minimum: 0
+      required:
+        - interestIds
+        - revision
+    ReplaceSocialInterests:
+      type: object
+      additionalProperties: false
+      properties:
+        interestIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          uniqueItems: true
+      required:
+        - interestIds
+    SocialPartnerPreferences:
+      type: object
+      additionalProperties: false
+      properties:
+        social:
+          type: integer
+          nullable: true
+          enum:
+            - 0
+            - 1
+            - 2
+            - null
+        communication:
+          type: integer
+          nullable: true
+          enum:
+            - 0
+            - 1
+            - 2
+            - null
+        planning:
+          type: integer
+          nullable: true
+          enum:
+            - 0
+            - 1
+            - 2
+            - null
+      required:
+        - social
+        - communication
+        - planning
+    ConfirmSocialArchetype:
+      type: object
+      additionalProperties: false
+      properties:
+        questionnaireResponseId:
+          type: string
+          format: uuid
+        social:
+          type: integer
+          nullable: true
+          enum:
+            - 0
+            - 1
+            - null
+        communication:
+          type: integer
+          nullable: true
+          enum:
+            - 0
+            - 1
+            - null
+        planning:
+          type: integer
+          nullable: true
+          enum:
+            - 0
+            - 1
+            - null
+      required:
+        - questionnaireResponseId
+    SocialPersonality:
+      type: object
+      additionalProperties: false
+      properties:
+        questionnaireResponseId:
+          type: string
+          format: uuid
+          nullable: true
+        questionnaireVersion:
+          type: string
+          nullable: true
+        unresolvedAxes:
+          type: array
+          items:
+            type: string
+        hasConfirmation:
+          type: boolean
+        partnerPreferences:
+          type: object
+          additionalProperties: false
+          properties:
+            social:
+              type: integer
+              nullable: true
+              enum:
+                - 0
+                - 1
+                - 2
+                - null
+            communication:
+              type: integer
+              nullable: true
+              enum:
+                - 0
+                - 1
+                - 2
+                - null
+            planning:
+              type: integer
+              nullable: true
+              enum:
+                - 0
+                - 1
+                - 2
+                - null
+          required:
+            - social
+            - communication
+            - planning
+          nullable: true
+      required:
+        - questionnaireResponseId
+        - questionnaireVersion
+        - unresolvedAxes
+        - hasConfirmation
+        - partnerPreferences
