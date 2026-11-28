@@ -5,22 +5,25 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if ([string]::IsNullOrWhiteSpace($env:ANDRIL_M2_TEST_POSTGRES)) {
-    throw 'The Social acceptance gate requires ANDRIL_M2_TEST_POSTGRES for an isolated loopback PostgreSQL instance.'
+    throw 'The Member-05 acceptance gate requires ANDRIL_M2_TEST_POSTGRES for an isolated loopback PostgreSQL instance.'
 }
 
 $repository = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '../..')).Path
 $project = Join-Path $repository 'tests/Andril.IntegrationTests/Andril.IntegrationTests.csproj'
-$manifest = Join-Path $PSScriptRoot 'member-05-social-required-db-tests.txt'
-$expected = @(Get-Content -LiteralPath $manifest | Where-Object { $_ -ne '' })
-if ($expected.Count -eq 0 -or @($expected | Sort-Object -Unique).Count -ne $expected.Count -or
+$socialManifest = Join-Path $PSScriptRoot 'member-05-social-required-db-tests.txt'
+$groupsManifest = Join-Path $PSScriptRoot 'member-05-groups-required-db-tests.txt'
+$social = @(Get-Content -LiteralPath $socialManifest | Where-Object { $_ -ne '' })
+$groups = @(Get-Content -LiteralPath $groupsManifest | Where-Object { $_ -ne '' })
+$expected = $social + $groups
+if ($social.Count -ne 52 -or $groups.Count -eq 0 -or @($expected | Sort-Object -Unique).Count -ne $expected.Count -or
     @($expected | Where-Object { $_ -cnotmatch '^Andril\.IntegrationTests\.Database\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$' }).Count -ne 0) {
-    throw 'The Social acceptance test manifest is empty, invalid, or contains duplicates.'
+    throw 'The Member-05 acceptance test manifests is empty, invalid, or contains duplicates.'
 }
 
 $ResultsDirectory = [IO.Path]::GetFullPath($ResultsDirectory)
 $name = 'member-05-social-db.trx'
 $trx = Join-Path $ResultsDirectory $name
-if (Test-Path -LiteralPath $trx) { throw 'Use a results directory without a prior Social acceptance report.' }
+if (Test-Path -LiteralPath $trx) { throw 'Use a results directory without a prior Member-05 acceptance report.' }
 $filter = ($expected | ForEach-Object { "FullyQualifiedName=$_" }) -join '|'
 & $Dotnet test $project -c Release --filter $filter --logger "trx;LogFileName=$name" --results-directory $ResultsDirectory --verbosity minimal
 $exitCode = $LASTEXITCODE
@@ -34,6 +37,7 @@ if ($mismatch -or $observed.Count -ne $expected.Count -or [int]$counters.total -
     [int]$counters.executed -ne $expected.Count -or [int]$counters.passed -ne $expected.Count -or
     [int]$counters.notExecuted -ne 0 -or @($observed | Where-Object outcome -cne 'Passed').Count -ne 0) {
     $mismatch | Format-Table -AutoSize
-    throw 'The Social acceptance gate requires a passing result for every exact manifest entry, with zero skips.'
+    throw 'The Member-05 acceptance gate requires a passing result for every exact manifest entry, with zero skips.'
 }
-Write-Output "Verified $($expected.Count) exact Social PostgreSQL tests with zero skips. Results $trx"
+Write-Output "Verified $($social.Count) exact Social PostgreSQL tests with zero skips. Results $trx"
+Write-Output "Verified $($groups.Count) exact Shared Groups PostgreSQL tests with zero skips. Results $trx"
