@@ -11,6 +11,14 @@ namespace Andril.Persistence.Repositories.Common;
 
 public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivateProfileRepository
 {
+    public async Task<T> WithSerializableLearningProfileAsync<T>(Guid accountId, Action<StarterModuleState> validate,
+        Func<PrivateModuleProfile, Task<T>> action, CancellationToken cancellationToken)
+    {
+        T result = default!;
+        await Execute(accountId, "learning", validate, null, cancellationToken,
+            authorizedAction: async profile => { result = await action(profile); }, serializableLearning: true);
+        return result;
+    }
     public Task<PrivateModuleProfile?> ReadAsync(Guid accountId, string module, Action<StarterModuleState> validate,
         CancellationToken cancellationToken = default) => Execute(accountId, module, validate, null, cancellationToken);
 
@@ -32,14 +40,15 @@ public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivatePro
     }
 
     private async Task<PrivateModuleProfile?> Execute(Guid accountId, string module, Action<StarterModuleState> validate,
-        TimeProvider? clock, CancellationToken ct, ProfileEdit? edit = null, Func<PrivateModuleProfile, Task>? authorizedAction = null)
+        TimeProvider? clock, CancellationToken ct, ProfileEdit? edit = null, Func<PrivateModuleProfile, Task>? authorizedAction = null,
+        bool serializableLearning = false)
     {
         if (accountId == Guid.Empty || !StarterModules.IsValid(module)) throw new ProfileValidationException();
         try
         {
             bool lockAccount = clock is not null || authorizedAction is not null;
             await using var tx = await db.Database.BeginTransactionAsync(
-                lockAccount ? IsolationLevel.ReadCommitted : IsolationLevel.RepeatableRead, ct);
+                serializableLearning ? IsolationLevel.Serializable : lockAccount ? IsolationLevel.ReadCommitted : IsolationLevel.RepeatableRead, ct);
             if (lockAccount)
             {
                 // Serialize account writers while allowing canonical entitlement foreign-key checks.
@@ -51,11 +60,22 @@ public sealed class PrivateProfileRepository(AccountsDbContext db) : IPrivatePro
                 ? await db.Demographics.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId, ct)
                 : await db.Demographics.FromSqlInterpolated($"SELECT * FROM andril_identity.account_demographics WHERE account_id = {accountId} FOR UPDATE")
                     .AsNoTracking().SingleOrDefaultAsync(ct);
-            var membership = await db.StarterMemberships.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId, ct);
+            var membership = serializableLearning
+                ? await db.StarterMemberships.FromSqlInterpolated($"SELECT * FROM andril_identity.account_starter_memberships WHERE account_id={accountId} FOR SHARE").AsNoTracking().SingleOrDefaultAsync(ct)
+                : await db.StarterMemberships.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId, ct);
             // Enforce membership here too, independently of the service callback.
             if (membership?.Module != module) throw new ProfileAccessDeniedException();
-            var policies = await db.PolicyRecords.AsNoTracking().Where(x => x.AccountId == accountId).ToArrayAsync(ct);
+            var policies = serializableLearning
+                ? await db.PolicyRecords.FromSqlInterpolated($"SELECT * FROM andril_identity.account_policy_records WHERE account_id={accountId} ORDER BY action,version FOR SHARE").AsNoTracking().ToArrayAsync(ct)
+                : await db.PolicyRecords.AsNoTracking().Where(x => x.AccountId == accountId).ToArrayAsync(ct);
             validate(new(demographics, policies, membership));
+            if (serializableLearning)
+            {
+                var subject = await db.Accounts.Where(row => row.Id == accountId).Select(row => row.SupabaseUserId).SingleAsync(ct);
+                await db.Database.ExecuteSqlInterpolatedAsync($"SELECT set_config('andril.subject',{subject.ToString()},true),set_config('andril.account',{accountId.ToString()},true),set_config('andril.module','learning',true)", ct);
+                var active = await db.Database.SqlQuery<string>($"SELECT state AS \"Value\" FROM andril_identity.account_module_lifecycles WHERE account_id={accountId} AND module='learning' FOR SHARE").SingleOrDefaultAsync(ct);
+                if (active != "active") throw new ProfileAccessDeniedException();
+            }
             // Keep profile edits serialized while allowing foreign-key checks from a second profile's transaction.
             var profile = authorizedAction is null
                 ? await db.PrivateProfiles.AsNoTracking().SingleOrDefaultAsync(x => x.AccountId == accountId && x.Module == module, ct)

@@ -4,6 +4,9 @@ using System.Security.Claims;
 using Andril.API.Authentication;
 using Andril.Common.Accounts.Profiles;
 using Andril.Learning.Entities;
+using Andril.Learning.CV;
+using Andril.API.Extensions;
+using Andril.Persistence.Repositories.Common;
 using Andril.Persistence.DbContexts;
 using Andril.Shared.Authentication;
 using Microsoft.AspNetCore.Authentication;
@@ -11,6 +14,8 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.AspNetCore.Mvc.Controllers;
 using Microsoft.AspNetCore.Mvc.Infrastructure;
 using Microsoft.AspNetCore.OpenApi;
@@ -76,16 +81,88 @@ public sealed class LearningFoundationBoundaryTests
     }
 
     [Fact]
-    public void CurrentProductionCompositionHasNoLearningRuntimeServicesOrPersistence()
+    public void ProductionLearningCompositionIsDefaultDisabledAndOnlyPrivateCvContractsAreApproved()
     {
         var calls = ProductionApiCalls();
-        Assert.DoesNotContain(calls.SelectMany(MemberTypes), IsLearningBoundaryType);
+        Assert.DoesNotContain(calls.SelectMany(MemberTypes), type => IsLearningBoundaryType(type) && !IsApprovedPrivateCvContract(type));
         var services = ProductionServices();
         Assert.DoesNotContain(services, descriptor => IsLearningBoundaryType(descriptor.ServiceType) ||
             (descriptor.ImplementationType is { } implementation && IsLearningBoundaryType(implementation)) ||
             (descriptor.ImplementationInstance is { } instance && IsLearningBoundaryType(instance.GetType())));
         Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(DbContextOptions<LearningDbContext>));
     }
+
+    [Fact]
+    public void ExplicitPrivateCvCompositionKeepsRealM2AuthorityAndNoOtherLearningRuntime()
+    {
+        var services = ProductionServices(PrivateCvConfiguration(true));
+        var cv = Assert.Single(services, descriptor => descriptor.ServiceType == typeof(ILearningCvRepository));
+        Assert.Equal(ServiceLifetime.Scoped, cv.Lifetime);
+        Assert.NotNull(cv.ImplementationFactory);
+        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType != typeof(ILearningCvRepository) &&
+            (IsLearningBoundaryType(descriptor.ServiceType) ||
+             descriptor.ImplementationType is { } implementation && IsLearningBoundaryType(implementation) ||
+             descriptor.ImplementationInstance is { } instance && IsLearningBoundaryType(instance.GetType())));
+        Assert.DoesNotContain(services, descriptor => descriptor.ServiceType == typeof(DbContextOptions<LearningDbContext>));
+        Assert.Equal(typeof(PrivateProfileService), Assert.Single(services, descriptor => descriptor.ServiceType == typeof(IPrivateProfileService)).ImplementationType);
+        Assert.Equal(typeof(PrivateProfileRepository), Assert.Single(services, descriptor => descriptor.ServiceType == typeof(IPrivateProfileRepository)).ImplementationType);
+        // The new purpose-specific document callback does not silently activate the generic module gate.
+        Assert.Equal(typeof(PrivateModuleAccess), Assert.Single(services, descriptor => descriptor.ServiceType == typeof(IPrivateModuleAccess)).ImplementationType);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task PrivateCvEndpointsAreAbsentUnlessEnabledAndNeverAnonymous(bool enabled)
+    {
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions { EnvironmentName = "Production" });
+        builder.Services.AddAuthorization();
+        builder.Services.AddVerifiedLearningPrivateCv(PrivateCvConfiguration(enabled));
+        await using var app = builder.Build();
+        app.MapVerifiedLearningPrivateCv();
+        // Inspect real endpoint metadata without starting HTTP or resolving persistence.
+        var endpoints = ((IEndpointRouteBuilder)app).DataSources.SelectMany(source => source.Endpoints).OfType<RouteEndpoint>().ToArray();
+        if (!enabled) { Assert.Empty(endpoints); return; }
+        var expected = new[]
+        {
+            "GET /api/learning/cvs", "POST /api/learning/cvs",
+            "PUT /api/learning/cvs/{id:guid}/contact-consent",
+            "POST /api/learning/cvs/{id:guid}/sections/{category}/structured",
+            "GET /api/learning/cvs/{id:guid}/preview", "GET /api/learning/cvs/{id:guid}/pdf"
+        };
+        Assert.Equal(expected.Order(), endpoints.Select(endpoint =>
+            Assert.Single(endpoint.Metadata.GetRequiredMetadata<HttpMethodMetadata>().HttpMethods) + " " + endpoint.RoutePattern.RawText!.TrimEnd('/')).Order());
+        Assert.All(endpoints, endpoint =>
+        {
+            Assert.NotEmpty(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());
+            Assert.Null(endpoint.Metadata.GetMetadata<IAllowAnonymous>());
+        });
+    }
+
+    private static IConfiguration PrivateCvConfiguration(bool enabled) => new ConfigurationBuilder()
+        .AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["Learning:PrivateCv:Enabled"] = enabled.ToString(),
+            ["Learning:PrivateCv:RuntimeRole"] = "architecture_metadata_only"
+        }).Build();
+
+    // Exact reviewed CV contracts only; no namespace/assembly-wide activation exception.
+    [Fact]
+    public void PrivateCvApprovalCannotAuthorizeOtherLearningPersistenceOrFoundationContracts()
+    {
+        foreach (var type in new[] { typeof(LearningDbContext), typeof(DbContextOptions<LearningDbContext>),
+            typeof(LearningSkillSelection), typeof(IEnumerable<LearningSkillSelection>) })
+            Assert.False(IsApprovedPrivateCvContract(type));
+        Assert.True(IsApprovedPrivateCvContract(typeof(Task<ILearningCvRepository>)));
+    }
+
+    private static bool IsApprovedPrivateCvContract(Type type) =>
+        type.HasElementType ? IsApprovedPrivateCvContract(type.GetElementType()!) :
+        type.IsGenericType ? type.Assembly != Learning && type.GetGenericArguments().All(argument => !IsLearningBoundaryType(argument) || IsApprovedPrivateCvContract(argument)) :
+        new[] { typeof(ILearningCvRepository), typeof(CvTemplate), typeof(CvOperationState), typeof(CvReadResult),
+            typeof(CvListResult), typeof(CvPreviewResult), typeof(CvPdfResult), typeof(CvSaveChange),
+            typeof(CvSectionCategory), typeof(CvSection), typeof(CvSection.Entry), typeof(CvStructuredFields),
+            typeof(LearningCv), typeof(CvPreview), typeof(CvPdfDocument) }.Contains(type);
 
     [Fact]
     public void CurrentMvcContractsAndMinimalHttpMappingsDoNotExposeLearningFoundations()
@@ -187,11 +264,11 @@ public sealed class LearningFoundationBoundaryTests
         (type.HasElementType && IsLearningBoundaryType(type.GetElementType()!)) ||
         (type.IsGenericType && type.GetGenericArguments().Any(IsLearningBoundaryType));
 
-    private static ServiceCollection ProductionServices()
+    private static ServiceCollection ProductionServices(IConfiguration? suppliedConfiguration = null)
     {
         var services = new ServiceCollection();
         services.AddLogging(); services.AddControllers().AddApplicationPart(Api); services.AddProblemDetails();
-        var configuration = new ConfigurationBuilder().Build();
+        var configuration = suppliedConfiguration ?? new ConfigurationBuilder().Build();
         // Discover and invoke the actual API-owned service-registration calls in Program.
         // No copied list of registrations can silently omit a newly added extension.
         var registrations = Methods(Api.EntryPoint!.DeclaringType!).SelectMany(Instructions)

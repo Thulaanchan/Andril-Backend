@@ -15,6 +15,10 @@ public sealed record PrivateProfileDto(Guid ProfileId, string Module, DateTimeOf
 
 public interface IPrivateProfileRepository
 {
+    // Explicit opt-in for private Learning documents. Unsupported implementations deny;
+    // existing callbacks retain their original isolation and authorization semantics.
+    Task<T> WithSerializableLearningProfileAsync<T>(Guid accountId, Action<StarterModuleState> validate,
+        Func<PrivateModuleProfile, Task<T>> action, CancellationToken cancellationToken) => throw new ProfileContractPendingException();
     Task<T> WithAuthorizedProfileAsync<T>(Guid accountId, string module, Action<StarterModuleState> validate,
         Func<PrivateModuleProfile, Task<T>> action, CancellationToken cancellationToken) => throw new PhotoDependencyException();
 
@@ -29,6 +33,8 @@ public interface IPrivateProfileRepository
 
 public interface IPrivateProfileService
 {
+    Task<T> WithSerializableLearningProfileAsync<T>(Func<PrivateProfileDto, Task<T>> action,
+        CancellationToken cancellationToken) => throw new ProfileContractPendingException();
     Task<T> WithAuthorizedProfileAsync<T>(string module, Func<PrivateProfileDto, Task<T>> action,
         CancellationToken cancellationToken) => throw new PhotoDependencyException();
     Task<PrivateProfileDto> GetAsync(string module, CancellationToken cancellationToken = default);

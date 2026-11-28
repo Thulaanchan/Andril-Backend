@@ -19,5 +19,6 @@ internal static class IdentityProtectedRoutes
         || path.StartsWithSegments("/api/v1/account", StringComparison.OrdinalIgnoreCase)
         || path.StartsWithSegments("/api/v1/social", StringComparison.OrdinalIgnoreCase)
         || path.StartsWithSegments("/api/v1/groups", StringComparison.OrdinalIgnoreCase)
-        || path.StartsWithSegments("/api/learning/classrooms", StringComparison.OrdinalIgnoreCase);
+        || path.StartsWithSegments("/api/learning/classrooms", StringComparison.OrdinalIgnoreCase)
+        || path.StartsWithSegments("/api/learning/cvs", StringComparison.OrdinalIgnoreCase);
 }
