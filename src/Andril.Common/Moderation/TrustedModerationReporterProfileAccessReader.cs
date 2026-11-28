@@ -74,7 +74,8 @@ public sealed class TrustedModerationReporterProfileAccessReader
         cancellationToken.ThrowIfCancellationRequested();
 
         if (account is null ||
-            account.Id != verifiedAccountId)
+            account.Id != verifiedAccountId ||
+            !IsCurrentIdentity(subject))
         {
             return false;
         }
@@ -91,7 +92,7 @@ public sealed class TrustedModerationReporterProfileAccessReader
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (profile is null)
+            if (profile is null || !IsCurrentIdentity(subject))
                 return false;
 
             // Exact scope and identity comparison.
@@ -137,4 +138,9 @@ public sealed class TrustedModerationReporterProfileAccessReader
         // and unexpected errors propagate.
         // They must never produce authorization success.
     }
+
+    private bool IsCurrentIdentity(Guid subject) =>
+        _user.IsAuthenticated &&
+        _user.UserId == subject &&
+        _identity.IsConfirmedFor(subject);
 }

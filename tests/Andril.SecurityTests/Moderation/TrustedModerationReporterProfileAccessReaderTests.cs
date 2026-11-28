@@ -408,6 +408,74 @@ public sealed class TrustedModerationReporterProfileAccessReaderTests
                 f.StoredAccount.Id, Report()));
     }
 
+    [Theory]
+    [InlineData(false, "unauthenticated")]
+    [InlineData(false, "different-subject")]
+    [InlineData(false, "missing-subject")]
+    [InlineData(false, "unconfirmed")]
+    [InlineData(false, "unchanged")]
+    [InlineData(true, "unauthenticated")]
+    [InlineData(true, "different-subject")]
+    [InlineData(true, "missing-subject")]
+    [InlineData(true, "unconfirmed")]
+    [InlineData(true, "unchanged")]
+    public async Task AwaitedLookup_RequiresOriginalConfirmedIdentity(
+        bool duringProfileRead,
+        string identityChange)
+    {
+        var fixture = new Fixture();
+        var resume = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        if (duringProfileRead)
+        {
+            fixture.ProfileLookup = async (_, _) =>
+            {
+                await resume.Task;
+                return fixture.Profile!;
+            };
+        }
+        else
+        {
+            fixture.AccountLookup = async (_, _) =>
+            {
+                await resume.Task;
+                return fixture.StoredAccount;
+            };
+        }
+
+        var authorization = fixture.Reader.IsAuthorizedReporterAsync(
+            fixture.StoredAccount.Id, Report());
+
+        Assert.False(authorization.IsCompleted);
+        Assert.Equal(1, fixture.AccountCalls);
+        Assert.Equal(duringProfileRead ? 1 : 0, fixture.ProfileCalls);
+
+        switch (identityChange)
+        {
+            case "unauthenticated":
+                fixture.Authenticated = false;
+                break;
+            case "different-subject":
+                fixture.UserSubject =
+                    Guid.Parse("55555555-5555-4555-8555-555555555555");
+                break;
+            case "missing-subject":
+                fixture.UserSubject = null;
+                break;
+            case "unconfirmed":
+                fixture.Confirmed = false;
+                break;
+        }
+
+        resume.SetResult(true);
+
+        var unchanged = identityChange == "unchanged";
+        Assert.Equal(unchanged, await authorization);
+        Assert.Equal(duringProfileRead || unchanged ? 1 : 0,
+            fixture.ProfileCalls);
+    }
+
     private sealed class Fixture
     {
         public Account StoredAccount { get; } =
