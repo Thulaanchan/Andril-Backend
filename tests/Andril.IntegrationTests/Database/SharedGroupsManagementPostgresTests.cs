@@ -123,7 +123,8 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
                     andril_groups.mutate_membership(uuid, text, uuid, uuid, text, bigint),
                     andril_groups.write_authority(text, uuid, text, boolean), andril_groups.read_profile_evidence(uuid, text, uuid),
                     andril_groups.read_participation_evidence(uuid, text, uuid), andril_groups.read_club_capacity(uuid, uuid),
-                    andril_groups.read_discovery(uuid, text, integer, text, integer), andril_groups.read_own_participation(uuid, text, uuid) TO {store.Role};
+                    andril_groups.read_discovery(uuid, text, integer, text, integer), andril_groups.read_own_participation(uuid, text, uuid),
+                    andril_groups.read_host_requests(uuid, text, uuid, uuid, integer) TO {store.Role};
                 """;
             await groups.Database.ExecuteSqlRawAsync(grants);
             await tx.CommitAsync();
@@ -206,7 +207,7 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
         await command.ExecuteNonQueryAsync();
     }
 
-    private sealed class FixtureProfileService(PrivateProfileRepository repository, Guid account) : IPrivateProfileService
+    internal sealed class FixtureProfileService(PrivateProfileRepository repository, Guid account) : IPrivateProfileService
     {
         public Task<T> WithAuthorizedProfileAsync<T>(string module, Func<PrivateProfileDto, Task<T>> action, CancellationToken token) =>
             repository.WithAuthorizedProfileAsync(account, module, _ => { },
