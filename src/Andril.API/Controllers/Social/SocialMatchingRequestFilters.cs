@@ -32,8 +32,10 @@ public sealed class SocialMatchingErrorsAttribute : ExceptionFilterAttribute
 }
 
 [AttributeUsage(AttributeTargets.Method)]
-public sealed class StrictSocialJsonAttribute : Attribute, IAsyncResourceFilter
+public class StrictJsonBodyAttribute : Attribute, IAsyncResourceFilter
 {
+    protected virtual string InvalidBodyTitle => "Invalid request body.";
+
     public async Task OnResourceExecutionAsync(ResourceExecutingContext context, ResourceExecutionDelegate next)
     {
         var request = context.HttpContext.Request;
@@ -57,9 +59,15 @@ public sealed class StrictSocialJsonAttribute : Attribute, IAsyncResourceFilter
         }
         catch (Exception error) when (error is JsonException or IOException)
         {
-            context.Result = new BadRequestObjectResult(new ProblemDetails { Status = 400, Title = "Invalid Social request body." });
+            context.Result = new BadRequestObjectResult(new ProblemDetails { Status = 400, Title = InvalidBodyTitle });
             return;
         }
         await next();
     }
+}
+
+[AttributeUsage(AttributeTargets.Method)]
+public sealed class StrictSocialJsonAttribute : StrictJsonBodyAttribute
+{
+    protected override string InvalidBodyTitle => "Invalid Social request body.";
 }

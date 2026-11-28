@@ -47,7 +47,7 @@ public sealed class GroupDiscoveryAccessService : IGroupDiscoveryAccessService
                 currentActor!.ProfileId == actor.ProfileId ? cards : null;
         }
         catch (OperationCanceledException) { throw; }
-        catch (Exception)
+        catch (Exception error) when (!GroupAvailability.IsUnavailable(error))
         {
             // Availability and authorization errors are non-disclosing; never return partial cards.
             return null;
