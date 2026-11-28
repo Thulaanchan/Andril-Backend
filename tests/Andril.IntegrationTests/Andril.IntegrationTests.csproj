@@ -17,4 +17,7 @@
     <ProjectReference Include="..\..\src\Andril.API\Andril.API.csproj" />
     <ProjectReference Include="..\..\src\Andril.Persistence\Andril.Persistence.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="../../scripts/database/install-canonical-entitlements.sql" Link="install-canonical-entitlements.sql" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

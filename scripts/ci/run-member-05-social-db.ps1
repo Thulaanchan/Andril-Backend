@@ -16,8 +16,10 @@ $social = @(Get-Content -LiteralPath $socialManifest | Where-Object { $_ -ne '' 
 $groups = @(Get-Content -LiteralPath $groupsManifest | Where-Object { $_ -ne '' })
 $functionalManifest = Join-Path $PSScriptRoot 'member-05-final-functional-required-db-tests.txt'
 $functional = @(Get-Content -LiteralPath $functionalManifest | Where-Object { $_ -ne '' })
-$expected = $social + $groups + $functional
-if ($social.Count -ne 52 -or $groups.Count -ne 27 -or $functional.Count -eq 0 -or @($expected | Sort-Object -Unique).Count -ne $expected.Count -or
+$runtimeManifest = Join-Path $PSScriptRoot 'member-05-runtime-required-db-tests.txt'
+$runtime = @(Get-Content -LiteralPath $runtimeManifest | Where-Object { $_ -ne '' })
+$expected = $social + $groups + $functional + $runtime
+if ($social.Count -ne 52 -or $groups.Count -ne 27 -or $functional.Count -ne 13 -or $runtime.Count -eq 0 -or @($expected | Sort-Object -Unique).Count -ne $expected.Count -or
     @($expected | Where-Object { $_ -cnotmatch '^Andril\.IntegrationTests\.Database\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$' }).Count -ne 0) {
     throw 'The Member-05 acceptance manifests are incomplete, invalid, or contain duplicates.'
 }
@@ -44,3 +46,4 @@ if ($mismatch -or $observed.Count -ne $expected.Count -or [int]$counters.total -
 Write-Output "Verified $($social.Count) exact Social PostgreSQL tests with zero skips. Results $trx"
 Write-Output "Verified $($groups.Count) exact Shared Groups PostgreSQL tests with zero skips. Results $trx"
 Write-Output "Verified $($functional.Count) exact Final Functional PostgreSQL tests with zero skips. Results $trx"
+Write-Output "Verified $($runtime.Count) exact Runtime Integration PostgreSQL tests with zero skips. Results $trx"
