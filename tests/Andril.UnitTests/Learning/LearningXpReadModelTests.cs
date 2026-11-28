@@ -1,0 +1,17 @@
+using Andril.Persistence.DbContexts;
+using Microsoft.EntityFrameworkCore;
+using Xunit;
+
+namespace Andril.UnitTests.Learning;
+
+public sealed class LearningXpReadModelTests
+{
+    [Fact]
+    public void ReadLedgerMatchesVersionedSnapshotAndCannotMapAnotherCurrency()
+    {
+        using var db=new LearningXpReadDbContext(new DbContextOptionsBuilder<LearningXpReadDbContext>().UseNpgsql("Host=127.0.0.1;Database=model_metadata_only;Username=model_metadata_only").Options);
+        Assert.False(db.Database.HasPendingModelChanges());var entity=Assert.Single(db.Model.GetEntityTypes());
+        Assert.Equal("andril_learning",entity.GetSchema());Assert.Equal("xp_credits",entity.GetTableName());
+        Assert.DoesNotContain(db.Model.GetEntityTypes(),type=>type.GetTableName()=="xp_policy_versions");
+    }
+}

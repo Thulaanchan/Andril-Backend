@@ -186,15 +186,36 @@ public sealed class LearningActivitiesPostgresTests
     }
 
     [LocalPostgresFact]
-    public async Task UnknownMentorshipMultiplicityAndImmutableGrowthMutationRemainUnavailable()
+    public async Task ApprovedMentorshipPendingPairConflictsAndGrowthStillCannotMutate()
     {
         await using var f = await LearningActivitiesPostgresFixture.Create(); var kind = LearningActivityKind.MentorshipRequest;
         var request = f.Request(kind); Assert.Equal(LearningActivityOutcome.Saved, (await f.Repository().CreateAsync(kind, request)).Outcome);
         Assert.Equal(LearningActivityOutcome.Conflict, (await f.Repository().CreateAsync(kind, request)).Outcome);
-        Assert.Equal(LearningActivityOutcome.Unavailable, (await f.Repository().CreateAsync(kind, request with { RelatedOfferId = Guid.NewGuid() })).Outcome);
+        Assert.Equal(LearningActivityOutcome.Conflict, (await f.Repository().CreateAsync(kind, request with { RelatedOfferId = Guid.NewGuid() })).Outcome);
         var growth = await f.Repository().CreateAsync(LearningActivityKind.GrowthSelfReport, f.Request(LearningActivityKind.GrowthSelfReport));
         var mutation = await f.Repository().ChangeAsync(LearningActivityKind.GrowthSelfReport, growth.Activity!.Id, new(LearningActivityAction.Cancel, growth.Activity.Revision));
         Assert.Equal(LearningActivityOutcome.Unavailable, mutation.Outcome);
         Assert.Equal(growth.Activity.Revision, (await f.Repository().ReadAsync(LearningActivityKind.GrowthSelfReport, growth.Activity.Id)).Activity!.Revision);
+    }
+
+    [LocalPostgresFact]
+    public async Task IndependentMentorshipRequestsConflictUntilThePriorPairBecomesTerminal()
+    {
+        await using var f=await LearningActivitiesPostgresFixture.Create();var kind=LearningActivityKind.MentorshipRequest;
+        var results=await Task.WhenAll(f.Repository().CreateAsync(kind,f.Request(kind)),f.Repository().CreateAsync(kind,f.Request(kind)));
+        var saved=Assert.Single(results,x=>x.Outcome==LearningActivityOutcome.Saved).Activity!;
+        Assert.Single(results,x=>x.Outcome==LearningActivityOutcome.Conflict);
+        await using(var owner=await f.BoundOwner())
+        {
+            var original=await owner.Set<LearningActivityRow>().SingleAsync();
+            var actor=new LearningActivityMember(f.Shared.Actor().UserId,f.Shared.Actor().ModuleProfileId);
+            var reverse=LearningActivityState.Create(kind,f.Peer,[f.Peer,actor],new([actor.ProfileId],RelatedOfferId:Guid.NewGuid()));
+            owner.Add(new LearningActivityRow{Id=reverse.Id,Kind=kind,Generation=Guid.NewGuid(),Version=1,Status="Pending",PairLow=original.PairLow,PairHigh=original.PairHigh,Members=JsonSerializer.Serialize(reverse.Members),Content=JsonSerializer.Serialize(reverse)});
+            var error=await Assert.ThrowsAsync<DbUpdateException>(()=>owner.SaveChangesAsync());
+            Assert.Equal(PostgresErrorCodes.UniqueViolation,Assert.IsType<PostgresException>(error.InnerException).SqlState);
+            owner.ChangeTracker.Clear();Assert.Equal(1,await owner.Set<LearningActivityRow>().CountAsync());
+        }
+        Assert.Equal(LearningActivityOutcome.Saved,(await f.Repository().ChangeAsync(kind,saved.Id,new(LearningActivityAction.Cancel,saved.Revision))).Outcome);
+        Assert.Equal(LearningActivityOutcome.Saved,(await f.Repository().CreateAsync(kind,f.Request(kind))).Outcome);
     }
 }
