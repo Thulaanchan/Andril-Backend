@@ -64,7 +64,7 @@ No client should invoke these dormant surfaces as live endpoints. Existing direc
 
 ## Persistence already present and remaining gaps
 
-`SocialQuestionnairePersistenceRepository` implements `IQuestionnairePersistenceRepository` with `SocialDbContext` and a PostgreSQL read adapter. Questionnaire response/answer entities, EF mappings, snapshot persistence and owner-scoped orchestration already exist. Do not describe snapshot storage as wholly missing or authorize reimplementation from this document.
+`SocialQuestionnairePersistenceRepository` implements `IQuestionnairePersistenceRepository` with `SocialDbContext` and a PostgreSQL read adapter. Questionnaire response/answer entities, EF mappings, snapshot persistence and owner-scoped orchestration already exist. Do not describe snapshot storage as wholly missing or permit re-implementation from this document.
 
 The separate `ISocialQuestionnaireLifecycleRepository` contract underpins active-response lookup, initial creation, replacement and withdrawal. No concrete production lifecycle repository is supplied by the existing snapshot repository. `AddSocialQuestionnaireResponseServices()` is explicitly opt-in and requires separately supplied persistence dependencies; the default host calls only the baseline questionnaire registration. Existing lifecycle interfaces and service methods do not approve retakes, restoration, retention periods or deployment.
 
