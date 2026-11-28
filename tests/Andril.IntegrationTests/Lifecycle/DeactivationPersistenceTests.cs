@@ -185,6 +185,32 @@ public sealed class DeactivationPersistenceTests
     }
 
     [LocalPostgresFact]
+    public async Task FixtureCleanupTerminatesOnlyItsOwnRuntimeSessionsWithoutPrivilegeExpansion()
+    {
+        await using var target = await ControlledLifecycleDatabase.CreateAsync();
+        await using var unrelated = await ControlledLifecycleDatabase.CreateAsync();
+        await using var held = new NpgsqlConnection(target.RuntimeConnection);
+        await using var survivor = new NpgsqlConnection(unrelated.RuntimeConnection);
+        await held.OpenAsync();
+        await survivor.OpenAsync();
+        await using (var privileges = new NpgsqlCommand("""
+            SELECT rolsuper OR rolbypassrls OR pg_has_role(current_user, 'pg_signal_backend', 'USAGE')
+            FROM pg_roles WHERE rolname = current_user
+            """, held))
+            Assert.False((bool)(await privileges.ExecuteScalarAsync())!);
+
+        await target.DisposeAsync();
+
+        await using (var alive = new NpgsqlCommand("SELECT 1", survivor))
+            Assert.Equal(1, (int)(await alive.ExecuteScalarAsync())!);
+        await using var admin = new NpgsqlConnection(Environment.GetEnvironmentVariable("ANDRIL_M2_TEST_POSTGRES"));
+        await admin.OpenAsync();
+        await using var exists = new NpgsqlCommand("SELECT EXISTS (SELECT 1 FROM pg_database WHERE datname = @name)", admin);
+        exists.Parameters.AddWithValue("name", new NpgsqlConnectionStringBuilder(target.RuntimeConnection).Database!);
+        Assert.False((bool)(await exists.ExecuteScalarAsync())!);
+    }
+
+    [LocalPostgresFact]
     public async Task DeactivationAndReactivationSerializeInBothDatabaseLockOrders()
     {
         foreach (var stopFirst in new[] { true, false })

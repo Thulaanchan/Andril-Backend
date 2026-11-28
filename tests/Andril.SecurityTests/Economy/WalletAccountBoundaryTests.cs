@@ -55,7 +55,10 @@ public sealed class WalletAccountBoundaryTests
         var accounts = new Accounts { Account = foreign ? Account.Create(Recipient, Now) : null };
         var ledger = new Ledger();
 
-        await Assert.ThrowsAsync<InvalidCoinOperationException>(() => Invoke(Create(new User(), accounts, ledger), operation));
+        if (foreign)
+            await Assert.ThrowsAsync<AccountStoreUnavailableException>(() => Invoke(Create(new User(), accounts, ledger), operation));
+        else
+            await Assert.ThrowsAsync<InvalidCoinOperationException>(() => Invoke(Create(new User(), accounts, ledger), operation));
 
         Assert.Equal(0, ledger.Calls);
         Assert.Equal(1, accounts.Calls);
@@ -139,6 +142,7 @@ public sealed class WalletAccountBoundaryTests
         var services = new ServiceCollection();
         services.AddSingleton<ICurrentUser>(new User());
         services.AddSingleton<IAccountRepository>(accounts);
+        services.AddScoped<IAccountService, AccountService>();
         services.AddEconomy(new ConfigurationBuilder().Build());
         services.AddSingleton<ICoinWalletRepository>(ledger);
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions { ValidateScopes = true });
@@ -150,7 +154,7 @@ public sealed class WalletAccountBoundaryTests
     }
 
     private static CoinWalletService Create(User user, Accounts accounts, Ledger ledger) =>
-        new(new AccountBackedWalletAccountResolver(user, accounts), ledger, TimeProvider.System);
+        new(new AccountBackedWalletAccountResolver(new AccountService(user, accounts, TimeProvider.System)), ledger, TimeProvider.System);
 
     private static async Task Invoke(ICoinWalletService service, string operation, CancellationToken token = default)
     {

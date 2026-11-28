@@ -2,6 +2,7 @@ using System.Data.Common;
 using Andril.Common.Accounts;
 using Andril.Persistence.DbContexts;
 using Andril.Persistence.Repositories.Common;
+using Andril.Shared.Authentication;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.EntityFrameworkCore.Infrastructure;
@@ -99,6 +100,42 @@ public sealed class AccountPersistenceTests
         await db.Database.MigrateAsync();
         Assert.Empty(await db.Accounts.ToListAsync());
     }
+
+    [LocalPostgresFact]
+    public async Task AccountServicePreservesOwnedIdentityAcrossConcurrentInitializationAndFreshReads()
+    {
+        await using var database = await LocalAccountDatabase.CreateAsync();
+        var subjects = new[] { Guid.NewGuid(), Guid.NewGuid() };
+        var results = await Task.WhenAll(Enumerable.Range(0, 12).Select(async index =>
+        {
+            var subject = subjects[index % subjects.Length];
+            await using var db = database.Open();
+            var service = new AccountService(new ServiceUser(subject), new AccountRepository(db), TimeProvider.System);
+            var initialized = await service.InitializeAsync();
+            Assert.Equal(initialized, await service.GetMeAsync());
+            Assert.NotEqual(subject, initialized.AccountId);
+            return (Subject: subject, Account: initialized);
+        }));
+        Assert.Equal(2, results.Select(result => result.Account.AccountId).Distinct().Count());
+        foreach (var subject in subjects)
+        {
+            var initialized = Assert.Single(results.Where(result => result.Subject == subject).Select(result => result.Account).Distinct());
+            await using var fresh = database.Open();
+            var service = new AccountService(new ServiceUser(subject), new AccountRepository(fresh), TimeProvider.System);
+            Assert.Equal(initialized, await service.GetMeAsync());
+            var json = System.Text.Json.JsonSerializer.Serialize(initialized);
+            foreach (var identity in subjects) Assert.DoesNotContain(identity.ToString(), json);
+        }
+        await using var check = database.Open();
+        var missing = new AccountService(new ServiceUser(Guid.NewGuid()), new AccountRepository(check), TimeProvider.System);
+        Assert.Null(await missing.GetMeAsync());
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => missing.InitializeAsync(cancellation.Token));
+        Assert.Equal(2, await check.Accounts.CountAsync());
+    }
+
+    private sealed record ServiceUser(Guid? UserId, bool IsAuthenticated = true) : ICurrentUser;
 
     private sealed class FailAccountRead : DbCommandInterceptor
     {
