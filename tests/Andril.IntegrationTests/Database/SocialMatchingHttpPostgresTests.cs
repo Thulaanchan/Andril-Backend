@@ -306,7 +306,7 @@ public sealed partial class SocialMatchingHttpPostgresTests
         return client;
     }
 
-    private sealed class Host(SocialLifecycleDatabase database, bool enabled = true, PauseInterest? pause = null, bool questionnaire = false, bool interestSelections = false, bool personality = false)
+    private sealed class Host(SocialLifecycleDatabase database, bool enabled = true, PauseInterest? pause = null, bool questionnaire = false, bool interestSelections = false, bool personality = false, string? groupRole = null)
         : WebApplicationFactory<Program>
     {
         protected override IHost CreateHost(IHostBuilder builder)
@@ -317,6 +317,14 @@ public sealed partial class SocialMatchingHttpPostgresTests
             settings["SocialMatching:EnablePersonality"] = personality.ToString();
             settings["SocialQuestionnaire:EnablePersistence"] = questionnaire.ToString();
             settings["SocialQuestionnaire:RuntimeRole"] = database.Role;
+            if (groupRole is not null)
+            {
+                settings["SharedGroups:EnablePersistence"] = "true";
+                settings["SharedGroups:EnableLearning"] = "true";
+                settings["SharedGroups:EnableHobbies"] = "true";
+                settings["SharedGroups:EnableSocial"] = "true";
+                settings["SharedGroups:RuntimeRole"] = groupRole;
+            }
             foreach (var (name, version) in new[] { ("Terms", "fixture-terms-v1"), ("Privacy", "fixture-privacy-v1"), ("CommunityGuidelines", "fixture-community-v1") })
             {
                 settings[$"AccountPolicies:{name}:Version"] = version;
