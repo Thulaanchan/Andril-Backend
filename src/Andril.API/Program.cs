@@ -21,6 +21,7 @@ builder.Services.AddVerifiedLearningPrivateDiary(builder.Configuration);
 builder.Services.AddVerifiedLearningOwnerActivities(builder.Configuration);
 builder.Services.AddVerifiedLearningXpRead(builder.Configuration);
 builder.Services.AddVerifiedLearningPublications(builder.Configuration);
+builder.Services.AddVerifiedLearningProjectImports(builder.Configuration);
 builder.Services.AddNotifications();
 builder.Services.AddSupabaseIdentityVerification(builder.Configuration);
 builder.Services.AddSocialQuestionnaireServices();
@@ -122,6 +123,7 @@ app.MapVerifiedLearningPrivateDiary();
 app.MapVerifiedLearningOwnerActivities();
 app.MapVerifiedLearningXpRead();
 app.MapVerifiedLearningPublications();
+app.MapVerifiedLearningProjectImports();
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
    .WithName("HealthCheck")
    .AllowAnonymous();

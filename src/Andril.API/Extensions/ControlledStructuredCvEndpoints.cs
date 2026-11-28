@@ -9,6 +9,7 @@ namespace Andril.API.Extensions;
 public sealed record ReviewedCvEntryRequest(Guid Id, Dictionary<string,string> Fields);
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ReviewedCvSectionRequest(ReviewedCvEntryRequest[] Entries);
+public sealed record ReviewedCvSaveResponse(string Outcome);
 /// <summary>Uninvoked private CV composition; repository owns current identity/consent release coordination.</summary>
 public static class ControlledStructuredCvEndpoints
 {
@@ -32,18 +33,18 @@ public static class ControlledStructuredCvEndpoints
             if (replacements.Select(x => x.Id).Distinct().Count() != replacements.Length) return Results.StatusCode(400);
             // Merge is performed against the current persisted document inside SaveAsync.
             var saved = await repository.SaveAsync(id,CvSaveChange.ReviewedFields(category,replacements),ct);
-            return Results.Json(new { outcome = saved.State.ToString() },Json,statusCode:Status(saved.State));
-        },ct));
+            return Results.Json(new ReviewedCvSaveResponse(saved.State.ToString()),Json,statusCode:Status(saved.State));
+        },ct)).Accepts<ReviewedCvSectionRequest>("application/json").Produces<ReviewedCvSaveResponse>().Produces(400).Produces(403).Produces(404).Produces(409).Produces(503);
         g.MapGet("/{id:guid}/preview",(Guid id,ILearningCvRepository repository,CancellationToken ct) => Safe(async () =>
         {
             var result = await repository.PreviewAsync(id,ct);
             return result.Preview is null ? Results.StatusCode(Status(result.State)) : Results.Content(result.Preview.Html,"text/html; charset=utf-8");
-        },ct));
+        },ct)).Produces<string>(200,contentType:"text/html").Produces(403).Produces(404).Produces(503);
         g.MapGet("/{id:guid}/pdf",(Guid id,ILearningCvRepository repository,CancellationToken ct) => Safe(async () =>
         {
             var result = await repository.ExportPdfAsync(id,ct);
             return result.Document is null ? Results.StatusCode(Status(result.State)) : Results.File(result.Document.Bytes,"application/pdf");
-        },ct));
+        },ct)).Produces<byte[]>(200,contentType:"application/pdf").Produces(403).Produces(404).Produces(503);
         return endpoints;
     }
     private static int Status(CvOperationState state) => state switch { CvOperationState.Available => 200, CvOperationState.Denied => 403, CvOperationState.NotFound => 404, CvOperationState.Conflict => 409, _ => 503 };

@@ -19,10 +19,11 @@ namespace Andril.Persistence.Repositories.Learning;
 /// fence coordinate supported writers; this is not a claim of production M2 coordination.</summary>
 internal sealed class IsolatedLearningProjectImportRepository : ILearningProjectImportRepository
 {
-    private readonly IsolatedLearningDocumentBoundary boundary;
+    private readonly ILearningDocumentBoundary boundary;
     internal Func<string, CancellationToken, Task>? TestCheckpoint { get; init; }
     internal IsolatedLearningProjectImportRepository(DbContextOptions<LearningDbContext> options, ICurrentUser user,
-        IPrivateModuleAccess access, IPrivateProfileService profiles) => boundary = new(options, user, access, profiles);
+        IPrivateModuleAccess access, IPrivateProfileService profiles) => boundary = new IsolatedLearningDocumentBoundary(options, user, access, profiles);
+    internal IsolatedLearningProjectImportRepository(ILearningDocumentBoundary boundary) => this.boundary=boundary;
     private Task<T> Within<T>(Func<LearningDbContext, Owner, CancellationToken, Task<T>> action,
         Func<ProjectImportState, T> failure, CancellationToken ct) => boundary.Run(action, f => failure(f switch
         {

@@ -20,7 +20,7 @@ public static class LearningCvPersistence
         new IsolatedLearningCvRepository(new LearningOwnerDocumentTransaction(accounts, user, profiles, runtimeRole));
 }
 
-internal enum LearningPrivateDocument { Cv, Portfolio, Diary, OwnerActivities, XpRead, PeerActivities, Publications }
+internal enum LearningPrivateDocument { Cv, Portfolio, Diary, OwnerActivities, XpRead, PeerActivities, Publications, ProjectImports }
 
 internal sealed class LearningOwnerDocumentTransaction(AccountsDbContext accounts, ICurrentUser user,
     IPrivateProfileService profiles, string runtimeRole, LearningPrivateDocument document = LearningPrivateDocument.Cv) : ILearningDocumentBoundary
@@ -40,6 +40,7 @@ internal sealed class LearningOwnerDocumentTransaction(AccountsDbContext account
             LearningPrivateDocument.XpRead => "andril_learning.xp_credits",
             LearningPrivateDocument.PeerActivities => "andril_learning.peer_activities",
             LearningPrivateDocument.Publications => "andril_learning.publications",
+            LearningPrivateDocument.ProjectImports => "andril_learning.learning_project_import_reviews",
             _ => throw new ArgumentOutOfRangeException(nameof(document))
         };
         if (!user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty)
@@ -82,6 +83,11 @@ internal sealed class LearningOwnerDocumentTransaction(AccountsDbContext account
                                     AND c.relrowsecurity AND c.relforcerowsecurity)
                             AND NOT EXISTS(SELECT FROM pg_class c WHERE c.oid=to_regclass({table})
                                 AND pg_has_role(current_user,c.relowner,'MEMBER'))
+                            AND (NOT {document==LearningPrivateDocument.ProjectImports} OR
+                                (SELECT count(*) FROM pg_class c WHERE c.oid IN (
+                                    to_regclass('andril_learning.learning_cvs'),to_regclass('andril_learning.learning_portfolios'),
+                                    to_regclass('andril_learning.learning_project_import_reviews'),to_regclass('andril_learning.learning_project_import_origins'))
+                                    AND c.relrowsecurity AND c.relforcerowsecurity AND NOT pg_has_role(current_user,c.relowner,'MEMBER'))=4)
                             AND NOT EXISTS(SELECT FROM pg_proc p JOIN pg_roles o ON o.oid=p.proowner
                                 WHERE (p.oid IN (to_regprocedure('andril_learning.lock_cv_owner(uuid,uuid)'),
                                     to_regprocedure('andril_learning.lock_learning_owners(uuid,uuid,uuid)'),
