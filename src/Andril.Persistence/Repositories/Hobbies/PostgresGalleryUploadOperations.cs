@@ -11,8 +11,29 @@ namespace Andril.Persistence.Repositories.Hobbies;
 
 // Controlled composition only. The owner must come from authenticated server scope.
 internal sealed class PostgresGalleryUploadOperations(
-    IDbContextFactory<HobbiesGalleryDbContext> contexts, Guid owner, TimeProvider clock) : IGalleryUploadOperations
+    IDbContextFactory<HobbiesGalleryDbContext> contexts, Guid owner, TimeProvider clock)
+    : IGalleryUploadOperations, IGalleryRecoveryEvidenceReader
 {
+    public async Task<GalleryUploadReceipt?> FindOwnedTombstoneAsync(Guid mediaId, Guid ownerProfileId,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (mediaId == Guid.Empty || ownerProfileId == Guid.Empty || ownerProfileId != owner)
+            return null;
+
+        await using var db = await contexts.CreateDbContextAsync(cancellationToken);
+        var row = await (from media in db.GalleryMedia
+                         join receipt in db.Set<GalleryUploadOperation>() on media.Id equals receipt.MediaId
+                         where media.Id == mediaId && media.OwnerModuleProfileId == owner &&
+                               media.Module == "Hobbies" && media.IsPrivate && media.IsDeleted &&
+                               media.ProviderGeneration != null && receipt.OwnerId == owner &&
+                               receipt.Module == media.Module && receipt.Kind == (short)GalleryMutationKind.Upload &&
+                               receipt.State == 2 && receipt.PrivateObjectKey == media.StorageObjectKey &&
+                               receipt.ProviderGeneration == media.ProviderGeneration
+                         select receipt).AsNoTracking().SingleOrDefaultAsync(cancellationToken);
+        return row is null ? null : Read(row);
+    }
+
     public async Task<GalleryUploadReservation> ReserveAsync(GalleryUploadIntent intent, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
