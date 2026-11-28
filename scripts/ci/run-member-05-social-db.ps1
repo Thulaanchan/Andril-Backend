@@ -28,8 +28,9 @@ $ownerManifest = Join-Path $PSScriptRoot 'member-01-learning-owner-activities-re
 $owner = @(Get-Content -LiteralPath $ownerManifest | Where-Object { $_ -ne '' })
 $xp = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'member-01-learning-xp-read-required-db-tests.txt') | Where-Object { $_ -ne '' })
 $mentorship = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'member-01-learning-mentorship-required-db-tests.txt') | Where-Object { $_ -ne '' })
-$expected = $social + $groups + $functional + $runtime + $learning + $cv + $documents + $owner + $xp + $mentorship
-if ($social.Count -ne 52 -or $groups.Count -ne 27 -or $functional.Count -ne 13 -or $runtime.Count -eq 0 -or $learning.Count -ne 11 -or $cv.Count -ne 8 -or $documents.Count -ne 9 -or $owner.Count -ne 8 -or $xp.Count -ne 7 -or $mentorship.Count -ne 2 -or @($expected | Sort-Object -Unique).Count -ne $expected.Count -or
+$peers = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'member-01-learning-peer-activities-required-db-tests.txt') | Where-Object { $_ -ne '' })
+$expected = $social + $groups + $functional + $runtime + $learning + $cv + $documents + $owner + $xp + $mentorship + $peers
+if ($social.Count -ne 52 -or $groups.Count -ne 27 -or $functional.Count -ne 13 -or $runtime.Count -eq 0 -or $learning.Count -ne 11 -or $cv.Count -ne 8 -or $documents.Count -ne 9 -or $owner.Count -ne 8 -or $xp.Count -ne 7 -or $mentorship.Count -ne 2 -or $peers.Count -ne 9 -or @($expected | Sort-Object -Unique).Count -ne $expected.Count -or
     @($expected | Where-Object { $_ -cnotmatch '^Andril\.IntegrationTests\.Database\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+$' }).Count -ne 0) {
     throw 'The Member-05 acceptance manifests are incomplete, invalid, or contain duplicates.'
 }

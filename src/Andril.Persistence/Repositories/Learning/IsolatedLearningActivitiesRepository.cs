@@ -101,6 +101,8 @@ public sealed class IsolatedLearningActivitiesRepository : ILearningActivitiesRe
         {
             FormattableString query = db switch
             {
+                LearningPeerActivitiesDbContext when after is {} cursor => $"SELECT * FROM andril_learning.peer_activities WHERE kind={(int)kind} AND id>{cursor} ORDER BY id LIMIT {limit}",
+                LearningPeerActivitiesDbContext => $"SELECT * FROM andril_learning.peer_activities WHERE kind={(int)kind} ORDER BY id LIMIT {limit}",
                 LearningPrivateActivitiesDbContext when after is {} cursor => $"SELECT * FROM andril_learning.private_owner_activities WHERE kind={(int)kind} AND id>{cursor} ORDER BY id LIMIT {limit}",
                 LearningPrivateActivitiesDbContext => $"SELECT * FROM andril_learning.private_owner_activities WHERE kind={(int)kind} ORDER BY id LIMIT {limit}",
                 IsolatedLearningActivitiesDbContext when after is {} cursor => $"SELECT * FROM andril_learning_activities_isolated.activities WHERE kind={(int)kind} AND id>{cursor} ORDER BY id LIMIT {limit}",

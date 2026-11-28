@@ -297,7 +297,7 @@ public sealed class LearningFoundationBoundaryTests
         }
     }
 
-    private static bool IsLearningBoundaryType(Type type) => type.Assembly == Learning || type == typeof(LearningDbContext) || type == typeof(LearningPrivateActivitiesDbContext) || type == typeof(LearningXpReadDbContext) ||
+    private static bool IsLearningBoundaryType(Type type) => type.Assembly == Learning || type == typeof(LearningDbContext) || type == typeof(LearningPrivateActivitiesDbContext) || type == typeof(LearningXpReadDbContext) || type == typeof(LearningPeerActivitiesDbContext) ||
         (type.HasElementType && IsLearningBoundaryType(type.GetElementType()!)) ||
         (type.IsGenericType && type.GetGenericArguments().Any(IsLearningBoundaryType));
 
@@ -331,6 +331,20 @@ public sealed class LearningFoundationBoundaryTests
         await using var app=builder.Build();app.MapVerifiedLearningOwnerActivities();
         var endpoints=((IEndpointRouteBuilder)app).DataSources.SelectMany(s=>s.Endpoints).OfType<RouteEndpoint>().ToArray();Assert.Equal(enabled?4:0,endpoints.Length);
         Assert.All(endpoints,endpoint=>{Assert.NotEmpty(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());Assert.Null(endpoint.Metadata.GetMetadata<IAllowAnonymous>());});
+    }
+
+    [Theory]
+    [InlineData(false,false)] [InlineData(false,true)] [InlineData(true,false)] [InlineData(true,true)]
+    public async Task PeerAndOwnerCompositionUsesOneProtectedRouteSetWithoutGlobalAuthority(bool owners,bool peers)
+    {
+        var configuration=new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>{
+            ["Learning:OwnerActivities:Enabled"]=owners.ToString(),["Learning:OwnerActivities:RuntimeRole"]="metadata_owner",
+            ["Learning:PeerActivities:Enabled"]=peers.ToString(),["Learning:PeerActivities:RuntimeRole"]="metadata_peer"}).Build();
+        var services=ProductionServices(configuration);Assert.Equal(owners||peers?1:0,services.Count(s=>s.ServiceType==typeof(ILearningActivitiesRepository)));
+        Assert.DoesNotContain(services,s=>s.ServiceType==typeof(ILearningActivityAuthority)||s.ServiceType==typeof(DbContextOptions<LearningPeerActivitiesDbContext>));
+        var builder=WebApplication.CreateBuilder(new WebApplicationOptions{EnvironmentName="Production"});builder.Services.AddAuthorization();builder.Services.AddVerifiedLearningOwnerActivities(configuration);
+        await using var app=builder.Build();app.MapVerifiedLearningOwnerActivities();var endpoints=((IEndpointRouteBuilder)app).DataSources.SelectMany(s=>s.Endpoints).OfType<RouteEndpoint>().ToArray();Assert.Equal(owners||peers?4:0,endpoints.Length);
+        Assert.All(endpoints,e=>{Assert.NotEmpty(e.Metadata.GetOrderedMetadata<IAuthorizeData>());Assert.Null(e.Metadata.GetMetadata<IAllowAnonymous>());});
     }
 
     private static ServiceCollection ProductionServices(IConfiguration? suppliedConfiguration = null)
