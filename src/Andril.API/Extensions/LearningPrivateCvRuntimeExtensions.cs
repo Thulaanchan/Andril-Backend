@@ -16,6 +16,12 @@ public static class LearningPrivateCvRuntimeExtensions
     public sealed record CreateCvRequest(CvTemplate? Template);
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
     public sealed record ConsentRequest(bool? IncludeContactInformation);
+    public sealed record CvCreatedResponse(Guid Id);
+    public sealed record CvListResponse(IReadOnlyList<Guid> Ids);
+    /// <summary>Private owner editing only. Legacy text remains unclassified and must never be used as preview/PDF output.</summary>
+    public sealed record CvEditEntryResponse(Guid Id,string? LegacyText,IReadOnlyDictionary<string,string> Fields);
+    public sealed record CvEditSectionResponse(Guid Id,CvSectionCategory Category,IReadOnlyList<CvEditEntryResponse> Entries);
+    public sealed record CvEditResponse(Guid Id,CvTemplate Template,bool IncludeContactInformation,IReadOnlyList<CvEditSectionResponse> Sections);
 
     public static IServiceCollection AddVerifiedLearningPrivateCv(this IServiceCollection services, IConfiguration configuration)
     {
@@ -45,13 +51,29 @@ public static class LearningPrivateCvRuntimeExtensions
             var request = await http.ReadFromJsonAsync<CreateCvRequest>(ct);
             if (request?.Template is not { } template || !Enum.IsDefined(template)) return Results.StatusCode(400);
             var result = await store.CreateAsync(template, ct);
-            return result.Cv is null ? Results.StatusCode(Status(result.State)) : Results.Json(new { id = result.Cv.Id });
-        }, ct)).Accepts<CreateCvRequest>("application/json");
+            return result.Cv is null ? Results.StatusCode(Status(result.State)) : Results.Json(new CvCreatedResponse(result.Cv.Id));
+        }, ct)).Accepts<CreateCvRequest>("application/json").Produces<CvCreatedResponse>().Produces(400).Produces(403).Produces(503);
         group.MapGet("", (ILearningCvRepository store, CancellationToken ct) => Safe(async () =>
         {
             var result = await store.ListAsync(ct);
-            return result.State == CvOperationState.Available ? Results.Json(new { ids = result.CvIds }) : Results.StatusCode(Status(result.State));
-        }, ct));
+            return result.State == CvOperationState.Available && result.CvIds is not null ? Results.Json(new CvListResponse(result.CvIds)) : Results.StatusCode(Status(result.State));
+        }, ct)).Produces<CvListResponse>().Produces(403).Produces(503);
+        group.MapGet("/{id:guid}",(Guid id,ILearningCvRepository store,CancellationToken ct)=>Safe(async()=>
+        {
+            if(id==Guid.Empty)return Results.StatusCode(400);
+            var result=await store.OpenAsync(id,ct);
+            if(result.Cv is not {} cv)return Results.StatusCode(Status(result.State));
+            return Results.Json(new CvEditResponse(cv.Id,cv.Template,cv.IncludeContactInformation,
+                cv.Sections.Select(section=>new CvEditSectionResponse(section.Id,section.Category,
+                    section.Entries.Select(entry=>new CvEditEntryResponse(entry.Id,entry.Text,entry.Fields)).ToArray())).ToArray()));
+        },ct)).Produces<CvEditResponse>().Produces(400).Produces(403).Produces(404).Produces(503);
+        group.MapPut("/{id:guid}/template",(Guid id,HttpRequest http,ILearningCvRepository store,CancellationToken ct)=>Safe(async()=>
+        {
+            if(id==Guid.Empty||!http.HasJsonContentType())return Results.StatusCode(400);
+            var request=await http.ReadFromJsonAsync<CreateCvRequest>(ct);
+            if(request?.Template is not {} template||!Enum.IsDefined(template))return Results.StatusCode(400);
+            return Results.StatusCode(Status((await store.SaveAsync(id,CvSaveChange.Template(template),ct)).State));
+        },ct)).Accepts<CreateCvRequest>("application/json").Produces(200).Produces(400).Produces(403).Produces(404).Produces(409).Produces(503);
         group.MapPut("/{id:guid}/contact-consent", (Guid id, HttpRequest http, ILearningCvRepository store, CancellationToken ct) => Safe(async () =>
         {
             if (!http.HasJsonContentType()) return Results.StatusCode(400);
@@ -59,7 +81,7 @@ public static class LearningPrivateCvRuntimeExtensions
             if (request?.IncludeContactInformation is not { } include) return Results.StatusCode(400);
             var result = await store.SaveAsync(id, CvSaveChange.ContactConsent(include), ct);
             return Results.StatusCode(Status(result.State));
-        }, ct)).Accepts<ConsentRequest>("application/json");
+        }, ct)).Accepts<ConsentRequest>("application/json").Produces(200).Produces(400).Produces(403).Produces(404).Produces(409).Produces(503);
         return app;
     }
 

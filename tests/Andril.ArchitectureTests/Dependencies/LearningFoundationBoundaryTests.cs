@@ -133,6 +133,7 @@ public sealed class LearningFoundationBoundaryTests
         var expected = new[]
         {
             "GET /api/learning/cvs", "POST /api/learning/cvs",
+            "GET /api/learning/cvs/{id:guid}", "PUT /api/learning/cvs/{id:guid}/template",
             "PUT /api/learning/cvs/{id:guid}/contact-consent",
             "POST /api/learning/cvs/{id:guid}/sections/{category}/structured",
             "GET /api/learning/cvs/{id:guid}/preview", "GET /api/learning/cvs/{id:guid}/pdf"
@@ -153,7 +154,7 @@ public sealed class LearningFoundationBoundaryTests
             ["Learning:PrivateCv:RuntimeRole"] = "architecture_metadata_only"
         }).Build();
 
-    // Exact reviewed CV contracts only; no namespace/assembly-wide activation exception.
+    // Exact reviewed private document/import contracts only; no namespace/assembly-wide activation exception.
     [Fact]
     public void PrivateCvApprovalCannotAuthorizeOtherLearningPersistenceOrFoundationContracts()
     {
@@ -177,7 +178,26 @@ public sealed class LearningFoundationBoundaryTests
             typeof(CreateLearningActivityRequest),typeof(ChangeLearningActivityRequest),typeof(ILearningXpRepository),
             typeof(LearningXpResult),typeof(LearningXpOutcome),typeof(LearningXpEntry),typeof(LearningXpProgress),
             typeof(ILearningPublicationRepository),typeof(LearningPublicationKind),typeof(LearningPublicationOutcome),typeof(LearningPublicationView),typeof(LearningPublicationResult),
-            typeof(LearningDisclosureChange),typeof(LearningOfferPublicationChange),typeof(LearningPeopleDiscoveryService),typeof(LearningPeopleResult),typeof(LearningPeopleOutcome),typeof(LearningPersonCard) }.Contains(type);
+            typeof(LearningDisclosureChange),typeof(LearningOfferPublicationChange),typeof(LearningPeopleDiscoveryService),typeof(LearningPeopleResult),typeof(LearningPeopleOutcome),typeof(LearningPersonCard),
+            typeof(ILearningProjectImportRepository),typeof(LearningProjectImportApplicationService),typeof(ProjectImportReviewResult),
+            typeof(ProjectImportReview),typeof(ReviewedPortfolioProject),typeof(ProjectImportConfirmationResult),typeof(ProjectImportState) }.Contains(type);
+
+    [Theory] [InlineData(false)] [InlineData(true)]
+    public async Task PrivateImportCompositionRequiresExplicitOptInAndPreservesRealM2AndProtectedRoutes(bool enabled)
+    {
+        var config=new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>{
+            ["Learning:ProjectImports:Enabled"]=enabled.ToString(),["Learning:ProjectImports:RuntimeRole"]="metadata_import",
+            ["Learning:PrivateCv:Enabled"]=enabled.ToString(),["Learning:PrivateCv:RuntimeRole"]="metadata_cv",
+            ["Learning:PrivatePortfolios:Enabled"]=enabled.ToString(),["Learning:PrivatePortfolios:RuntimeRole"]="metadata_portfolio"}).Build();
+        var services=ProductionServices(config);Assert.Equal(enabled?1:0,services.Count(s=>s.ServiceType==typeof(ILearningProjectImportRepository)));
+        Assert.Equal(typeof(PrivateProfileService),Assert.Single(services,s=>s.ServiceType==typeof(IPrivateProfileService)).ImplementationType);
+        Assert.DoesNotContain(services,s=>s.ServiceType==typeof(DbContextOptions<LearningDbContext>)||s.ServiceType==typeof(Andril.Learning.Interfaces.ILearningSetupAuthorityReader));
+        var builder=WebApplication.CreateBuilder(new WebApplicationOptions{EnvironmentName="Production"});builder.Services.AddAuthorization();builder.Services.AddVerifiedLearningProjectImports(config);
+        await using var app=builder.Build();app.MapVerifiedLearningProjectImports();var endpoints=((IEndpointRouteBuilder)app).DataSources.SelectMany(s=>s.Endpoints).OfType<RouteEndpoint>().ToArray();
+        Assert.Equal(enabled?2:0,endpoints.Length);
+        if(enabled)Assert.Equal(new[]{"/api/v1/learning/cv-imports/reviews","/api/v1/learning/cv-imports/{reviewId:guid}/confirm"}.Order(),endpoints.Select(e=>e.RoutePattern.RawText).Order());
+        Assert.All(endpoints,e=>{Assert.Equal(new[]{"POST"},e.Metadata.GetRequiredMetadata<HttpMethodMetadata>().HttpMethods);Assert.NotEmpty(e.Metadata.GetOrderedMetadata<IAuthorizeData>());Assert.Null(e.Metadata.GetMetadata<IAllowAnonymous>());});
+    }
 
     [Theory]
     [InlineData(false,false)]

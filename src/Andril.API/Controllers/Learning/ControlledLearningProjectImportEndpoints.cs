@@ -13,6 +13,10 @@ public static class ControlledLearningProjectImportEndpoints
     {
         if (!app.Environment.IsEnvironment("Testing") || !app.Configuration.GetValue<bool>("Learning:ControlledTestHost"))
             throw new InvalidOperationException("Learning HTTP integration requires an explicitly controlled test host.");
+        MapLearningProjectImportRoutes(app);
+    }
+    internal static void MapLearningProjectImportRoutes(WebApplication app)
+    {
         var group = app.MapGroup(Root).RequireAuthorization();
         group.MapPost("/reviews", Review).WithName("ControlledLearningProjectImportReview")
             .Accepts<ProjectImportReviewRequest>("application/json").Produces<ProjectImportReviewResponse>().ProducesProblem(400).ProducesProblem(403).ProducesProblem(404).ProducesProblem(409).ProducesProblem(503);
