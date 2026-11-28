@@ -17,16 +17,20 @@ namespace Andril.Persistence.Repositories.Learning;
 /// </summary>
 public sealed class IsolatedLearningActivitiesRepository : ILearningActivitiesRepository
 {
-    private readonly IsolatedLearningDocumentBoundary boundary;
+    private readonly ILearningDocumentBoundary boundary;
+    private readonly Func<NpgsqlConnection,DbContext> open = connection => new IsolatedLearningActivitiesDbContext(
+        new DbContextOptionsBuilder<IsolatedLearningActivitiesDbContext>().UseNpgsql(connection).Options);
     private readonly ILearningActivityAuthority authority;
     internal Func<string, CancellationToken, Task>? TestCheckpoint { get; set; }
 
     public IsolatedLearningActivitiesRepository(DbContextOptions<LearningDbContext> options, ICurrentUser user,
         IPrivateModuleAccess access, IPrivateProfileService profiles, ILearningActivityAuthority authority)
     {
-        boundary = new(options, user, access, profiles);
+        boundary = new IsolatedLearningDocumentBoundary(options, user, access, profiles);
         this.authority = authority ?? throw new ArgumentNullException(nameof(authority));
     }
+    internal IsolatedLearningActivitiesRepository(ILearningDocumentBoundary boundary,ILearningActivityAuthority authority,Func<NpgsqlConnection,DbContext> open)
+    {this.boundary=boundary;this.authority=authority;this.open=open;}
 
     public Task<LearningActivityResult> CreateAsync(LearningActivityKind kind, CreateLearningActivityRequest request, CancellationToken cancellationToken = default)
     {
@@ -95,9 +99,15 @@ public sealed class IsolatedLearningActivitiesRepository : ILearningActivitiesRe
         var leases = new List<ReadLease>();
         return Run(kind, LearningActivityAction.List, null, null, false, async (db, actor, _, ct) =>
         {
-            var rows = after is { } cursor
-                ? await db.Set<LearningActivityRow>().FromSqlInterpolated($"SELECT * FROM andril_learning_activities_isolated.activities WHERE kind={(int)kind} AND id>{cursor} ORDER BY id LIMIT {limit}").AsNoTracking().ToListAsync(ct)
-                : await db.Set<LearningActivityRow>().FromSqlInterpolated($"SELECT * FROM andril_learning_activities_isolated.activities WHERE kind={(int)kind} ORDER BY id LIMIT {limit}").AsNoTracking().ToListAsync(ct);
+            FormattableString query = db switch
+            {
+                LearningPrivateActivitiesDbContext when after is {} cursor => $"SELECT * FROM andril_learning.private_owner_activities WHERE kind={(int)kind} AND id>{cursor} ORDER BY id LIMIT {limit}",
+                LearningPrivateActivitiesDbContext => $"SELECT * FROM andril_learning.private_owner_activities WHERE kind={(int)kind} ORDER BY id LIMIT {limit}",
+                IsolatedLearningActivitiesDbContext when after is {} cursor => $"SELECT * FROM andril_learning_activities_isolated.activities WHERE kind={(int)kind} AND id>{cursor} ORDER BY id LIMIT {limit}",
+                IsolatedLearningActivitiesDbContext => $"SELECT * FROM andril_learning_activities_isolated.activities WHERE kind={(int)kind} ORDER BY id LIMIT {limit}",
+                _ => throw new InvalidOperationException("Unsupported Learning activity storage context.")
+            };
+            var rows=await db.Set<LearningActivityRow>().FromSqlInterpolated(query).AsNoTracking().ToListAsync(ct);
             var result = new List<LearningActivityView>();
             foreach (var row in rows)
             {
@@ -139,7 +149,7 @@ public sealed class IsolatedLearningActivitiesRepository : ILearningActivitiesRe
     }
     private async Task<LearningActivityResult> Run(LearningActivityKind kind, LearningActivityAction action, Guid? id,
         CreateLearningActivityRequest? creation, bool write,
-        Func<IsolatedLearningActivitiesDbContext, LearningActivityMember, LearningActivityPermission, CancellationToken, Task<LearningActivityResult>> work,
+        Func<DbContext, LearningActivityMember, LearningActivityPermission, CancellationToken, Task<LearningActivityResult>> work,
         CancellationToken ct, IReadOnlyList<ReadLease>? readLeases = null)
     {
         ct.ThrowIfCancellationRequested();
@@ -165,8 +175,7 @@ public sealed class IsolatedLearningActivitiesRepository : ILearningActivitiesRe
                 var account = await parent.Database.SqlQueryRaw<string>("SELECT current_setting('andril.account',true) AS \"Value\"").SingleAsync(token);
                 actor = new(Guid.Parse(account), owner.Profile);
                 permission = await Require(token);
-                await using var db = new IsolatedLearningActivitiesDbContext(new DbContextOptionsBuilder<IsolatedLearningActivitiesDbContext>()
-                    .UseNpgsql((NpgsqlConnection)parent.Database.GetDbConnection()).Options);
+                await using var db = open((NpgsqlConnection)parent.Database.GetDbConnection());
                 await db.Database.UseTransactionAsync(parent.Database.CurrentTransaction!.GetDbTransaction(), token);
                 return await work(db, actor, permission, token);
             }, failure => new LearningActivityResult(failure switch
