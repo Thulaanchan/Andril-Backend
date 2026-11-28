@@ -102,7 +102,10 @@
     "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.OwnershipMigrationUpgradeAndRollbackPreserveValidExistingData",
     "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.ConflictingMetadataUpsertsCannotReplaceOrDiscloseAnExistingForeignScope",
     "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.LocationDatabaseFailureRollsBackProfileCreation",
-    "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.AdditionalMetadataDatabaseFailureRollsBackProfileAndLocationWrites"
+    "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.AdditionalMetadataDatabaseFailureRollsBackProfileAndLocationWrites",
+    "Andril.IntegrationTests.Database.AccountSettingsServicePersistenceTests.CurrentAccountSettingsPersistWithoutChangingOtherAccountsOrModuleIdentities",
+    "Andril.IntegrationTests.Database.AccountSettingsServicePersistenceTests.CancellationAfterLanguageWriteBeforeResponseRollsBackPreviousSettings",
+    "Andril.IntegrationTests.Database.AccountSettingsServicePersistenceTests.PrivacyResponseReadFailureRollsBackAttemptedReplacement"
   ],
   "offlineOnlySkips": [
     "Andril.IntegrationTests.Communication.Calls.LiveKitSandboxTests.D12ActualSandboxRoomTokensInspectionAndCleanup",
@@ -857,6 +860,15 @@
     "Andril.IntegrationTests.Database.LearningPeerActivitiesRuntimePostgresTests.IndependentBlockWriterWaitsForCommitAndThenPreventsFurtherAccess",
     "Andril.IntegrationTests.Database.LearningPeerActivitiesRuntimePostgresTests.CancellationRollbackAndTargetDeactivationPreserveCommittedRecords",
     "Andril.IntegrationTests.Database.LearningPeerActivitiesRuntimePostgresTests.MigrationMatchesModelAndRestrictedRoleCannotReadIdentityOrAuthorityScopes",
-    "Andril.IntegrationTests.Database.LearningPeerActivitiesRuntimePostgresTests.OptInHttpRequiresConfirmedOwnerAndPreservesRoleSpecificTransitions"
+    "Andril.IntegrationTests.Database.LearningPeerActivitiesRuntimePostgresTests.OptInHttpRequiresConfirmedOwnerAndPreservesRoleSpecificTransitions",
+    "Andril.IntegrationTests.Database.LearningPublicationsPostgresTests.DiscoveryNeedsExplicitDisclosureAndCurrentSharedProfilePrivacy",
+    "Andril.IntegrationTests.Database.LearningPublicationsPostgresTests.MentorshipPublicationBindsOnlyTheOwnersExactVoluntaryOffer",
+    "Andril.IntegrationTests.Database.LearningPublicationsPostgresTests.DurablePublicationRevisionsRejectConcurrentAndAbaStaleGrants",
+    "Andril.IntegrationTests.Database.LearningPublicationsPostgresTests.ForeignModuleInactiveAndMinorProfilesCannotPublishOrSearch",
+    "Andril.IntegrationTests.Database.LearningPublicationsPostgresTests.BlockingAndChangedNamesWithholdContentUntilTheAppropriateRenewal",
+    "Andril.IntegrationTests.Database.LearningPublicationsPostgresTests.IndependentRevocationWaitsForReadReleaseAndDeniesSubsequentDisclosure",
+    "Andril.IntegrationTests.Database.LearningPublicationsPostgresTests.CancellationRollsBackAndLifecycleReactivationRequiresFreshPublication",
+    "Andril.IntegrationTests.Database.LearningPublicationsPostgresTests.RestrictedRolesForceRlsAndMigrationRollbackPreserveExistingPrivateOffers",
+    "Andril.IntegrationTests.Database.LearningPublicationsPostgresTests.ControlledHttpRequiresConfirmedOwnerExplicitBodiesAndPrivateNoStoreResponses"
   ]
 }
