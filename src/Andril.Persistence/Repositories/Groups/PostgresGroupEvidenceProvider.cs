@@ -40,8 +40,8 @@ public sealed class PostgresGroupEvidenceProvider(GroupsPostgresScope execution)
             (await ReadGroupAsync(db, actor, scope.Module, groupId, ct))?.MemberCount ?? throw new GroupAuthorityUnavailableException(), cancellationToken);
 
     public Task<int?> GetGroupCapacityAsync(Guid groupId, GroupModuleScope scope, CancellationToken cancellationToken = default) =>
-        scope.GroupKind != GroupKind.Club ? Task.FromResult<int?>(null) : execution.ExecuteAsync(scope.Module,
-            (db, actor, ct) => db.Database.SqlQuery<int?>($"SELECT andril_groups.read_club_capacity({actor}, {groupId}) AS \"Value\"").SingleAsync(ct), cancellationToken);
+        execution.ExecuteAsync(scope.Module,
+            (db, actor, ct) => db.Database.SqlQuery<int?>($"SELECT andril_groups.read_group_capacity({actor}, {groupId}) AS \"Value\"").SingleAsync(ct), cancellationToken);
 
     private static Task<GroupFacts?> ReadGroupAsync(Andril.Persistence.DbContexts.GroupsDbContext db, Guid actor, string module, Guid group, CancellationToken ct) =>
         db.Database.SqlQuery<GroupFacts>($"""

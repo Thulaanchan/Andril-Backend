@@ -145,7 +145,7 @@ public sealed class GroupMembershipController : ControllerBase
                 EntityRemoved: result.EntityRemoved);
 
             return !result.Success && _management is not null
-                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? "club_capacity" : "participation_conflict")
+                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? CapacityConflictCode(scope) : "participation_conflict")
                 : Ok(dto);
         }
         catch (UnauthorizedAccessException)
@@ -242,7 +242,7 @@ public sealed class GroupMembershipController : ControllerBase
                 EntityRemoved: result.EntityRemoved);
 
             return !result.Success && _management is not null
-                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? "club_capacity" : "participation_conflict")
+                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? CapacityConflictCode(scope) : "participation_conflict")
                 : Ok(dto);
         }
         catch (UnauthorizedAccessException)
@@ -352,7 +352,7 @@ public sealed class GroupMembershipController : ControllerBase
                 EntityRemoved: result.EntityRemoved);
 
             return !result.Success && _management is not null
-                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? "club_capacity" : "participation_conflict")
+                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? CapacityConflictCode(scope) : "participation_conflict")
                 : Ok(dto);
         }
         catch (UnauthorizedAccessException)
@@ -449,7 +449,7 @@ public sealed class GroupMembershipController : ControllerBase
                 EntityRemoved: result.EntityRemoved);
 
             return !result.Success && _management is not null
-                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? "club_capacity" : "participation_conflict")
+                ? GroupErrorsAttribute.Problem(409, result.TransactionStatus == GroupMembershipTransactionStatus.CapacityExceeded ? CapacityConflictCode(scope) : "participation_conflict")
                 : Ok(dto);
         }
         catch (UnauthorizedAccessException)
@@ -480,4 +480,7 @@ public sealed class GroupMembershipController : ControllerBase
             });
         }
     }
+
+    private static string CapacityConflictCode(GroupModuleScope scope) =>
+        scope.GroupKind == GroupKind.Club ? "club_capacity" : "group_capacity";
 }

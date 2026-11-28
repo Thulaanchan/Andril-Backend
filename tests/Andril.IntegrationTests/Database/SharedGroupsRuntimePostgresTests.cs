@@ -38,12 +38,17 @@ public sealed class SharedGroupsRuntimePostgresTests
     [LocalPostgresFact]
     public async Task LearningCanStartIndependentlyAndHobbiesRejectsUnavailableEntitlementAuthority()
     {
-        await using var fixture = await SharedGroupsDatabase.CreateAsync(withEntitlementSource: false);
-        using var learning = new SharedGroupsHttpHost(fixture);
+        await using var canonical = await SharedGroupsDatabase.CreateAsync();
+        using var learning = new SharedGroupsHttpHost(canonical, social: false);
         using var learningClient = learning.CreateClient(new() { BaseAddress = new Uri("https://localhost") });
         Assert.Equal(HttpStatusCode.OK, (await learningClient.GetAsync("/health")).StatusCode);
 
-        using var hobbies = new SharedGroupsHttpHost(fixture, hobbies: true);
+        await using var fixture = await SharedGroupsDatabase.CreateAsync(withEntitlementSource: false);
+        using var missingLearning = new SharedGroupsHttpHost(fixture, social: false);
+        Assert.Contains("canonical database authority", Assert.Throws<InvalidOperationException>(() => missingLearning.CreateClient()).Message);
+        using var missingSocial = new SharedGroupsHttpHost(fixture, learning: false);
+        Assert.Contains("canonical database authority", Assert.Throws<InvalidOperationException>(() => missingSocial.CreateClient()).Message);
+        using var hobbies = new SharedGroupsHttpHost(fixture, hobbies: true, social: false, learning: false);
         var failure = Assert.Throws<InvalidOperationException>(() => hobbies.CreateClient());
         Assert.Contains("canonical database authority", failure.Message);
 
@@ -69,7 +74,7 @@ public sealed class SharedGroupsRuntimePostgresTests
     }
 }
 
-internal sealed class SharedGroupsHttpHost(SharedGroupsDatabase store, bool enabled = true, bool hobbies = false, bool social = true)
+internal sealed class SharedGroupsHttpHost(SharedGroupsDatabase store, bool enabled = true, bool hobbies = false, bool social = true, bool learning = true)
     : WebApplicationFactory<Program>
 {
     protected override IHost CreateHost(IHostBuilder builder)
@@ -77,7 +82,7 @@ internal sealed class SharedGroupsHttpHost(SharedGroupsDatabase store, bool enab
         var settings = new Dictionary<string, string?>
         {
             ["SharedGroups:EnablePersistence"] = enabled.ToString(),
-            ["SharedGroups:EnableLearning"] = "true",
+            ["SharedGroups:EnableLearning"] = learning.ToString(),
             ["SharedGroups:EnableHobbies"] = hobbies.ToString(),
             ["SharedGroups:EnableSocial"] = social.ToString(),
             ["SharedGroups:RuntimeRole"] = store.Role,
