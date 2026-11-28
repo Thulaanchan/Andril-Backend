@@ -9,7 +9,8 @@ info:
     Free creation quota of five active Groups. Premium creation is unlimited.
     Capacity is 50 for Free and 100 for Premium, based on the current canonical
     entitlement of the Group creator. Downgrade keeps existing Groups and
-    members.
+    members. Enabled deployments require the restricted canonical entitlement
+    installation. Entitlement provisioning has no public Group operation.
 security:
   - supabaseBearer: []
 paths:

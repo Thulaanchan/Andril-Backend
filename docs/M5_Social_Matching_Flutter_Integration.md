@@ -102,3 +102,5 @@ The operator provisioning function belongs to a separately authorized database r
 ## Contextual AI consent availability
 
 There are no active Social contextual AI consent or generation HTTP operations. Internal PostgreSQL verification covers scoped consent and module-epoch revocation. Flutter should leave contextual AI controls unavailable until authoritative login/logout and conversation evidence, explicit interaction evidence, privacy, quota, budget and late-reply enforcement are integrated. [Runtime dependencies](M5_Social_Contextual_AI_Runtime_Readiness.md)
+
+The [runtime integration matrix](M5_Runtime_API_Acceptance.md) records the supported Social and Group operations verified together. Flutter should leave Contextual AI consent, generation, chat and call actions unavailable for this API surface. The existing starter selection endpoint has no module-switch or durable session-revocation contract.

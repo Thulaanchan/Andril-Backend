@@ -99,3 +99,5 @@ Provision the Accounts migrations and the `GroupsDbContext` migrations on the sa
 Set `SharedGroups__EnablePersistence` and enable each selected scope with `SharedGroups__EnableLearning`, `SharedGroups__EnableHobbies`, or `SharedGroups__EnableSocial`. Supply `SharedGroups__RuntimeRole` and the deployment's secure `ConnectionStrings__AndrilAccounts` configuration. The runtime role must use the verified Group functions with no direct Group, identity, entitlement or safety table privileges. The migration authority needs the permissions to create the Group schema and coordinated identity triggers. Human moderation grants are provisioned by an authorized server administrator. The application verifies the selected modules and role at startup.
 
 [Shared Groups OpenAPI v1](../contracts/openapi/shared-groups.v1.yaml)
+
+The selected Group scopes require the installed canonical M2 entitlement relation and the restricted transition boundary at startup. A verified absent entitlement uses Free limits. Provisioning remains a server-side operator operation. See the [secure startup and runtime acceptance matrix](M5_Runtime_API_Acceptance.md).

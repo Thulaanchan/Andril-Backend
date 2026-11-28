@@ -7,7 +7,7 @@ info:
     distance-discovery opt-in. Interest selections and personality operations
     require their separate persistence options. The Social catalogue starts
     empty until approved entries are provisioned. Contextual AI consent and
-    generation have no active HTTP operations.
+    generation have no active HTTP operations. Match state supplies no chat or call permission.
 security:
   - supabaseBearer: []
 paths:

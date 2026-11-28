@@ -148,3 +148,5 @@ The new questionnaire configuration has passed controlled local PostgreSQL and H
 - `docs/M5_Social_Integration_Contract_PROPOSED.md`
 - `docs/M5_CF07_Groups_Integration_Contract_PROPOSED.md`
 - `docs/M5_Offline_Development_Readiness_20261124.md`
+
+The later [M5 runtime API acceptance matrix](M5_Runtime_API_Acceptance.md) records current opt-in activation, migration order, Flutter examples and the available evidence for deferred Tasks 237–244.
