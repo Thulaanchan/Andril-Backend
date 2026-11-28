@@ -17,7 +17,8 @@ public sealed class PostgresSocialContextualConsentRepository(DbContextOptions<S
         RunAsync<AiConsentLifecycle?>(operation, null, async (db, ct) =>
         {
             var evidence = await authority.ResolveAsync(db, operation, null, ct);
-            if (evidence?.Lifecycle.Operation != operation) return null;
+            if (evidence?.Lifecycle.Operation != operation ||
+                !await CurrentModuleEpochAsync(db, operation.Actor, evidence.Lifecycle.ModuleEpoch, ct)) return null;
             return evidence.Lifecycle with { NowUtc = await UtcAsync(db, ct) };
         }, cancellationToken);
 
@@ -201,7 +202,9 @@ public sealed class PostgresSocialContextualConsentRepository(DbContextOptions<S
             string.IsNullOrWhiteSpace(notice.RecommendationDescription) || string.IsNullOrWhiteSpace(notice.CurrentConversationUseDescription))
             return null;
         var lifecycle = evidence.Lifecycle with { NowUtc = await UtcAsync(db, ct) };
-        return AiContextualConsentPolicy.ValidLifecycle(reference, lifecycle) ? evidence with { Lifecycle = lifecycle } : null;
+        return AiContextualConsentPolicy.ValidLifecycle(reference, lifecycle) &&
+            await CurrentModuleEpochAsync(db, reference.Operation.Actor, reference.ModuleEpoch, ct)
+                ? evidence with { Lifecycle = lifecycle } : null;
     }
 
     private async Task<T> RunAsync<T>(AiOperationReference operation, T denied,
@@ -211,6 +214,7 @@ public sealed class PostgresSocialContextualConsentRepository(DbContextOptions<S
         if (!AiOperationPolicy.ValidReference(operation) || operation.Actor.Module != AiModule.Social) return denied;
         await using var db = new SocialDbContext(options);
         await using var transaction = await db.Database.BeginTransactionAsync(ct);
+        await db.Database.ExecuteSqlRawAsync("SELECT andril_social.social_safety_lock()", ct);
         var key = $"andril.social.consent/{operation.Actor.ModuleProfileId:D}/{operation.ConversationId:D}";
         await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock(hashtextextended({key},0))", ct);
         var result = await action(db, ct);
@@ -250,6 +254,11 @@ public sealed class PostgresSocialContextualConsentRepository(DbContextOptions<S
         state.State == AiConsentState.Started && state.AttemptId is Guid attempt
             ? authority.FencePendingAsync(db, reference, attempt, ct)
             : Task.FromResult(true);
+
+    private static Task<bool> CurrentModuleEpochAsync(SocialDbContext db, AiAuthorizedActor actor, Guid epoch, CancellationToken ct) =>
+        db.Database.SqlQuery<bool>($"""
+            SELECT andril_social_ai.is_current_module_epoch({actor.UserId}, {actor.ModuleProfileId}, {epoch}) AS "Value"
+            """).SingleAsync(ct);
 
     private static Task<DateTimeOffset> UtcAsync(SocialDbContext db, CancellationToken ct) =>
         db.Database.SqlQueryRaw<DateTimeOffset>("SELECT clock_timestamp() AS \"Value\"").SingleAsync(ct);

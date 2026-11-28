@@ -101,6 +101,35 @@ public sealed class SocialContextualConsentRepositoryPostgresTests
         Assert.Equal(0, await observer.Database.SqlQueryRaw<int>("""SELECT count(*)::integer AS "Value" FROM andril_social_ai.consent_requests""").SingleAsync());
     }
 
+    [LocalPostgresFact]
+    public async Task CurrentSocialLifecycleRotatesTheModuleEpochAndRevokesPendingConsent()
+    {
+        await using var fixture = await ConsentFixture.CreateAsync();
+        var old = await fixture.AddOperationAsync();
+        Assert.Equal(AiConsentOutcome.Offered, (await fixture.ApplyAsync(new AiConsentOfferRequest(old, Guid.NewGuid()))).Outcome);
+
+        await using var db = fixture.Open();
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE andril_identity.account_module_lifecycles SET state = 'inactive', revision = revision + 1, state_changed_at_utc = clock_timestamp()
+            WHERE account_id = {old.Operation.Actor.UserId} AND module = 'social'
+            """);
+        Assert.Null(await fixture.Repository.ReadLifecycleAsync(old.Operation));
+        Assert.Equal(6, await db.Database.SqlQuery<int>($"""
+            SELECT state AS "Value" FROM andril_social_ai.consents WHERE operation_id = {old.Operation.OperationId}
+            """).SingleAsync());
+        Assert.Equal(1, await db.Database.SqlQuery<int>($"""
+            SELECT count(*)::integer AS "Value" FROM andril_social_ai.consent_invalidations WHERE operation_id = {old.Operation.OperationId}
+            """).SingleAsync());
+        await db.Database.ExecuteSqlInterpolatedAsync($"""
+            UPDATE andril_identity.account_module_lifecycles SET state = 'active', revision = revision + 1, state_changed_at_utc = clock_timestamp()
+            WHERE account_id = {old.Operation.Actor.UserId} AND module = 'social'
+            """);
+        var current = await fixture.AddOperationAsync(old.Operation.ConversationId);
+        Assert.NotEqual(old.ModuleEpoch, current.ModuleEpoch);
+        Assert.Equal(AiConsentOutcome.Denied, (await fixture.Repository.ReadStatusAsync(old, fixture.Hint(old))).Outcome);
+        Assert.Equal(AiConsentOutcome.Offered, (await fixture.ApplyAsync(new AiConsentOfferRequest(current, Guid.NewGuid()))).Outcome);
+    }
+
     private sealed class ConsentFixture(SocialLifecycleDatabase database, AiAuthorizedActor actor) : IAsyncDisposable
     {
         private readonly DbContextOptions<SocialDbContext> options = new DbContextOptionsBuilder<SocialDbContext>()
@@ -114,7 +143,7 @@ public sealed class SocialContextualConsentRepositoryPostgresTests
             var database = await SocialLifecycleDatabase.CreateAsync();
             try
             {
-                var owner = await database.SeedAsync();
+                var owner = await SocialQuestionnaireHttpPostgresTests.SeedAsync(database);
                 var fixture = new ConsentFixture(database, new AiAuthorizedActor(owner.Account, owner.Profile, AiModule.Social));
                 await using var db = fixture.Open();
                 await db.Database.ExecuteSqlRawAsync("""
@@ -139,8 +168,11 @@ public sealed class SocialContextualConsentRepositoryPostgresTests
         public async Task<AiConsentReference> AddOperationAsync(Guid? conversation = null)
         {
             var operation = new AiOperationReference(actor, conversation ?? Guid.NewGuid(), Guid.NewGuid());
-            var reference = new AiConsentReference(operation, new("fixture-purpose", "v1", "self"), Guid.NewGuid(), Guid.NewGuid());
             await using var db = Open();
+            var epoch = await db.Database.SqlQuery<Guid>($"""
+                SELECT epoch AS "Value" FROM andril_social_ai.module_epochs WHERE account_id = {actor.UserId}
+                """).SingleAsync();
+            var reference = new AiConsentReference(operation, new("fixture-purpose", "v1", "self"), Guid.NewGuid(), epoch);
             await db.Database.ExecuteSqlInterpolatedAsync($"""
                 INSERT INTO andril_consent_fixture.scopes(operation_id, account_id, profile_id, conversation_id, session_epoch, module_epoch)
                 VALUES ({operation.OperationId}, {actor.UserId}, {actor.ModuleProfileId}, {operation.ConversationId},
