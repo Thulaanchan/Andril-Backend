@@ -4,16 +4,17 @@ namespace Andril.Common.Accounts.Privacy;
 
 public sealed class UserPrivacySettingsService(
     ICurrentUser currentUser,
-    IAccountRepository accountRepository,
+    IAccountService accounts,
     IUserPrivacySettingsRepository privacyRepository,
     TimeProvider clock)
     : IUserPrivacySettingsService
 {
     public async Task<UserPrivacySettingsDto> GetMyPrivacySettingsAsync(CancellationToken cancellationToken = default)
     {
-        var account = await ResolveAccountAsync(cancellationToken);
-        var settings = await privacyRepository.GetOrCreateAsync(account.Id, clock.GetUtcNow(), cancellationToken);
-        if (settings.AccountId != account.Id) throw new AccountStoreUnavailableException();
+        var (subject, accountId) = await ResolveAccountAsync(cancellationToken);
+        var settings = await privacyRepository.GetOrCreateAsync(accountId, clock.GetUtcNow(), cancellationToken);
+        RequireUnchangedSubject(subject, cancellationToken);
+        if (settings is null || settings.AccountId != accountId) throw new AccountStoreUnavailableException();
 
         return ToDto(settings);
     }
@@ -22,14 +23,15 @@ public sealed class UserPrivacySettingsService(
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        var account = await ResolveAccountAsync(cancellationToken);
+        var (subject, accountId) = await ResolveAccountAsync(cancellationToken);
         var now = clock.GetUtcNow();
-        var existing = await privacyRepository.GetByAccountIdAsync(account.Id, cancellationToken);
-        if (existing is not null && existing.AccountId != account.Id) throw new AccountStoreUnavailableException();
+        var existing = await privacyRepository.GetByAccountIdAsync(accountId, cancellationToken);
+        RequireUnchangedSubject(subject, cancellationToken);
+        if (existing is not null && existing.AccountId != accountId) throw new AccountStoreUnavailableException();
 
         if (existing is null)
         {
-            existing = UserPrivacySettings.CreateDefault(account.Id, now);
+            existing = UserPrivacySettings.CreateDefault(accountId, now);
         }
 
         existing.Update(
@@ -41,25 +43,31 @@ public sealed class UserPrivacySettingsService(
             now);
 
         var updated = await privacyRepository.UpsertAsync(existing, cancellationToken);
-        if (updated.AccountId != account.Id) throw new AccountStoreUnavailableException();
+        RequireUnchangedSubject(subject, cancellationToken);
+        if (updated is null || updated.AccountId != accountId) throw new AccountStoreUnavailableException();
         return ToDto(updated);
     }
 
-    private async Task<Account> ResolveAccountAsync(CancellationToken cancellationToken)
+    private Guid RequireSubject(CancellationToken ct)
     {
+        ct.ThrowIfCancellationRequested();
         if (!currentUser.IsAuthenticated || currentUser.UserId is not Guid subject || subject == Guid.Empty)
             throw new AccountAuthenticationRequiredException();
+        return subject;
+    }
 
-        var account = await accountRepository.FindBySubjectAsync(subject, cancellationToken);
-        if (account is null)
-            throw new PrivacyNotFoundException("Account not initialized.");
-        cancellationToken.ThrowIfCancellationRequested();
-        if (!currentUser.IsAuthenticated || currentUser.UserId != subject)
-            throw new AccountAuthenticationRequiredException();
-        if (account.Id == Guid.Empty || account.SupabaseUserId != subject)
-            throw new AccountStoreUnavailableException();
+    private void RequireUnchangedSubject(Guid subject, CancellationToken ct)
+    {
+        if (RequireSubject(ct) != subject) throw new AccountAuthenticationRequiredException();
+    }
 
-        return account;
+    private async Task<(Guid Subject, Guid AccountId)> ResolveAccountAsync(CancellationToken ct)
+    {
+        var subject = RequireSubject(ct);
+        var account = await accounts.GetMeAsync(ct) ?? throw new PrivacyNotFoundException("Account not initialized.");
+        RequireUnchangedSubject(subject, ct);
+        if (account.AccountId == Guid.Empty) throw new AccountStoreUnavailableException();
+        return (subject, account.AccountId);
     }
 
     private static UserPrivacySettingsDto ToDto(UserPrivacySettings s) =>

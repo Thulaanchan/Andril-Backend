@@ -77,7 +77,7 @@ public sealed class LanguagePreferenceTests
     public async Task UnauthenticatedUser_CannotReadOrWrite()
     {
         var store = new Store();
-        var service = new LanguagePreferenceService(new User(store.Subject, false), store, store, TimeProvider.System);
+        var service = new LanguagePreferenceService(new User(store.Subject, false), new AccountService(new User(store.Subject, false), store, TimeProvider.System), store, TimeProvider.System);
         await Assert.ThrowsAsync<AccountAuthenticationRequiredException>(() => service.GetAsync());
         await Assert.ThrowsAsync<AccountAuthenticationRequiredException>(() => service.UpdateAsync("ta", "sync"));
         Assert.Equal(0, store.Reads);
@@ -85,7 +85,7 @@ public sealed class LanguagePreferenceTests
     }
 
     private static LanguagePreferenceService Service(Store store, Guid subject) =>
-        new(new User(subject), store, store, TimeProvider.System);
+        new(new User(subject), new AccountService(new User(subject), store, TimeProvider.System), store, TimeProvider.System);
     private sealed record User(Guid? UserId, bool IsAuthenticated = true) : ICurrentUser;
     private sealed class Store : IAccountRepository, ILanguagePreferenceRepository
     {
