@@ -89,7 +89,8 @@
     "Andril.IntegrationTests.Lifecycle.Phase3BAcceptanceTests.MigrationDowngradeAndUpgradePreserveExistingAccountsAndUnrelatedTables",
     "Andril.IntegrationTests.Lifecycle.Phase3BAcceptanceTests.HttpReactivationReturnsOnlyStateAndUnavailableAuthorityNeverFallsBack",
     "Andril.IntegrationTests.Database.CanonicalEntitlementDeploymentPostgresTests.IntegratedWriterResolvesTheSubjectAndRejectsUnprivilegedAndStaleTransitions",
-    "Andril.IntegrationTests.Database.CanonicalEntitlementDeploymentPostgresTests.EconomyMigrationAndRollbackPreserveTheCanonicalEntitlementAuthority"
+    "Andril.IntegrationTests.Database.CanonicalEntitlementDeploymentPostgresTests.EconomyMigrationAndRollbackPreserveTheCanonicalEntitlementAuthority",
+    "Andril.IntegrationTests.Database.AccountPersistenceTests.AccountServicePreservesOwnedIdentityAcrossConcurrentInitializationAndFreshReads"
   ],
   "offlineOnlySkips": [
     "Andril.IntegrationTests.Communication.Calls.LiveKitSandboxTests.D12ActualSandboxRoomTokensInspectionAndCleanup",
