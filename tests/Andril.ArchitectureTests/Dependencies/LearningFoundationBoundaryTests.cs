@@ -4,6 +4,7 @@ using System.Security.Claims;
 using Andril.API.Authentication;
 using Andril.Common.Accounts.Profiles;
 using Andril.Learning.Entities;
+using Andril.Learning.Activities;
 using Andril.Learning.Portfolio;
 using Andril.Common.Diary;
 using Andril.Learning.CV;
@@ -168,7 +169,9 @@ public sealed class LearningFoundationBoundaryTests
             typeof(LearningCv), typeof(CvPreview), typeof(CvPdfDocument),typeof(ILearningPortfolioRepository),
             typeof(PortfolioTemplate),typeof(PortfolioProject),typeof(PortfolioSaveChange),typeof(PortfolioOperationState),
             typeof(PortfolioReadResult),typeof(PortfolioListResult),typeof(PortfolioDeleteResult),typeof(PortfolioPreviewResult),
-            typeof(LearningPortfolio),typeof(PortfolioPreview) }.Contains(type);
+            typeof(LearningPortfolio),typeof(PortfolioPreview),typeof(ILearningActivitiesRepository),typeof(LearningActivityKind),
+            typeof(LearningActivityAction),typeof(LearningActivityResult),typeof(LearningActivityView),typeof(LearningActivityOutcome),
+            typeof(CreateLearningActivityRequest),typeof(ChangeLearningActivityRequest) }.Contains(type);
 
     [Theory]
     [InlineData(false,false)]
@@ -292,9 +295,27 @@ public sealed class LearningFoundationBoundaryTests
         }
     }
 
-    private static bool IsLearningBoundaryType(Type type) => type.Assembly == Learning || type == typeof(LearningDbContext) ||
+    private static bool IsLearningBoundaryType(Type type) => type.Assembly == Learning || type == typeof(LearningDbContext) || type == typeof(LearningPrivateActivitiesDbContext) ||
         (type.HasElementType && IsLearningBoundaryType(type.GetElementType()!)) ||
         (type.IsGenericType && type.GetGenericArguments().Any(IsLearningBoundaryType));
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task OwnerActivityActivationRetainsPrivateScopeAndRealM2Authority(bool enabled)
+    {
+        var configuration=new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string,string?>
+        { ["Learning:OwnerActivities:Enabled"]=enabled.ToString(),["Learning:OwnerActivities:RuntimeRole"]="metadata_owner_activity" }).Build();
+        var services=ProductionServices(configuration);
+        Assert.Equal(enabled?1:0,services.Count(s=>s.ServiceType==typeof(ILearningActivitiesRepository)));
+        Assert.DoesNotContain(services,s=>s.ServiceType==typeof(ILearningActivityAuthority)||s.ServiceType==typeof(DbContextOptions<LearningPrivateActivitiesDbContext>));
+        Assert.Equal(typeof(PrivateProfileService),Assert.Single(services,s=>s.ServiceType==typeof(IPrivateProfileService)).ImplementationType);
+        Assert.Equal(typeof(PrivateProfileRepository),Assert.Single(services,s=>s.ServiceType==typeof(IPrivateProfileRepository)).ImplementationType);
+        var builder=WebApplication.CreateBuilder(new WebApplicationOptions{EnvironmentName="Production"});builder.Services.AddAuthorization();builder.Services.AddVerifiedLearningOwnerActivities(configuration);
+        await using var app=builder.Build();app.MapVerifiedLearningOwnerActivities();
+        var endpoints=((IEndpointRouteBuilder)app).DataSources.SelectMany(s=>s.Endpoints).OfType<RouteEndpoint>().ToArray();Assert.Equal(enabled?4:0,endpoints.Length);
+        Assert.All(endpoints,endpoint=>{Assert.NotEmpty(endpoint.Metadata.GetOrderedMetadata<IAuthorizeData>());Assert.Null(endpoint.Metadata.GetMetadata<IAllowAnonymous>());});
+    }
 
     private static ServiceCollection ProductionServices(IConfiguration? suppliedConfiguration = null)
     {

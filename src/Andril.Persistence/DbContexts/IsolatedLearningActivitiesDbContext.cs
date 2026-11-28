@@ -6,9 +6,10 @@ namespace Andril.Persistence.DbContexts;
 internal sealed class IsolatedLearningActivitiesDbContext(DbContextOptions<IsolatedLearningActivitiesDbContext> options) : DbContext(options)
 {
     internal const string Schema = "andril_learning_activities_isolated";
-    protected override void OnModelCreating(ModelBuilder model)
+    protected override void OnModelCreating(ModelBuilder model) => Configure(model,Schema);
+    internal static void Configure(ModelBuilder model,string schema)
     {
-        model.HasDefaultSchema(Schema);
+        model.HasDefaultSchema(schema);
         var row = model.Entity<LearningActivityRow>();
         row.ToTable("activities", table =>
         {
@@ -19,9 +20,9 @@ internal sealed class IsolatedLearningActivitiesDbContext(DbContextOptions<Isola
             table.HasCheckConstraint("ck_learning_exchange_pair", "kind <> 1 OR (jsonb_array_length(members) = 2 AND members->0->>'ProfileId' IS NOT NULL AND members->1->>'ProfileId' IS NOT NULL AND pair_low IS NOT NULL AND pair_high IS NOT NULL AND pair_low < pair_high AND pair_low = LEAST((members->0->>'ProfileId')::uuid,(members->1->>'ProfileId')::uuid) AND pair_high = GREATEST((members->0->>'ProfileId')::uuid,(members->1->>'ProfileId')::uuid) AND status IS NOT NULL AND status IN ('Pending','Accepted','Declined','Cancelled'))");
         });
         row.HasKey(x => x.Id); row.Property(x => x.Id).ValueGeneratedNever();
-        row.Property(x => x.Module).HasMaxLength(16); row.Property(x => x.Kind).HasConversion<int>();
+        row.Property(x => x.Module).HasMaxLength(16).IsRequired(); row.Property(x => x.Kind).HasConversion<int>();
         row.Property(x => x.Status).HasMaxLength(32);
-        row.Property(x => x.Members).HasColumnType("jsonb"); row.Property(x => x.Content).HasColumnType("jsonb");
+        row.Property(x => x.Members).HasColumnType("jsonb").IsRequired(); row.Property(x => x.Content).HasColumnType("jsonb").IsRequired();
         row.Property(x => x.Generation).IsConcurrencyToken(); row.Property(x => x.Version).IsConcurrencyToken();
         row.HasIndex(x => new { x.PairLow, x.PairHigh }).IsUnique()
             .HasFilter("kind = 1 AND status = 'Pending'").HasDatabaseName("ux_learning_activity_pending_exchange_pair");
