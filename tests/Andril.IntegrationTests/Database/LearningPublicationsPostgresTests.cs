@@ -21,7 +21,7 @@ namespace Andril.IntegrationTests.Database;
 
 public sealed class LearningPublicationsPostgresTests
 {
-    private sealed class Fixture(Basis basis):IAsyncDisposable
+    internal sealed class Fixture(Basis basis):IAsyncDisposable
     {
         internal SharedGroupsDatabase Groups=>basis.Groups;
         internal string Role{get;}="learning_publications_"+Guid.NewGuid().ToString("N");private bool roleCreated;

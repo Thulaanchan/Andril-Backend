@@ -12,7 +12,8 @@ public static class LearningPeerRuntimePermissions
             GRANT SELECT,INSERT ON andril_learning.peer_activities TO {name};
             GRANT UPDATE(content,status,version) ON andril_learning.peer_activities TO {name};
             GRANT EXECUTE ON FUNCTION andril_learning.scope_visible(uuid,text),andril_learning.lock_cv_owner(uuid,uuid),
-                andril_learning.peer_account(uuid,uuid,integer,text,text),andril_learning.peer_row_visible(jsonb,integer) TO {name};
+                andril_learning.peer_account(uuid,uuid,integer,text,text),andril_learning.peer_row_visible(jsonb,integer),
+                andril_learning.mentorship_members(uuid,uuid,uuid,uuid,text,text),andril_learning.peer_content_visible(jsonb,integer,jsonb) TO {name};
             """;
     }
 }
