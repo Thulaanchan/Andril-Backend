@@ -87,6 +87,8 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
 {
     internal LocalSocialQuestionnaireDatabase Database { get; } = database;
     internal string Role { get; } = role;
+    internal string ProvisionerRole { get; } = "groups_provisioner_" + Guid.NewGuid().ToString("N");
+    internal string ProvisioningConnection { get; private set; } = "";
     internal sealed record Actor(Guid Account, Guid Subject, Guid Profile) : ICurrentUser, IOnboardingIdentity
     {
         public bool IsAuthenticated => true;
@@ -102,22 +104,20 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
         {
             await using var groups = store.Open();
             await groups.Database.MigrateAsync();
+            if (withEntitlementSource) await CanonicalEntitlementDeploymentPostgresTests.InstallAsync(store);
             await using var tx = await groups.Database.BeginTransactionAsync();
             if (withEntitlementSource)
             {
-                // Canonical table from M2's 20261126160000_InitialEconomy migration at d51ba59.
-                await groups.Database.ExecuteSqlRawAsync("""
-                    CREATE SCHEMA andril_economy;
-                    CREATE TABLE andril_economy.premium_entitlements (
-                        account_id uuid CONSTRAINT pk_premium_entitlements PRIMARY KEY,
-                        tier integer NOT NULL, is_active boolean NOT NULL, expires_at_utc timestamptz NULL,
-                        provider character varying(32) NOT NULL, external_subscription_id character varying(128) NULL,
-                        created_at_utc timestamptz NOT NULL, updated_at_utc timestamptz NOT NULL,
-                        CONSTRAINT ck_premium_entitlements_account_id_nonempty CHECK (account_id <> '00000000-0000-0000-0000-000000000000'::uuid),
-                        CONSTRAINT ck_premium_entitlements_timestamps CHECK (updated_at_utc >= created_at_utc),
-                        CONSTRAINT fk_premium_entitlements_accounts FOREIGN KEY (account_id) REFERENCES andril_identity.accounts(id) ON DELETE CASCADE);
-                    ALTER TABLE andril_economy.premium_entitlements ENABLE ROW LEVEL SECURITY;
-                    """);
+                var password = Guid.NewGuid().ToString("N");
+                var authorization = $"""
+                    CREATE ROLE {store.ProvisionerRole} LOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE PASSWORD '{password}';
+                    GRANT USAGE ON SCHEMA andril_economy TO {store.ProvisionerRole};
+                    GRANT EXECUTE ON FUNCTION andril_economy.apply_subscription_transition(uuid, uuid, timestamptz, integer, timestamptz, text, text),
+                        andril_economy.subscription_transition_revision(uuid) TO {store.ProvisionerRole};
+                    """;
+                await groups.Database.ExecuteSqlRawAsync(authorization);
+                store.ProvisioningConnection = new NpgsqlConnectionStringBuilder(fixture.ConnectionString)
+                    { Username = store.ProvisionerRole, Password = password, Pooling = false, IncludeErrorDetail = false }.ConnectionString;
             }
             var grants = $"""
                 CREATE ROLE {store.Role} NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS;
@@ -227,7 +227,7 @@ internal sealed class SharedGroupsDatabase(LocalSocialQuestionnaireDatabase data
     {
         await Database.DisposeAsync();
         await using var maintenance = await SocialLifecycleDatabase.OpenMaintenanceAsync();
-        await using var command = new NpgsqlCommand($"DROP ROLE IF EXISTS {Role}", maintenance);
+        await using var command = new NpgsqlCommand($"DROP ROLE IF EXISTS {Role}, {ProvisionerRole}", maintenance);
         await command.ExecuteNonQueryAsync();
     }
 
