@@ -37,12 +37,12 @@ public static class LearningPeerActivityPersistence
         {
             var ct=cancellationToken;ct.ThrowIfCancellationRequested();
             if(owner is null||requester!=actor||!user.IsAuthenticated||user.UserId!=owner.Subject||!ReferenceEquals(transaction,accounts.Database.CurrentTransaction))return new(LearningActivityPermissionOutcome.Denied,[]);
-            if(kind is not (LearningActivityKind.SkillExchange or LearningActivityKind.Pact or LearningActivityKind.Connection))return new(LearningActivityPermissionOutcome.Unavailable,[]);
+            if(kind is not (LearningActivityKind.SkillExchange or LearningActivityKind.Pact or LearningActivityKind.Connection or LearningActivityKind.MentorshipRequest))return new(LearningActivityPermissionOutcome.Unavailable,[]);
             var current=policies.GetCurrent();
             await accounts.Database.ExecuteSqlInterpolatedAsync($"SELECT set_config('andril.peer_terms',{current.Terms.Version},true),set_config('andril.peer_privacy',{current.Privacy.Version},true)",ct);
             var safe=await accounts.Database.SqlQueryRaw<bool>("SELECT NOT EXISTS(SELECT FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner WHERE p.oid IN ('andril_learning.peer_account(uuid,uuid,integer,text,text)'::regprocedure,'andril_learning.peer_row_visible(jsonb,integer)'::regprocedure) AND (r.rolsuper OR r.rolbypassrls)) AS \"Value\"").SingleAsync(ct);
             if(!safe)return new(LearningActivityPermissionOutcome.Unavailable,[]);
-            Guid[] targets;
+            Guid[] targets;LearningActivityState? state=null;
             if(creation is not null)
             {
                 targets=creation.TargetProfiles??[];
@@ -56,10 +56,23 @@ public static class LearningPeerActivityPersistence
                 if(row is null)return new(LearningActivityPermissionOutcome.Allowed,[requester]); // Opaque NotFound; no foreign/blocked row is released.
                 var members=JsonSerializer.Deserialize<LearningActivityMember[]>(row.Members);
                 if(members is null||members.Length<2||!members.Contains(requester))return new(LearningActivityPermissionOutcome.Denied,[]);
+                state=JsonSerializer.Deserialize<LearningActivityState>(row.Content);
                 targets=members.Where(x=>x!=requester).Select(x=>x.ProfileId).ToArray();
             }
             else if(action==LearningActivityAction.List)return new(LearningActivityPermissionOutcome.Allowed,[requester]);
             else return new(LearningActivityPermissionOutcome.Denied,[]);
+            if(kind==LearningActivityKind.MentorshipRequest)
+            {
+                var learner=state?.Creator.ProfileId??requester.ProfileId;
+                var mentor=state is null?targets.Single():state.Members.Single(x=>x.ProfileId!=learner).ProfileId;
+                var offer=state?.OfferId??creation?.RelatedOfferId;
+                if(offer is null||offer==Guid.Empty)return new(LearningActivityPermissionOutcome.Denied,[]);
+                var safeMentorship=await accounts.Database.SqlQueryRaw<bool>("SELECT NOT EXISTS(SELECT FROM pg_proc p JOIN pg_roles r ON r.oid=p.proowner WHERE p.oid IN ('andril_learning.mentorship_members(uuid,uuid,uuid,uuid,text,text)'::regprocedure,'andril_learning.mentorship_target_account(uuid,uuid,text,text)'::regprocedure,'andril_learning.peer_content_visible(jsonb,integer,jsonb)'::regprocedure,'andril_learning.published_target_account(uuid,uuid,integer,uuid,text,text)'::regprocedure,'andril_learning.publication_owner_facts(uuid)'::regprocedure,'andril_learning.publication_owned(integer,uuid,uuid)'::regprocedure) AND (r.rolsuper OR r.rolbypassrls)) AS \"Value\"").SingleAsync(ct);
+                if(!safeMentorship)return new(LearningActivityPermissionOutcome.Unavailable,[]);
+                var json=await accounts.Database.SqlQuery<string?>($"SELECT andril_learning.mentorship_members({requester.ProfileId},{learner},{mentor},{offer.Value},{current.Terms.Version},{current.Privacy.Version})::text AS \"Value\"").SingleAsync(ct);
+                var allowed=json is null?null:JsonSerializer.Deserialize<LearningActivityMember[]>(json);
+                return allowed is {Length:2}&&allowed.Contains(requester)?new(LearningActivityPermissionOutcome.Allowed,allowed):new(LearningActivityPermissionOutcome.Denied,[]);
+            }
             var participants=new List<LearningActivityMember>{requester};
             foreach(var target in targets.Order())
             {

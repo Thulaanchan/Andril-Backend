@@ -7,7 +7,19 @@ namespace Andril.Persistence.DbContexts;
 public sealed class LearningPeerActivitiesDbContext(DbContextOptions<LearningPeerActivitiesDbContext> options):DbContext(options)
 {
     protected override void OnConfiguring(DbContextOptionsBuilder builder)=>builder.UseNpgsql(o=>o.MigrationsHistoryTable("__EFMigrationsHistory_LearningPeers","andril_learning"));
-    protected override void OnModelCreating(ModelBuilder model)=>LearningPeerActivitiesModelV1.Configure(model);
+    protected override void OnModelCreating(ModelBuilder model)=>LearningPeerActivitiesModelV2.Configure(model);
+}
+
+internal static class LearningPeerActivitiesModelV2
+{
+    internal const string Scope="module='learning' AND kind IN (1,2,5,7) AND id<>'00000000-0000-0000-0000-000000000000'::uuid AND generation<>'00000000-0000-0000-0000-000000000000'::uuid AND version>0";
+    internal static void Configure(ModelBuilder model)
+    {
+        LearningPeerActivitiesModelV1.Configure(model);
+        var row=model.Entity<LearningActivityRow>();
+        row.ToTable("peer_activities","andril_learning",t=>t.HasCheckConstraint("ck_learning_peer_scope",Scope));
+        row.HasIndex(x=>new{x.PairLow,x.PairHigh,x.Kind}).IsUnique().HasFilter("kind=5 AND status='Pending'").HasDatabaseName("ux_learning_peer_mentorship_pending");
+    }
 }
 
 internal static class LearningPeerActivitiesModelV1

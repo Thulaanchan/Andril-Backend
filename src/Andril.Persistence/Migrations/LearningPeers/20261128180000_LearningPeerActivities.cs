@@ -124,5 +124,5 @@ public sealed class LearningPeerActivities:Migration
 [DbContext(typeof(LearningPeerActivitiesDbContext))]
 public sealed class LearningPeerActivitiesSnapshot:ModelSnapshot
 {
-    protected override void BuildModel(ModelBuilder modelBuilder)=>LearningPeerActivitiesModelV1.Configure(modelBuilder);
+    protected override void BuildModel(ModelBuilder modelBuilder)=>LearningPeerActivitiesModelV2.Configure(modelBuilder);
 }

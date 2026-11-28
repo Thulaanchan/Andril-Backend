@@ -25,7 +25,10 @@ public sealed class LearningPeerActivitiesRuntimePostgresTests
         internal static async Task<Fixture> Create()
         {
             var f=new Fixture(await Basis.Create());
-            try{await using var db=f.Open();await db.Database.MigrateAsync();using var q=new NpgsqlCommandBuilder();var name=q.QuoteIdentifier(f.Role);var sql=$"CREATE ROLE {name} NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE; GRANT {name} TO CURRENT_USER";await db.Database.ExecuteSqlRawAsync(sql);f.created=true;await db.Database.ExecuteSqlRawAsync(LearningPeerRuntimePermissions.GrantSql(f.Role));return f;}
+            try{
+                await using(var owner=new LearningPrivateActivitiesDbContext(new DbContextOptionsBuilder<LearningPrivateActivitiesDbContext>().UseNpgsql(f.Groups.Database.ConnectionString).Options))await owner.Database.MigrateAsync();
+                await using(var publications=new LearningPublicationsDbContext(new DbContextOptionsBuilder<LearningPublicationsDbContext>().UseNpgsql(f.Groups.Database.ConnectionString).Options))await publications.Database.MigrateAsync();
+                await using var db=f.Open();await db.Database.MigrateAsync();using var q=new NpgsqlCommandBuilder();var name=q.QuoteIdentifier(f.Role);var sql=$"CREATE ROLE {name} NOLOGIN NOINHERIT NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE; GRANT {name} TO CURRENT_USER";await db.Database.ExecuteSqlRawAsync(sql);f.created=true;await db.Database.ExecuteSqlRawAsync(LearningPeerRuntimePermissions.GrantSql(f.Role));return f;}
             catch{await f.DisposeAsync();throw;}
         }
         internal IsolatedLearningActivitiesRepository Store(AccountsDbContext db,SharedGroupsDatabase.Actor actor,Func<string,CancellationToken,Task>? checkpoint=null)
@@ -75,7 +78,7 @@ public sealed class LearningPeerActivitiesRuntimePostgresTests
         foreach(var target in new[]{a,await f.Groups.SeedAsync("hobbies"),await f.Groups.SeedAsync("learning",active:false),await f.Groups.SeedAsync("learning",minor:true)})Assert.Equal(LearningActivityOutcome.Denied,(await store.CreateAsync(LearningActivityKind.Connection,Request(LearningActivityKind.Connection,target.Profile))).Outcome);
         var b=await f.Groups.SeedAsync("learning");await db.Database.ExecuteSqlInterpolatedAsync($"DELETE FROM andril_identity.account_policy_records WHERE account_id={b.Account} AND action='privacy_acknowledged'");Assert.Equal(LearningActivityOutcome.Denied,(await store.CreateAsync(LearningActivityKind.Connection,Request(LearningActivityKind.Connection,b.Profile))).Outcome);
         Assert.Equal(LearningActivityOutcome.Unavailable,(await store.CreateAsync(LearningActivityKind.Circle,new(CircleId:Guid.NewGuid()))).Outcome);
-        Assert.Equal(LearningActivityOutcome.Unavailable,(await store.CreateAsync(LearningActivityKind.MentorshipRequest,new([b.Profile],RelatedOfferId:Guid.NewGuid()))).Outcome);
+        Assert.Equal(LearningActivityOutcome.Denied,(await store.CreateAsync(LearningActivityKind.MentorshipRequest,new([b.Profile],RelatedOfferId:Guid.NewGuid()))).Outcome);
     }
     [LocalPostgresFact]
     public async Task ForeignReadersCannotSeeOrChangeRelationshipsAndBlocksRevokeBothDirections()
@@ -134,7 +137,7 @@ public sealed class LearningPeerActivitiesRuntimePostgresTests
         Assert.Equal(HttpStatusCode.Unauthorized,(await http.GetAsync(route)).StatusCode);http.DefaultRequestHeaders.Authorization=new("Bearer","unconfirmed-"+a.Subject);Assert.Equal(HttpStatusCode.Forbidden,(await http.GetAsync(route)).StatusCode);http.DefaultRequestHeaders.Authorization=new("Bearer","confirmed-"+a.Subject);
         using var created=await http.PostAsJsonAsync(route,Request(LearningActivityKind.Connection,b.Profile));Assert.Equal(HttpStatusCode.OK,created.StatusCode);Assert.True(created.Headers.CacheControl!.NoStore);
         using var json=JsonDocument.Parse(await created.Content.ReadAsStringAsync());var id=json.RootElement.GetProperty("activity").GetProperty("id").GetGuid();Assert.NotEqual(Guid.Empty,id);Assert.Equal(HttpStatusCode.BadRequest,(await http.PostAsJsonAsync(route,new{targetProfiles=new[]{b.Profile},owner=b.Account})).StatusCode);
-        Assert.Equal(HttpStatusCode.ServiceUnavailable,(await http.PostAsJsonAsync("/api/learning/activities/MentorshipRequest",new CreateLearningActivityRequest([b.Profile],RelatedOfferId:Guid.NewGuid()))).StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden,(await http.PostAsJsonAsync("/api/learning/activities/MentorshipRequest",new CreateLearningActivityRequest([b.Profile],RelatedOfferId:Guid.NewGuid()))).StatusCode);
         http.DefaultRequestHeaders.Authorization=new("Bearer","confirmed-"+b.Subject);Assert.Equal(HttpStatusCode.OK,(await http.GetAsync(route+"/"+id)).StatusCode);
     }
 }
