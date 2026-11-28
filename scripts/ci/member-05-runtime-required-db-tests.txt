@@ -1,0 +1,1 @@
+Andril.IntegrationTests.Database.CanonicalEntitlementDeploymentPostgresTests.IntegratedWriterResolvesTheSubjectAndRejectsUnprivilegedAndStaleTransitions
