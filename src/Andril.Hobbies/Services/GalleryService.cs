@@ -163,21 +163,29 @@ public sealed class GalleryService : IGalleryService
     internal async Task<bool> VerifyPrivateMediaAsync(Guid mediaId, IGalleryPrivateObjectEvidenceReader objects,
         CancellationToken cancellationToken)
     {
+        var expected = await FindPrivateMediaBindingAsync(mediaId, cancellationToken);
+        if (expected is null)
+            return false;
+        var evidence = await objects.FindAuthorizedAsync(expected, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+        return evidence == expected;
+    }
+
+    internal async Task<GalleryPrivateObjectEvidence?> FindPrivateMediaBindingAsync(Guid mediaId,
+        CancellationToken cancellationToken)
+    {
         var ownerId = RequireActiveHobbiesProfile();
         cancellationToken.ThrowIfCancellationRequested();
         if (mediaId == Guid.Empty)
-            return false;
+            return null;
 
         var media = await _repository.GetOwnedByIdAsync(mediaId, ownerId, cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         if (!IsAccessible(media, ownerId) || media!.Id != mediaId || !media.IsPrivate ||
             string.IsNullOrWhiteSpace(media.StorageObjectKey))
-            return false;
+            return null;
 
-        var expected = new GalleryPrivateObjectEvidence(mediaId, ownerId, HobbiesModule, media.StorageObjectKey);
-        var evidence = await objects.FindAuthorizedAsync(expected, cancellationToken);
-        cancellationToken.ThrowIfCancellationRequested();
-        return evidence == expected;
+        return new GalleryPrivateObjectEvidence(mediaId, ownerId, HobbiesModule, media.StorageObjectKey);
     }
 
     public async Task<bool> UpdateTitleAsync(

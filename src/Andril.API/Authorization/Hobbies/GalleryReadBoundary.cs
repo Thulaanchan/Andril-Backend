@@ -1,5 +1,6 @@
 using Andril.Hobbies.DTOs;
 using Andril.Hobbies.Interfaces;
+using Andril.Hobbies.Media;
 using Andril.Hobbies.Services;
 
 namespace Andril.API.Authorization.Hobbies;
@@ -9,7 +10,9 @@ internal enum GalleryReadOperation
     Metadata,
     PrivateObjectEvidence,
     MetadataList,
-    MetadataDetail
+    MetadataDetail,
+    PrivateMediaDelivery,
+    UploadValidation
 }
 
 // Explicit backend composition. The existing Gallery registration and HTTP route inventory do not use it.
@@ -69,7 +72,7 @@ internal sealed class GalleryReadBoundary(
             var result = await read(scope, token);
             token.ThrowIfCancellationRequested();
             // Recheck before handing buffered data to the caller. A production release fence needs a separate contract.
-            if (result.Status is GalleryMetadataStatus.Success or GalleryMetadataStatus.MediaUnavailable &&
+            if ((result.Status is GalleryMetadataStatus.Success or GalleryMetadataStatus.MediaUnavailable) &&
                 await ResolveAuthorizedScopeAsync(operation, token) != scope)
                 return new(GalleryMetadataStatus.Denied);
             return result;
@@ -80,6 +83,45 @@ internal sealed class GalleryReadBoundary(
             return new(GalleryMetadataStatus.DependencyUnavailable);
         }
     }
+
+    internal Task<GalleryMetadataResult<byte[]>> ReadPrivateMediaAsync(Guid mediaId,
+        IGalleryVersionedPrivateObjectReader objects, int maximumBytes, CancellationToken cancellationToken = default) =>
+        ReadForReleaseAsync<byte[]>(GalleryReadOperation.PrivateMediaDelivery, async (scope, token) =>
+        {
+            if (maximumBytes < 1)
+                return new(GalleryMetadataStatus.DependencyUnavailable);
+
+            var service = CreateService(scope.Actor);
+            var binding = await service.FindPrivateMediaBindingAsync(mediaId, token);
+            if (binding is null)
+                return new(GalleryMetadataStatus.MediaUnavailable);
+            if (await ResolveAuthorizedScopeAsync(GalleryReadOperation.PrivateMediaDelivery, token) != scope)
+                return new(GalleryMetadataStatus.Denied);
+
+            var version = await objects.FindAuthorizedAsync(binding, token);
+            token.ThrowIfCancellationRequested();
+            if (version is null || version.Binding != binding || string.IsNullOrWhiteSpace(version.Version))
+                return new(GalleryMetadataStatus.MediaUnavailable);
+            if (await ResolveAuthorizedScopeAsync(GalleryReadOperation.PrivateMediaDelivery, token) != scope)
+                return new(GalleryMetadataStatus.Denied);
+
+            var content = await objects.ReadBoundedAsync(version, maximumBytes, token);
+            token.ThrowIfCancellationRequested();
+            if (content is null || content.Object != version || content.Bytes.IsEmpty || content.Bytes.Length > maximumBytes)
+                return new(GalleryMetadataStatus.MediaUnavailable);
+            var buffered = content.Bytes.ToArray();
+            if (await service.FindPrivateMediaBindingAsync(mediaId, token) != binding)
+                return new(GalleryMetadataStatus.MediaUnavailable);
+            return new(GalleryMetadataStatus.Success, buffered);
+        }, cancellationToken);
+
+    internal Task<GalleryMetadataResult<GalleryValidatedUpload>> ValidateUploadAsync(Stream input, string? contentType,
+        GalleryJpegUploadValidator validator, CancellationToken cancellationToken = default) =>
+        ReadForReleaseAsync<GalleryValidatedUpload>(GalleryReadOperation.UploadValidation, async (_, token) =>
+        {
+            var upload = await validator.ValidateAsync(input, contentType, token);
+            return upload is null ? new(GalleryMetadataStatus.InvalidMediaContent) : new(GalleryMetadataStatus.Success, upload);
+        }, cancellationToken);
 
     internal async Task<bool> VerifyPrivateMediaAsync(Guid mediaId, IGalleryPrivateObjectEvidenceReader objects,
         CancellationToken cancellationToken = default)

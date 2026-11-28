@@ -225,7 +225,8 @@ public sealed partial class GalleryPersistenceTests
 
     // Proposed route and status mappings exist only in this isolated test host.
     private static async Task<WebApplication> StartMetadataHostAsync(TestGalleryAuthorization authority,
-        IGalleryRepository repository, IGalleryPageRepository pages, IDataProtectionProvider protection)
+        IGalleryRepository repository, IGalleryPageRepository pages, IDataProtectionProvider protection,
+        Action<WebApplication>? mapTestRoutes = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.WebHost.UseTestServer();
@@ -252,6 +253,7 @@ public sealed partial class GalleryPersistenceTests
         app.MapGet(ProposedGalleryPath + "/{mediaId}", async (string mediaId, HttpContext http, HttpCurrentUser current) =>
             AsTestResponse(await authority.CreateBoundary(repository, pages, current)
                 .ReadMetadataDetailAsync(mediaId, http.RequestAborted))).RequireAuthorization();
+        mapTestRoutes?.Invoke(app);
         await app.StartAsync();
         return app;
     }
