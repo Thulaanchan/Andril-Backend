@@ -3,6 +3,9 @@ info:
   title: ANDRIL Social questionnaire
   version: v1
   description: Social questionnaire operations verified with ASP.NET Core and isolated PostgreSQL.
+    The active definition uses the confirmed Social scope. Submission and owner retrieval
+    require the questionnaire persistence opt-in and verified runtime role. This contract
+    publishes the current response and explicitly skipped state.
 security:
   - supabaseBearer: []
 paths:
