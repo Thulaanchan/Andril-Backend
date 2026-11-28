@@ -48,7 +48,7 @@ public sealed class IsolatedLearningActivitiesRepository : ILearningActivitiesRe
                 {
                     var prior = ReadState(row);
                     var comparison = Domain(() => state.RestoreMentorship().ComparePendingRequest(prior.RestoreMentorship()));
-                    if (comparison == PendingMentorshipComparison.ExactDuplicate) return new(LearningActivityOutcome.Conflict);
+                    if (comparison is PendingMentorshipComparison.ExactDuplicate or PendingMentorshipComparison.PendingPairConflict) return new(LearningActivityOutcome.Conflict);
                     if (comparison == PendingMentorshipComparison.PolicyDecisionRequired) return new(LearningActivityOutcome.Unavailable);
                 }
             }

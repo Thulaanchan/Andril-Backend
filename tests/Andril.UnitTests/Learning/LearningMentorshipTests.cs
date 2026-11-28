@@ -143,14 +143,14 @@ public sealed class LearningMentorshipTests
     [InlineData("learner")]
     [InlineData("mentor")]
     [InlineData("reverse")]
-    public void OtherPendingTerms_ArePolicyDecisions_NotPermissionForAnotherRequest(string difference)
+    public void SamePendingPairConflictsAndOtherPairsRemainSeparatePolicyDecisions(string difference)
     {
         var request = Create();
         var learner = difference == "reverse" ? request.Mentor : difference == "learner" ? Person() : request.Learner;
         var mentor = difference == "reverse" ? request.Learner : difference == "mentor" ? Person() : request.Mentor;
         var offer = LearningMentorshipOffer.Create(difference == "offer" ? Guid.NewGuid() : request.Offer.Id, mentor);
         var other = LearningMentorship.Request(Guid.NewGuid(), learner, offer);
-        Assert.Equal(PendingMentorshipComparison.PolicyDecisionRequired, request.ComparePendingRequest(other));
+        Assert.Equal(difference is "offer" or "reverse"?PendingMentorshipComparison.PendingPairConflict:PendingMentorshipComparison.PolicyDecisionRequired, request.ComparePendingRequest(other));
     }
 
     [Theory]

@@ -35,7 +35,7 @@ public sealed class LearningMentorshipOffer
 }
 
 public enum LearningMentorshipStatus { Pending = 1, Accepted = 2, Declined = 3, Cancelled = 4 }
-public enum PendingMentorshipComparison { ExactDuplicate = 1, NotBothPending = 2, PolicyDecisionRequired = 3 }
+public enum PendingMentorshipComparison { ExactDuplicate = 1, NotBothPending = 2, PolicyDecisionRequired = 3, PendingPairConflict = 4 }
 
 /// <summary>
 /// DEC-20261120-LRN04-01: topic-free local mentorship request/agreement lifecycle only.
@@ -85,7 +85,9 @@ public sealed class LearningMentorship
 
     /// <summary>Compare only exact directed participants and the same offer identity in this
     /// topic-free model. Both pending and identical terms are a known exact duplicate.
-    /// Other pending combinations require policy; different skills/topics are unsupported and
+    /// AND-M1-B5-P11-20261128 rejects any additional pending request for the same
+    /// unordered participant pair, including a different offer or reversed roles.
+    /// Other participant combinations require policy; different skills/topics are unsupported and
     /// must never be certified distinct by this comparison. Nonpending is not retry permission.
     /// No storage search, uniqueness constraint or concurrency guarantee is implemented.</summary>
     public PendingMentorshipComparison ComparePendingRequest(LearningMentorship other)
@@ -93,8 +95,10 @@ public sealed class LearningMentorship
         ArgumentNullException.ThrowIfNull(other);
         if (Status != LearningMentorshipStatus.Pending || other.Status != LearningMentorshipStatus.Pending)
             return PendingMentorshipComparison.NotBothPending;
-        return Learner == other.Learner && Mentor == other.Mentor && Offer.Id == other.Offer.Id
-            ? PendingMentorshipComparison.ExactDuplicate : PendingMentorshipComparison.PolicyDecisionRequired;
+        if(Learner == other.Learner && Mentor == other.Mentor && Offer.Id == other.Offer.Id)
+            return PendingMentorshipComparison.ExactDuplicate;
+        return new HashSet<LearningMentorshipParticipant>{Learner,Mentor}.SetEquals([other.Learner,other.Mentor])
+            ? PendingMentorshipComparison.PendingPairConflict : PendingMentorshipComparison.PolicyDecisionRequired;
     }
     public override string ToString() => $"Learning mentorship ({Status}) [private references omitted]";
 }
