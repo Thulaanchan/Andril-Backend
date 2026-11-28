@@ -100,7 +100,9 @@
     "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.FullPrivacyReplacementsRemainAtomicAndAccountsStayIsolated",
     "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.DatabaseRejectsForeignAccountAndModuleMetadataWithoutChangingOwnedRows",
     "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.OwnershipMigrationUpgradeAndRollbackPreserveValidExistingData",
-    "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.ConflictingMetadataUpsertsCannotReplaceOrDiscloseAnExistingForeignScope"
+    "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.ConflictingMetadataUpsertsCannotReplaceOrDiscloseAnExistingForeignScope",
+    "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.LocationDatabaseFailureRollsBackProfileCreation",
+    "Andril.IntegrationTests.Database.PhaseTwoProfilePrivacyPersistenceTests.AdditionalMetadataDatabaseFailureRollsBackProfileAndLocationWrites"
   ],
   "offlineOnlySkips": [
     "Andril.IntegrationTests.Communication.Calls.LiveKitSandboxTests.D12ActualSandboxRoomTokensInspectionAndCleanup",

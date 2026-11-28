@@ -216,6 +216,48 @@ public sealed class PhaseTwoProfilePrivacyPersistenceTests
         Assert.Equal("original-key", (await photos.GetByProfileAndSlotAsync(profile.Id, 1))!.ObjectKey);
     }
 
+    [LocalPostgresFact]
+    public async Task LocationDatabaseFailureRollsBackProfileCreation()
+    {
+        await using var database = await LocalAccountDatabase.CreateAsync();
+        var account = await Seed(database);
+        await using (var db = database.Open())
+        {
+            await Assert.ThrowsAsync<AccountStoreUnavailableException>(() => new PrivateProfileRepository(db).WithProfileSetupAsync(account.Id, "learning",
+                new("LocationFailure", null, "private"), _ => { }, TimeProvider.System, async profile =>
+                {
+                    // Real FK rejection on the location write, after the profile insert/edit.
+                    await new ProfileLocationRepository(db).UpsertAsync(ProfileLocationRecord.Create(profile.Id, Guid.NewGuid(), "learning", "Colombo", null, DateTimeOffset.UtcNow));
+                    return profile.Id;
+                }, default));
+        }
+        await using var check = database.Open();
+        Assert.Empty(await check.PrivateProfiles.ToListAsync());
+        Assert.Empty(await check.Set<ProfileLocationRecord>().ToListAsync());
+    }
+
+    [LocalPostgresFact]
+    public async Task AdditionalMetadataDatabaseFailureRollsBackProfileAndLocationWrites()
+    {
+        await using var database = await LocalAccountDatabase.CreateAsync();
+        var account = await Seed(database);
+        await using (var db = database.Open())
+        {
+            await Assert.ThrowsAsync<AccountStoreUnavailableException>(() => new PrivateProfileRepository(db).WithProfileSetupAsync(account.Id, "learning",
+                new("MetadataFailure", null, "private"), _ => { }, TimeProvider.System, async profile =>
+                {
+                    await new ProfileLocationRepository(db).UpsertAsync(ProfileLocationRecord.Create(profile.Id, account.Id, "learning", "Colombo", null, DateTimeOffset.UtcNow));
+                    // Real FK rejection on additional metadata, after both earlier writes.
+                    await new AdditionalProfilePhotoRepository(db).UpsertSlotPhotoAsync(AdditionalProfilePhotoRecord.Create(profile.Id, Guid.NewGuid(), "learning", 1, "private/key", null, "image/jpeg", 100, DateTimeOffset.UtcNow));
+                    return profile.Id;
+                }, default));
+        }
+        await using var check = database.Open();
+        Assert.Empty(await check.PrivateProfiles.ToListAsync());
+        Assert.Empty(await check.Set<ProfileLocationRecord>().ToListAsync());
+        Assert.Empty(await check.Set<AdditionalProfilePhotoRecord>().ToListAsync());
+    }
+
     private static async Task<Account> Seed(LocalAccountDatabase database)
     {
         var account = Account.Create(Guid.NewGuid(), DateTimeOffset.UtcNow);
