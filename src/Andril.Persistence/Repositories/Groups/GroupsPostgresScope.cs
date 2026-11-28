@@ -13,6 +13,20 @@ public sealed class GroupsPostgresScope(AccountsDbContext accounts, DbContextOpt
     public Task<T> ExecuteAsync<T>(string module, Func<GroupsDbContext, Guid, CancellationToken, Task<T>> action, CancellationToken token) =>
         profiles.WithAuthorizedProfileAsync(module, (profile) => ExecuteCoreAsync(module, profile, action, token), token);
 
+    internal async Task<T> ExecuteForActorAsync<T>(Guid actorId,
+        Func<GroupsDbContext, string, CancellationToken, Task<T>> action, CancellationToken token)
+    {
+        if (!user.IsAuthenticated || user.UserId is not Guid subject || subject == Guid.Empty || actorId == Guid.Empty)
+            throw new ProfileAccessDeniedException();
+        var module = await (from profile in accounts.PrivateProfiles.AsNoTracking()
+                            join account in accounts.Accounts.AsNoTracking() on profile.AccountId equals account.Id
+                            where profile.Id == actorId && account.SupabaseUserId == subject
+                            select profile.Module).SingleOrDefaultAsync(token);
+        if (module is null) throw new ProfileAccessDeniedException();
+        return await ExecuteAsync(module, (db, actor, ct) => actor == actorId
+            ? action(db, module, ct) : throw new ProfileAccessDeniedException(), token);
+    }
+
     private async Task<T> ExecuteCoreAsync<T>(string module, PrivateProfileDto profile,
         Func<GroupsDbContext, Guid, CancellationToken, Task<T>> action, CancellationToken token)
     {
