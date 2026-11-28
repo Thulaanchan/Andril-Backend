@@ -81,3 +81,24 @@ The local and CI acceptance runs use a disposable PostgreSQL instance and isolat
 The role needs Social schema usage, the scoped safety and matching function grants, and the table and column privileges validated at startup. Keep account demographics, private profiles, block rows, safety audit and moderation grants under their authority owner. M6 provisions the trusted operator rows. Production deployment requires its own identity-provider verification and role provisioning.
 
 Run `pwsh -NoProfile -File scripts/ci/run-member-05-social-db.ps1` with `ANDRIL_M2_TEST_POSTGRES` scoped to the disposable loopback maintenance connection. The script requires every manifest case to execute and pass. [Versioned Social matching OpenAPI](../contracts/openapi/social-matching.v1.yaml)
+
+## Catalogue interests and personality
+
+These operations require `SocialMatching__EnablePersistence=true` and their own flags. Enable `SocialMatching__EnableInterestSelections` for interests and `SocialMatching__EnablePersonality` for personality. Use confirmed identity and the active opted-in adult Social profile. All responses use `Cache-Control: no-store`.
+
+| Method and route | Body and verified result |
+| --- | --- |
+| `GET /api/v1/social/matching/interests/catalogue` | `200` with active `id` and `displayName` pairs. An empty array is a valid unconfigured catalogue. |
+| `GET /api/v1/social/matching/interests/me` | `200` with own `interestIds` and `revision`. Null means no committed selection. |
+| `PUT /api/v1/social/matching/interests/me` | Send `{ "interestIds": [] }` to clear or supply distinct active catalogue UUIDs. Returns `204` or `400` for an invalid selection. |
+| `GET /api/v1/social/matching/personality/me` | `200` with own current `questionnaireResponseId`, `questionnaireVersion`, `unresolvedAxes`, `hasConfirmation` and optional `partnerPreferences`. |
+| `PUT /api/v1/social/matching/personality/preferences` | Send Social, communication and planning preference values together. All null clears them. Returns `204`, or `409` when initial matching preferences are missing. |
+| `PUT /api/v1/social/matching/personality/confirmation` | Send `questionnaireResponseId` from the current owner view and explicit choices for one or more unresolved axes. Returns `204`, `409` for stale or unavailable questionnaires, or `400` for invalid choices. |
+
+Partner preferences use `0` for Either, `1` for Reserved, LessExpressive or Spontaneous, and `2` for Outgoing, Expressive or Structured on the corresponding axis. Confirmation uses `0` for the first tendency and `1` for the second. A completed questionnaire with unresolved axes may be confirmed explicitly. A skipped questionnaire has no confirmation reference. Reload the private view after `409`, withdrawal or failed authorization. Treat `401` as a sign-in state, `403` as a denied state, and `503` as a retryable authority outage. Clear locally held data on sign-out or module change.
+
+The operator provisioning function belongs to a separately authorized database role. Populate the catalogue only from the approved Social source. No production entries are bundled. Other profiles' private selections, confirmation choices and questionnaire answers remain absent from Explore cards.
+
+## Contextual AI consent availability
+
+There are no active Social contextual AI consent or generation HTTP operations. Internal PostgreSQL verification covers scoped consent and module-epoch revocation. Flutter should leave contextual AI controls unavailable until authoritative login/logout and conversation evidence, explicit interaction evidence, privacy, quota, budget and late-reply enforcement are integrated. [Runtime dependencies](M5_Social_Contextual_AI_Runtime_Readiness.md)

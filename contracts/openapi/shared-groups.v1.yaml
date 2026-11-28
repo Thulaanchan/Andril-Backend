@@ -1,10 +1,15 @@
 openapi: 3.0.3
 info:
   title: ANDRIL Shared Groups
-  version: 1.0.0
-  description: Requires explicit persistence and module activation, a valid Supabase bearer token and confirmed
-    identity. Canonical scope pairs are learning/Classroom (1), hobbies/Club (2), and social/Zone (3).
-    Deployments with persistence disabled leave the routes unmapped.
+  version: 1.1.0
+  description: Requires explicit persistence and module activation, a valid
+    Supabase bearer token and confirmed identity. Canonical scope pairs are
+    learning/Classroom (1), hobbies/Club (2), and social/Zone (3). Deployments
+    with persistence disabled leave the routes unmapped. Each module has its own
+    Free creation quota of five active Groups. Premium creation is unlimited.
+    Capacity is 50 for Free and 100 for Premium, based on the current canonical
+    entitlement of the Group creator. Downgrade keeps existing Groups and
+    members.
 security:
   - supabaseBearer: []
 paths:
@@ -948,6 +953,7 @@ components:
             - club_capacity
             - revision_conflict
             - participation_conflict
+            - group_capacity
   responses:
     BadRequest:
       description: Invalid body, route identifiers, search, or incompatible module and Group kind.

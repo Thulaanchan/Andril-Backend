@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-      - name: Verify Social and Shared Groups acceptance on PostgreSQL
+      - name: Verify Social, Shared Groups and consent acceptance on PostgreSQL
         shell: bash
         run: |
           set -euo pipefail
