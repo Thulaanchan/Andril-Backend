@@ -16,6 +16,12 @@ public static class ControlledStructuredCvEndpoints
     public static IEndpointRouteBuilder MapControlledStructuredCv(this IEndpointRouteBuilder endpoints)
     {
         var g = endpoints.MapGroup("/api/learning/cvs").RequireAuthorization();
+        g.AddEndpointFilter(async (context,next) =>
+        {
+            context.HttpContext.Response.Headers.CacheControl="no-store";
+            context.HttpContext.Response.Headers.Pragma="no-cache";
+            return await next(context);
+        });
         g.MapPost("/{id:guid}/sections/{category}/structured",(Guid id,CvSectionCategory category,ReviewedCvSectionRequest request,ILearningCvRepository repository,CancellationToken ct) => Safe(async () =>
         {
             if (!Enum.IsDefined(category) || request.Entries is null || request.Entries.Any(x => x is null || x.Fields is null)) return Results.StatusCode(400);
