@@ -3,15 +3,37 @@ using Andril.AI.Interfaces;
 
 namespace Andril.AI.Policies;
 
-// Proposed internal state model; not a database schema, provider permission or M5 algorithm.
-public enum AiConsentState { Unknown, AwaitingConsent, GrantedUnused, Started, Declined, Expired, Revoked, Completed, Failed }
-public enum AiConsentDecision { Unknown, Allow, NotNow }
+// Stable consent state and decision values used by the Social PostgreSQL store.
+public enum AiConsentState
+{
+    Unknown = 0,
+    AwaitingConsent = 1,
+    GrantedUnused = 2,
+    Started = 3,
+    Declined = 4,
+    Expired = 5,
+    Revoked = 6,
+    Completed = 7,
+    Failed = 8
+}
+public enum AiConsentDecision { Unknown = 0, Allow = 1, NotNow = 2 }
 public enum AiConsentOutcome
 {
     Unknown, Offered, DecisionRecorded, Started, Status, Withdrawn, AlreadyRecorded,
     ContinuationVerified, Suppressed, Denied, Expired, Revoked, Conflict, ReconciliationRequired, CompletedWithdrawalPolicyPending
 }
-public enum AiConsentRevocationReason { Unknown, Withdrawal, Logout, ModuleSwitch, AccountChange, EligibilityLoss, ConversationDeletion, ConversationExpiry, AccountDeletion }
+public enum AiConsentRevocationReason
+{
+    Unknown = 0,
+    Withdrawal = 1,
+    Logout = 2,
+    ModuleSwitch = 3,
+    AccountChange = 4,
+    EligibilityLoss = 5,
+    ConversationDeletion = 6,
+    ConversationExpiry = 7,
+    AccountDeletion = 8
+}
 public sealed record AiConsentPurpose(string Id, string Version, string ScopeId);
 /// <summary>Epochs refer to authoritative server session/module activation state, never client booleans.</summary>
 public sealed record AiConsentReference(AiOperationReference Operation, AiConsentPurpose Purpose, Guid SessionEpoch, Guid ModuleEpoch);

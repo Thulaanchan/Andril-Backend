@@ -1,0 +1,7 @@
+# Social contextual AI consent scope
+
+Team Lead decision AND-M5-LEAD-AI-CTX-20261128-01 authorizes Social consent storage and its limited audit records. An explicit Allow is available to one server-issued attempt for five minutes after the original grant. Not now suppresses new offers in that conversation unless a separately verified explicit recommendation request exists. Withdrawal and lifecycle invalidation fence pending work. Starting never removes the need for current authorization or revocation checks.
+
+The migration stores only scope, operation and session identifiers, state, times, revisions and the existing five audit fields. An audit event is readable for 14 days from its original UTC time. Privileged cleanup is idempotent and excludes events with authoritative holds. Audit reads and purge are reserved for the approved server authority. There is no audit HTTP operation and the consent schema stores no conversation or recommendation content.
+
+The schema uses the existing Social migration history and references M2's private profile scope. The M1 Learning AI schema remains separate. Social consent runtime activation depends on the actual authenticated session and module epoch authorities, authorized private conversation scope, trusted interaction evidence, and applicable lifecycle and privacy policy. Completed-content retention, pricing, external generation and participant-message use remain outside this decision.
