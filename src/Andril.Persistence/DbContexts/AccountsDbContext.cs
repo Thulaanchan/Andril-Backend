@@ -36,5 +36,8 @@ public sealed class AccountsDbContext(DbContextOptions<AccountsDbContext> option
         modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleConfiguration());
         modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleReceiptConfiguration());
         modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.ModuleLifecycleAuditConfiguration());
+        modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.AccountOwnerStateConfiguration());
+        modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.AccountOwnerReceiptConfiguration());
+        modelBuilder.ApplyConfiguration(new Andril.Persistence.Accounts.AccountOwnerAuditConfiguration());
     }
 }

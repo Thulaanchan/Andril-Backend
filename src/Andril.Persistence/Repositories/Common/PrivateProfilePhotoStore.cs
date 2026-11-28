@@ -97,6 +97,20 @@ public sealed class PrivateProfilePhotoStore(AccountsDbContext db) : IPrivatePro
     public Task<StoredProfilePhoto?> ReadCurrentAsync(PhotoScope scope, CancellationToken ct) => SafeAsync(async () =>
         (await Scoped(scope).AsNoTracking().SingleOrDefaultAsync(x => x.IsCurrent && x.State == PhotoState.Stored, ct))?.Evidence());
 
+    public Task<PrivatePhotoStatus> DetachAsync(PhotoScope scope, Guid id, CancellationToken ct) => SafeAsync(async () =>
+    {
+        if (db.Database.CurrentTransaction is null) throw new PhotoDependencyException();
+        // The authorized profile transaction owns the profile lock, shared with
+        // reservations/finalization. Never remove a concurrent replacement implicitly.
+        var photo = await RequiredAsync(scope, id, ct);
+        if (photo.State != PhotoState.Stored) throw new PhotoUploadConflictException();
+        if (!photo.IsCurrent) return photo.Status();
+        if (await Scoped(scope).AnyAsync(x => x.State == PhotoState.PendingStorage, ct)) throw new PhotoUploadConflictException();
+        photo.DetachForRetentionReview(await DatabaseUtcNowAsync(ct));
+        await db.SaveChangesAsync(ct);
+        return photo.Status();
+    });
+
     public Task<PhotoCleanupClaim?> ClaimCleanupAsync(PhotoScope scope, CancellationToken ct) =>
         InScopeTransactionAsync<PhotoCleanupClaim?>(scope, async () =>
         {

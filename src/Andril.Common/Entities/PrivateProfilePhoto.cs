@@ -100,6 +100,18 @@ public sealed class PrivateProfilePhoto
         QueueCleanup(now);
     }
 
+    // Explicit removal hides the reference without authorizing irreversible purge.
+    // Preserve the immutable key for later approved retention/provider reconciliation.
+    // A reclaimed upload's unresolved external write risk needs that review first.
+    public void DetachForRetentionReview(DateTimeOffset now)
+    {
+        if (State != PhotoState.Stored || !IsCurrent) throw new PhotoUploadConflictException();
+        if (LateWriteRisk) throw new PhotoDependencyException();
+        Touch(now);
+        IsCurrent = false;
+        SupersededAtUtc = now;
+    }
+
     public bool CanClaimCleanup(DateTimeOffset now) => CleanupPending && !IsCurrent
         && (State == PhotoState.Failed || State == PhotoState.Stored && SupersededAtUtc.HasValue)
         && NextCleanupAttemptAtUtc <= now

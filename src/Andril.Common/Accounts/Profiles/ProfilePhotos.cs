@@ -81,6 +81,7 @@ public interface IPrivateProfilePhotoStore
     Task<PrivatePhotoStatus> FailAsync(PhotoScope scope, Guid id, Guid token, PhotoReason reason, CancellationToken ct);
     Task<PrivatePhotoStatus?> ReadAsync(PhotoScope scope, Guid id, CancellationToken ct);
     Task<StoredProfilePhoto?> ReadCurrentAsync(PhotoScope scope, CancellationToken ct);
+    Task<PrivatePhotoStatus> DetachAsync(PhotoScope scope, Guid id, CancellationToken ct) => throw new PhotoDependencyException();
     Task<PhotoCleanupClaim?> ClaimCleanupAsync(PhotoScope scope, CancellationToken ct);
     Task<bool> RecordCleanupAsync(PhotoCleanupClaim claim, bool removed, TimeSpan retryDelay, CancellationToken ct);
 }
@@ -91,6 +92,7 @@ public interface IProfilePhotoService
     Task<PrivatePhotoStatus> GetAsync(string module, Guid uploadId, CancellationToken cancellationToken = default);
     Task<PrivatePhotoStatus> GetCurrentAsync(string module, CancellationToken cancellationToken = default);
     Task<byte[]> GetContentAsync(string module, Guid uploadId, CancellationToken cancellationToken = default);
+    Task<PrivatePhotoStatus> RemoveAsync(string module, Guid uploadId, bool confirmed, CancellationToken cancellationToken = default) => throw new PhotoDependencyException();
 }
 
 public sealed class PhotoDependencyException : Exception { }
@@ -113,6 +115,19 @@ public sealed class ProfilePhotoService(IPrivateProfileService profiles, IPhotoU
         if (!inspector.IsApprovedAndConfigured || !objects.IsConfigured) throw new PhotoDependencyException();
         int limit = policy.RequireMaximumBytes();
         return limit is > 0 and <= ProfilePhotoLimits.UploadBytes ? limit : throw new PhotoDependencyException();
+    }
+
+    public async Task<PrivatePhotoStatus> RemoveAsync(string module, Guid uploadId, bool confirmed, CancellationToken cancellationToken = default)
+    {
+        var scope = await ScopeAsync(module, cancellationToken);
+        RequireId(uploadId);
+        if (!confirmed) throw new PhotoUploadInvalidException();
+        return await profiles.WithAuthorizedProfileAsync(module, async profile =>
+        {
+            if (profile.ProfileId != scope.ProfileId || profile.Module != scope.Module) throw new ProfileAccessDeniedException();
+            return await store.DetachAsync(scope, uploadId, cancellationToken);
+        }, cancellationToken);
+        // No object deletion or cleanup claim: retention approval is separate.
     }
 
     public async Task<PrivatePhotoStatus> GetAsync(string module, Guid uploadId, CancellationToken cancellationToken = default)
